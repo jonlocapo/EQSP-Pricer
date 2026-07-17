@@ -12,6 +12,7 @@
  * caller must surface the message, never fall back silently.
  */
 import { fetchTextWithCorsFallback } from './spotFetch';
+import { isIndexSymbol, toCboeSymbol } from './symbols';
 
 export interface ImpliedResult {
   divYield: number;
@@ -41,24 +42,13 @@ function midPrice(o: CboeOption): number | null {
   return null;
 }
 
-/** Map a UI underlying name to a CBOE chain symbol. */
-export function toCboeSymbol(underlyingName: string, assetType: 'share' | 'index'): string {
-  const cleaned = underlyingName
-    .replace(/\s+index$/i, '')
-    .replace(/^[\^_]/, '')
-    .trim()
-    .toUpperCase();
-  if (!cleaned) throw new Error('Enter an underlying ticker first');
-  return assetType === 'index' ? `_${cleaned}` : cleaned;
-}
-
+/** `yahooSymbol` is Yahoo-style (BA, ^SPX); mapped to CBOE internally. */
 export async function fetchImpliedFromOptions(
-  underlyingName: string,
-  assetType: 'share' | 'index',
+  yahooSymbol: string,
   tenorYears: number,
   rate: number,
 ): Promise<ImpliedResult> {
-  const symbol = toCboeSymbol(underlyingName, assetType);
+  const symbol = toCboeSymbol(yahooSymbol);
   const url = `https://cdn.cboe.com/api/global/delayed_quotes/options/${encodeURIComponent(symbol)}.json`;
   let text: string;
   let proxied: boolean;
@@ -136,7 +126,7 @@ export async function fetchImpliedFromOptions(
       strike,
       tYears,
       source: proxied ? 'CBOE delayed (proxied)' : 'CBOE delayed',
-      approximate: assetType === 'share',
+      approximate: !isIndexSymbol(yahooSymbol),
     };
   }
   throw new Error('No liquid ATM call/put pair near the tenor — enter div yield and vol manually');

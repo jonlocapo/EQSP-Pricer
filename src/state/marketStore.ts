@@ -12,12 +12,17 @@ export type AssetType = 'share' | 'index';
 
 interface MarketState {
   market: MarketData;
+  /** Display name, e.g. "The Boeing Company". */
   underlyingName: string;
+  /** Yahoo-style symbol driving all data fetches, e.g. "BA", "^SPX". */
+  ticker: string;
   assetType: AssetType;
   fetchStatus: FetchStatus;
   manualOverride: boolean;
   setMarket: (patch: Partial<MarketData>) => void;
   setUnderlyingName: (name: string) => void;
+  /** Set from a search pick: symbol + display name + inferred asset type. */
+  setUnderlying: (ticker: string, name: string, assetType: AssetType) => void;
   setAssetType: (t: AssetType) => void;
   setFetchStatus: (s: FetchStatus) => void;
   markManualOverride: () => void;
@@ -27,13 +32,16 @@ interface MarketState {
 
 export const useMarketStore = create<MarketState>((set) => ({
   market: { ...DEFAULT_MARKET },
-  underlyingName: 'SPX Index',
+  underlyingName: 'S&P 500 INDEX',
+  ticker: '^SPX',
   assetType: 'index',
   fetchStatus: { state: 'idle' },
   manualOverride: false,
   setMarket: (patch) =>
     set((s) => ({ market: { ...s.market, ...patch }, manualOverride: true })),
   setUnderlyingName: (name) => set({ underlyingName: name }),
+  setUnderlying: (ticker, underlyingName, assetType) =>
+    set({ ticker, underlyingName, assetType, fetchStatus: { state: 'idle' } }),
   setAssetType: (assetType) => set({ assetType }),
   setFetchStatus: (fetchStatus) => set({ fetchStatus }),
   markManualOverride: () => set({ manualOverride: true }),
