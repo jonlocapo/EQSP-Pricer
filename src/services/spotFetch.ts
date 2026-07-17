@@ -29,6 +29,28 @@ async function fetchWithTimeout(url: string, ms: number): Promise<string> {
 }
 
 /**
+ * Fetch text, retrying through a public CORS proxy when the origin doesn't
+ * send CORS headers (Stooq, ECB). Returns the body and whether the proxy
+ * was used.
+ */
+export async function fetchTextWithCorsFallback(
+  url: string,
+  ms = 5000,
+  isValid: (text: string) => boolean = () => true,
+): Promise<{ text: string; proxied: boolean }> {
+  try {
+    const text = await fetchWithTimeout(url, ms);
+    if (!isValid(text)) throw new Error('unexpected response body');
+    return { text, proxied: false };
+  } catch {
+    const proxied = `https://corsproxy.io/?url=${encodeURIComponent(url)}`;
+    const text = await fetchWithTimeout(proxied, ms);
+    if (!isValid(text)) throw new Error('unexpected response body');
+    return { text, proxied: true };
+  }
+}
+
+/**
  * Fetch a last-traded price for `symbol` from Stooq, falling back to a CORS
  * proxy if the direct request fails. Never blocks manual entry — callers
  * should catch and show "Fetch unavailable — enter spot manually".

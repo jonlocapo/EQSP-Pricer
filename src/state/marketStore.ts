@@ -8,13 +8,17 @@ export interface FetchStatus {
   message?: string;
 }
 
+export type AssetType = 'share' | 'index';
+
 interface MarketState {
   market: MarketData;
   underlyingName: string;
+  assetType: AssetType;
   fetchStatus: FetchStatus;
   manualOverride: boolean;
   setMarket: (patch: Partial<MarketData>) => void;
   setUnderlyingName: (name: string) => void;
+  setAssetType: (t: AssetType) => void;
   setFetchStatus: (s: FetchStatus) => void;
   markManualOverride: () => void;
   applyFetchedSpot: (spot: number, source: string, asOf: string) => void;
@@ -24,11 +28,13 @@ interface MarketState {
 export const useMarketStore = create<MarketState>((set) => ({
   market: { ...DEFAULT_MARKET },
   underlyingName: 'SPX Index',
+  assetType: 'index',
   fetchStatus: { state: 'idle' },
   manualOverride: false,
   setMarket: (patch) =>
     set((s) => ({ market: { ...s.market, ...patch }, manualOverride: true })),
   setUnderlyingName: (name) => set({ underlyingName: name }),
+  setAssetType: (assetType) => set({ assetType }),
   setFetchStatus: (fetchStatus) => set({ fetchStatus }),
   markManualOverride: () => set({ manualOverride: true }),
   applyFetchedSpot: (spot, source, asOf) =>
