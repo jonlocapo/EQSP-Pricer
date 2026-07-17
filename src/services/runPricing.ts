@@ -5,7 +5,7 @@ import { DEFAULT_MC } from '../model/request';
 import { pricerClient } from '../worker/client';
 import { useResultsStore } from '../state/resultsStore';
 import { useHistoryStore } from '../state/historyStore';
-import type { PageId } from '../state/tradeStore';
+import { useTradeStore, type PageId } from '../state/tradeStore';
 import {
   accumulatorTermsSummary,
   couponTermsSummary,
@@ -35,6 +35,105 @@ function termsSummaryFor(page: PageId, product: ProductSpec): string {
   if (product.kind === 'coupon') return couponTermsSummary(product);
   if (product.kind === 'participation') return participationTermsSummary(product);
   return accumulatorTermsSummary(product);
+}
+
+/**
+ * After a successful solve, write the solved value back into the relevant
+ * spec field so the UI can render it read-only/dimmed as "last solved
+ * value" per the design spec.
+ */
+function writeBackSolvedValue(
+  page: PageId,
+  product: ProductSpec,
+  solve: SolveTarget,
+  solvedValue: number | undefined
+): void {
+  if (solvedValue === undefined || solve.kind === 'none') return;
+  const trade = useTradeStore.getState();
+
+  if (product.kind === 'coupon') {
+    switch (solve.kind) {
+      case 'couponPa':
+        trade.setCouponSpec({ couponPaPct: solvedValue });
+        break;
+      case 'acCouponPa':
+        trade.setCouponSpec({ autocallCouponPaPct: solvedValue });
+        break;
+      case 'couponBarrier':
+        trade.setCouponSpec({ couponBarrierPct: solvedValue });
+        break;
+      case 'callBarrier':
+        trade.setCouponSpec({ callBarrierPct: solvedValue });
+        break;
+      case 'kiBarrier':
+        trade.setCouponSpec({ kiBarrierPct: solvedValue });
+        break;
+      default:
+        break;
+    }
+    return;
+  }
+
+  if (product.kind === 'participation') {
+    switch (solve.kind) {
+      case 'gearing':
+        if (product.subtype === 'booster') {
+          trade.patchParticipationDraft('booster', { gearingPct: solvedValue });
+        }
+        break;
+      case 'bonusLevel':
+        if (product.subtype === 'bonus') {
+          trade.patchParticipationDraft('bonus', { bonusLevelPct: solvedValue });
+        }
+        break;
+      case 'participation':
+        if (product.subtype === 'capitalGuaranteed') {
+          trade.patchParticipationDraft('capitalGuaranteed', { participationPct: solvedValue });
+        }
+        break;
+      case 'partUp':
+        if (product.subtype === 'twinWin') {
+          trade.patchParticipationDraft('twinWin', { partUpPct: solvedValue });
+        }
+        break;
+      case 'upperStrike':
+        if (product.upside.variant === 'callSpread') {
+          trade.patchParticipationDraft(product.subtype, {
+            upside: { ...product.upside, upperStrikePct: solvedValue },
+          } as never);
+        }
+        break;
+      case 'upsideKoBarrier':
+        if (product.upside.variant === 'koRebate') {
+          trade.patchParticipationDraft(product.subtype, {
+            upside: { ...product.upside, koBarrierPct: solvedValue },
+          } as never);
+        }
+        break;
+      case 'rebate':
+        if (product.upside.variant === 'koRebate') {
+          trade.patchParticipationDraft(product.subtype, {
+            upside: { ...product.upside, rebatePct: solvedValue },
+          } as never);
+        }
+        break;
+      default:
+        break;
+    }
+    return;
+  }
+
+  // accumulator
+  switch (solve.kind) {
+    case 'strike':
+      trade.setAccumulatorSpec({ strikePct: solvedValue });
+      break;
+    case 'upfront':
+      trade.setAccumulatorSpec({ upfrontPct: solvedValue });
+      break;
+    default:
+      break;
+  }
 }
 
 export interface RunPricingParams {
@@ -72,6 +171,7 @@ export async function runPricing({
       useResultsStore.getState().setProgress(p);
     });
     useResultsStore.getState().finishRun(result);
+    writeBackSolvedValue(page, product, solve, result.solvedValue);
 
     useHistoryStore.getState().addEntry({
       id,

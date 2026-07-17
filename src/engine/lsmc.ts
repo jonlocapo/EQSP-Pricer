@@ -198,7 +198,7 @@ export function priceIssuerCallable(opts: LsmcOptions): LsmcResult {
       const cost = redemptionCostPct(period);
       if (cost < fitted) {
         for (let i = 0; i < cf.gridIndices.length; i++) {
-          if (cf.gridIndices[i] < gridIdx) pv += cf.amountsPct[i] * df(cf.gridIndices[i] * dtYears);
+          if (cf.gridIndices[i] <= gridIdx) pv += cf.amountsPct[i] * df(cf.gridIndices[i] * dtYears);
         }
         pv += cost * df(gridIdx * dtYears);
         callCounts[c] += 1;
