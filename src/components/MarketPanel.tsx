@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { useMarketStore } from '../state/marketStore';
 import { fetchSpot } from '../services/spotFetch';
 import { fetchHistVol, fetchRefRate, REF_RATE_CCYS } from '../services/marketFetch';
+import { fetchImpliedFromOptions } from '../services/impliedFetch';
+import { useTradeStore } from '../state/tradeStore';
 import { NumericField } from './NumericField';
 import { TextField } from './TextField';
 import { SelectField } from './SelectField';
@@ -52,6 +54,40 @@ export function MarketPanel() {
       setRateStatus({ kind: 'ok', msg: `${(res.rate * 100).toFixed(3)}% · ${res.source} · ${res.asOf}` });
     } catch (err) {
       setRateStatus({ kind: 'err', msg: err instanceof Error ? err.message : 'Rate unavailable' });
+    }
+  }
+
+  const [implStatus, setImplStatus] = useState<{ kind: 'idle' | 'busy' | 'ok' | 'err'; msg?: string }>({ kind: 'idle' });
+
+  async function handleImply() {
+    setImplStatus({ kind: 'busy' });
+    try {
+      const trade = useTradeStore.getState();
+      const page = trade.activePage;
+      const spec =
+        page === 'coupon'
+          ? trade.couponSpec
+          : page === 'participation'
+            ? trade.participationDrafts[trade.participationSubtype]
+            : trade.accumulatorSpec;
+      const res = await fetchImpliedFromOptions(
+        underlyingName,
+        assetType,
+        spec.tenorYears,
+        market.rate,
+      );
+      useMarketStore.setState((s) => ({
+        market: { ...s.market, divYield: res.divYield, vol: res.atmVol, spot: res.spot },
+      }));
+      setImplStatus({
+        kind: 'ok',
+        msg:
+          `q ${(res.divYield * 100).toFixed(2)}%, ATM IV ${(res.atmVol * 100).toFixed(1)}%, spot ${res.spot} · ` +
+          `${res.expiry} K=${res.strike} · ${res.source}` +
+          (res.approximate ? ' · approx (American-style options)' : ''),
+      });
+    } catch (err) {
+      setImplStatus({ kind: 'err', msg: err instanceof Error ? err.message : 'Implied fetch failed' });
     }
   }
 
@@ -161,6 +197,17 @@ export function MarketPanel() {
           suffix="%"
           onChange={(v) => setMarket({ divYield: v / 100 })}
         />
+        <button
+          className="btn btn-sm"
+          type="button"
+          disabled={implStatus.kind === 'busy'}
+          onClick={handleImply}
+          title="Implies forward dividend yield (put-call parity) and ATM vol from CBOE delayed option chains; also refreshes spot. US-listed underlyings only."
+        >
+          {implStatus.kind === 'busy' ? 'Implying…' : 'Imply div + vol (options)'}
+        </button>
+        {implStatus.kind === 'ok' && <div className="status-line ok">{implStatus.msg}</div>}
+        {implStatus.kind === 'err' && <div className="status-line error">{implStatus.msg}</div>}
       </div>
     </div>
   );
