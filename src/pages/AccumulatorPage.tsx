@@ -27,6 +27,7 @@ export function AccumulatorPage() {
   const setSolve = useTradeStore((s) => s.setAccumulatorSolve);
   const market = useMarketStore((s) => s.market);
   const underlyingName = useMarketStore((s) => s.underlyingName);
+  const assetType = useMarketStore((s) => s.assetType);
   const running = useResultsStore((s) => s.running);
 
   const [greeks, setGreeks] = useState(false);
@@ -34,7 +35,10 @@ export function AccumulatorPage() {
   const [tenorValue, setTenorValue] = useState<number>(6);
 
   const validation = validateAccumulator(spec, market);
-  const priceDisabled = !validation.valid;
+  // Accumulators/decumulators are share-only: the product accumulates a
+  // daily number of shares, which has no meaning for an index underlying.
+  const indexBlocked = assetType === 'index';
+  const priceDisabled = !validation.valid || indexBlocked;
   const priceLabel = solve.kind === 'strike' ? 'Solve' : solve.kind === 'upfront' ? 'Solve' : 'Price';
 
   function fieldSolved(kind: SolveTarget['kind']): boolean {
@@ -57,6 +61,12 @@ export function AccumulatorPage() {
 
   return (
     <div className="page-grid">
+      {indexBlocked && (
+        <div className="page-banner error" role="alert">
+          Accumulators (AQ/DQ) are share-only — an index underlying cannot be accumulated. Set
+          Asset type to Share in the Market Data panel.
+        </div>
+      )}
       <Card title="Accumulator Terms">
         <div className="field">
           <div className="field-label">
@@ -201,7 +211,7 @@ export function AccumulatorPage() {
         <ActionRow
           label={priceLabel}
           disabled={priceDisabled}
-          tooltip="Fix validation errors above."
+          tooltip={indexBlocked ? 'Accumulators are share-only — switch Asset type to Share.' : 'Fix validation errors above.'}
           onRun={handleRun}
           greeks={greeks}
           onGreeksChange={setGreeks}

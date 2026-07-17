@@ -762,3 +762,19 @@ select.input:focus {
 .computed-readout b {
   font-variant-numeric: tabular-nums;
 }
+
+/* ---------- Page banner ---------- */
+
+.page-banner {
+  grid-column: 1 / -1;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+}
+
+.page-banner.error {
+  background: color-mix(in srgb, #dc2626 8%, var(--bg-elevated));
+  border-color: color-mix(in srgb, #dc2626 35%, var(--border));
+  color: var(--danger, #dc2626);
+}
