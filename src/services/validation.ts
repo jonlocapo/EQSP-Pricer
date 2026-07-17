@@ -1,0 +1,91 @@
+import type { AccumulatorSpec, CouponProductSpec, ParticipationSpec } from '../model/product';
+import type { MarketData } from '../model/market';
+
+export type FieldErrors = Record<string, string>;
+
+export interface ValidationResult {
+  errors: FieldErrors;
+  rowErrors?: string[];
+  valid: boolean;
+}
+
+function commonErrors(notional: number, tenorYears: number): FieldErrors {
+  const errors: FieldErrors = {};
+  if (!(notional > 0)) errors.notional = 'Notional must be positive.';
+  if (!(tenorYears > 0) || tenorYears > 10) errors.tenorYears = 'Tenor must be > 0 and ≤ 10y.';
+  return errors;
+}
+
+function marketErrors(market: MarketData): FieldErrors {
+  const errors: FieldErrors = {};
+  if (!(market.spot > 0)) errors.spot = 'Spot must be positive.';
+  return errors;
+}
+
+function callObservationCount(spec: CouponProductSpec): number {
+  const perYear = { monthly: 12, quarterly: 4, semiannual: 2, annual: 1 }[spec.callFrequency];
+  return Math.max(1, Math.round(spec.tenorYears * perYear));
+}
+
+export function validateCoupon(spec: CouponProductSpec, market: MarketData): ValidationResult {
+  const errors: FieldErrors = { ...commonErrors(spec.notional, spec.tenorYears), ...marketErrors(market) };
+  const rowErrors: string[] = [];
+
+  if (spec.reofferPct < 0) errors.reofferPct = 'Must be ≥ 0.';
+  if (spec.issuePricePct < 0) errors.issuePricePct = 'Must be ≥ 0.';
+
+  if (spec.barrierType !== 'none' && !(spec.kiBarrierPct < spec.putStrikePct)) {
+    errors.kiBarrierPct = 'KI barrier must be below put strike.';
+  }
+
+  if (spec.callType === 'custom') {
+    spec.customCallBarriersPct.forEach((v, i) => {
+      rowErrors[i] = v > 0 ? '' : 'Must be > 0.';
+    });
+  }
+
+  const nObs = callObservationCount(spec);
+  if (spec.callType !== 'none') {
+    if (!(spec.callFromPeriod >= 1) || spec.callFromPeriod > nObs) {
+      errors.callFromPeriod = `Must be between 1 and ${nObs}.`;
+    }
+  }
+
+  const valid = Object.keys(errors).length === 0 && rowErrors.every((e) => !e);
+  return { errors, rowErrors, valid };
+}
+
+export function validateParticipation(spec: ParticipationSpec, market: MarketData): ValidationResult {
+  const errors: FieldErrors = { ...commonErrors(spec.notional, spec.tenorYears), ...marketErrors(market) };
+
+  if (spec.upside.variant === 'callSpread') {
+    const strikeRef = spec.subtype === 'booster' ? spec.strikePct : 100;
+    if (!(spec.upside.upperStrikePct > strikeRef)) {
+      errors.upperStrikePct = `Must be above ${spec.subtype === 'booster' ? 'strike' : '100'}.`;
+    }
+  }
+  if (spec.upside.variant === 'koRebate') {
+    if (!(spec.upside.koBarrierPct > 100)) {
+      errors.koBarrierPct = 'Must be > 100.';
+    }
+  }
+
+  if (spec.downsidePutSpread) {
+    const downsideRef = spec.subtype === 'booster' ? spec.downsideStrikePct : 100;
+    if (!(spec.downsidePutSpread.lowerStrikePct < downsideRef)) {
+      errors.lowerStrikePct = `Must be below ${spec.subtype === 'booster' ? 'downside strike' : '100'}.`;
+    }
+  }
+
+  const valid = Object.keys(errors).length === 0;
+  return { errors, valid };
+}
+
+export function validateAccumulator(spec: AccumulatorSpec, market: MarketData): ValidationResult {
+  const errors: FieldErrors = { ...commonErrors(1, spec.tenorYears), ...marketErrors(market) };
+  delete errors.notional;
+  if (!(spec.dailyShares > 0)) errors.dailyShares = 'Must be positive.';
+  if (!(spec.koTriggerPct > spec.strikePct)) errors.koTriggerPct = 'Trigger must be above strike.';
+  const valid = Object.keys(errors).length === 0;
+  return { errors, valid };
+}
