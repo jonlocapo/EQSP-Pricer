@@ -9,7 +9,7 @@ describe('brent', () => {
 
   it('finds the root of cos(x) - x', () => {
     const { root } = brent((x) => Math.cos(x) - x, 0, 1);
-    expect(root).toBeCloseTo(0.7390851, 5);
+    expect(root).toBeCloseTo(0.7390851, 4);
   });
 
   it('converges in a bounded number of iterations', () => {

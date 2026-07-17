@@ -31,7 +31,7 @@ const SOLVE_LABELS: Record<SolveTarget['kind'], string> = {
   upfront: 'Upfront',
 };
 
-function termsSummaryFor(page: PageId, product: ProductSpec): string {
+function termsSummaryFor(product: ProductSpec): string {
   if (product.kind === 'coupon') return couponTermsSummary(product);
   if (product.kind === 'participation') return participationTermsSummary(product);
   return accumulatorTermsSummary(product);
@@ -43,12 +43,14 @@ function termsSummaryFor(page: PageId, product: ProductSpec): string {
  * value" per the design spec.
  */
 function writeBackSolvedValue(
-  page: PageId,
   product: ProductSpec,
   solve: SolveTarget,
   solvedValue: number | undefined
 ): void {
   if (solvedValue === undefined || solve.kind === 'none') return;
+  // Round to 4 decimals for display in the form; the results panel keeps
+  // the raw value.
+  solvedValue = Math.round(solvedValue * 1e4) / 1e4;
   const trade = useTradeStore.getState();
 
   if (product.kind === 'coupon') {
@@ -171,13 +173,13 @@ export async function runPricing({
       useResultsStore.getState().setProgress(p);
     });
     useResultsStore.getState().finishRun(result);
-    writeBackSolvedValue(page, product, solve, result.solvedValue);
+    writeBackSolvedValue(product, solve, result.solvedValue);
 
     useHistoryStore.getState().addEntry({
       id,
       timestamp: Date.now(),
       page,
-      termsSummary: termsSummaryFor(page, product),
+      termsSummary: termsSummaryFor(product),
       marketSummary: marketSummary(market, underlyingName),
       pvPct: result.pvPct,
       solvedValue: result.solvedValue,

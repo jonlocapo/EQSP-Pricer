@@ -32,7 +32,7 @@ export const useResultsStore = create<ResultsState>((set) => ({
   result: null,
   error: null,
   expanded: false,
-  startRun: (id) => set({ runId: id, running: true, progress: null, error: null }),
+  startRun: (id) => set({ runId: id, running: true, progress: null, error: null, expanded: false }),
   setProgress: (progress) => set({ progress }),
   finishRun: (result) => set({ running: false, result, progress: null }),
   failRun: (message) => set({ running: false, error: message, progress: null }),

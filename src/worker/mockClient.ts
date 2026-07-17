@@ -66,16 +66,21 @@ export class MockPricerClient implements PricerClient {
     }
 
     const noise = (rand() - 0.5) * 0.6; // +/- 0.3 pt
-    const isAccumulator = req.product.kind === 'accumulator';
-    const targetPct = isAccumulator ? req.product.upfrontPct * 100 : req.product.reofferPct;
-    const pvPct = targetPct + (willSolve ? 0 : noise);
-    const stderrPct = 0.03 + rand() * 0.04;
-    const notional = isAccumulator
-      ? req.product.dailyShares *
+    let targetPct: number;
+    let notional: number;
+    if (req.product.kind === 'accumulator') {
+      targetPct = req.product.upfrontPct * 100;
+      notional =
+        req.product.dailyShares *
         Math.round(req.product.tenorYears * 252) *
         (req.product.strikePct / 100) *
-        req.market.spot
-      : req.product.notional;
+        req.market.spot;
+    } else {
+      targetPct = req.product.reofferPct;
+      notional = req.product.notional;
+    }
+    const pvPct = targetPct + (willSolve ? 0 : noise);
+    const stderrPct = 0.03 + rand() * 0.04;
     const pvCcy = (pvPct / 100) * notional;
 
     let solvedValue: number | undefined;

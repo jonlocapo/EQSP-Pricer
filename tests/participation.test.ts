@@ -80,7 +80,7 @@ describe('participation - booster', () => {
     expect(out.kiEvent).toBe(false);
   });
 
-  it('european KI 70, perf 0.65 (KI'+"'"+'d) -> 65', () => {
+  it('european KI 70, perf 0.65 (knocked in) -> 65', () => {
     const ev = makeParticipationEvaluator(booster({ barrierType: 'european', kiBarrierPct: 70 }), ctx());
     const out = ev(path(100, 90, 65));
     // perf_T=0.65 < 0.70 -> KI; loss = 1.0*(1.0-0.65)*100 = 35 -> 65
