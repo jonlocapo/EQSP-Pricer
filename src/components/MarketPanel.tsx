@@ -5,9 +5,9 @@ import { fetchHistVol, fetchRefRate, REF_RATE_CCYS } from '../services/marketFet
 import { fetchImpliedFromOptions } from '../services/impliedFetch';
 import { useTradeStore } from '../state/tradeStore';
 import { NumericField } from './NumericField';
-import { TextField } from './TextField';
 import { SelectField } from './SelectField';
 import { Segmented } from './Segmented';
+import { TickerSearch } from './TickerSearch';
 
 const CURRENCIES = ['EUR', 'USD', 'CHF', 'GBP', 'JPY'];
 
@@ -23,8 +23,9 @@ export function MarketPanel() {
   const underlyingName = useMarketStore((s) => s.underlyingName);
   const fetchStatus = useMarketStore((s) => s.fetchStatus);
   const manualOverride = useMarketStore((s) => s.manualOverride);
+  const ticker = useMarketStore((s) => s.ticker);
   const setMarket = useMarketStore((s) => s.setMarket);
-  const setUnderlyingName = useMarketStore((s) => s.setUnderlyingName);
+  const setUnderlying = useMarketStore((s) => s.setUnderlying);
   const setFetchStatus = useMarketStore((s) => s.setFetchStatus);
   const applyFetchedSpot = useMarketStore((s) => s.applyFetchedSpot);
 
@@ -38,7 +39,7 @@ export function MarketPanel() {
   async function handleEstVol() {
     setVolStatus({ kind: 'busy' });
     try {
-      const res = await fetchHistVol(underlyingName);
+      const res = await fetchHistVol(ticker);
       useMarketStore.setState((s) => ({ market: { ...s.market, vol: res.vol } }));
       setVolStatus({ kind: 'ok', msg: `${(res.vol * 100).toFixed(2)}% · ${res.source} (realized, not implied)` });
     } catch (err) {
@@ -70,12 +71,7 @@ export function MarketPanel() {
           : page === 'participation'
             ? trade.participationDrafts[trade.participationSubtype]
             : trade.accumulatorSpec;
-      const res = await fetchImpliedFromOptions(
-        underlyingName,
-        assetType,
-        spec.tenorYears,
-        market.rate,
-      );
+      const res = await fetchImpliedFromOptions(ticker, spec.tenorYears, market.rate);
       useMarketStore.setState((s) => ({
         market: { ...s.market, divYield: res.divYield, vol: res.atmVol, spot: res.spot },
       }));
@@ -91,11 +87,11 @@ export function MarketPanel() {
     }
   }
 
-  async function handleFetch() {
+  async function handleFetch(sym = ticker) {
     setFetching(true);
     setFetchStatus({ state: 'loading' });
     try {
-      const res = await fetchSpot(underlyingName || market.currency);
+      const res = await fetchSpot(sym);
       applyFetchedSpot(res.spot, res.source, res.asOf);
     } catch (err) {
       setFetchStatus({
@@ -117,7 +113,17 @@ export function MarketPanel() {
           options={CURRENCIES.map((c) => ({ value: c, label: c }))}
           onChange={(v) => setMarket({ currency: v })}
         />
-        <TextField label="Underlying" value={underlyingName} onChange={setUnderlyingName} />
+        <TickerSearch
+          ticker={ticker}
+          displayName={underlyingName}
+          onPick={(m) => {
+            setUnderlying(m.symbol, m.name, m.quoteType === 'INDEX' ? 'index' : 'share');
+            // Stale per-source statuses would mislead for the new underlying.
+            setVolStatus({ kind: 'idle' });
+            setImplStatus({ kind: 'idle' });
+            void handleFetch(m.symbol);
+          }}
+        />
 
         <div className="field">
           <div className="field-label">
@@ -149,7 +155,7 @@ export function MarketPanel() {
           </div>
         </div>
 
-        <button className="btn btn-sm" type="button" disabled={fetching} onClick={handleFetch}>
+        <button className="btn btn-sm" type="button" disabled={fetching} onClick={() => void handleFetch()}>
           {fetching ? 'Fetching…' : 'Fetch spot'}
         </button>
         {fetchStatus.state === 'ok' && (

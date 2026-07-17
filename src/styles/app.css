@@ -778,3 +778,80 @@ select.input:focus {
   border-color: color-mix(in srgb, #dc2626 35%, var(--border));
   color: var(--danger, #dc2626);
 }
+
+/* ---------- Ticker search ---------- */
+
+.ticker-search {
+  position: relative;
+}
+
+.ticker-badge {
+  font-size: 10px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.ticker-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin-top: 4px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  z-index: 60;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.ticker-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 7px 10px;
+  font-size: 12px;
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+
+.ticker-row:last-child {
+  border-bottom: none;
+}
+
+.ticker-row.highlight {
+  background: var(--accent-soft);
+}
+
+.ticker-row.muted {
+  color: var(--text-faint);
+}
+
+.ticker-row.error {
+  color: var(--danger);
+}
+
+.ticker-sym {
+  font-weight: 700;
+}
+
+.ticker-name {
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ticker-meta {
+  font-size: 10.5px;
+  color: var(--text-faint);
+}

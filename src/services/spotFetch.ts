@@ -1,7 +1,54 @@
+import { toStooqSymbol } from './symbols';
+
 export interface SpotFetchResult {
   spot: number;
   asOf: string;
   source: string;
+  currency?: string;
+}
+
+async function fetchWithTimeout(url: string, ms: number): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.text();
+  } catch (e) {
+    if (controller.signal.aborted) throw new Error(`request timed out (${ms / 1000}s)`);
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const PROXIES = [
+  (url: string) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+  (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+];
+
+/**
+ * Fetch text, retrying through public CORS proxies when the origin doesn't
+ * send CORS headers (Yahoo, Stooq, ECB, CBOE). Returns the body and whether
+ * a proxy was used. `isValid` guards against 200-with-garbage responses
+ * (bot challenges, proxy error pages) so they count as failures.
+ */
+export async function fetchTextWithCorsFallback(
+  url: string,
+  ms = 5000,
+  isValid: (text: string) => boolean = () => true,
+): Promise<{ text: string; proxied: boolean }> {
+  let lastErr: unknown;
+  for (const wrap of [null, ...PROXIES]) {
+    try {
+      const text = await fetchWithTimeout(wrap ? wrap(url) : url, ms);
+      if (!isValid(text)) throw new Error('unexpected response body');
+      return { text, proxied: wrap !== null };
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error('fetch failed');
 }
 
 function parseStooqCsv(csv: string): { close: number; date: string } {
@@ -16,62 +63,52 @@ function parseStooqCsv(csv: string): { close: number; date: string } {
   return { close, date: `${date}T${time}` };
 }
 
-async function fetchWithTimeout(url: string, ms: number): Promise<string> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), ms);
-  try {
-    const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.text();
-  } finally {
-    clearTimeout(timer);
+async function fetchSpotYahoo(symbol: string): Promise<SpotFetchResult> {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1d&interval=1d`;
+  const { text, proxied } = await fetchTextWithCorsFallback(url, 8000, (t) => t.trimStart().startsWith('{'));
+  const parsed = JSON.parse(text) as {
+    chart?: {
+      result?: { meta?: { regularMarketPrice?: number; currency?: string; regularMarketTime?: number } }[];
+      error?: { description?: string } | null;
+    };
+  };
+  const meta = parsed.chart?.result?.[0]?.meta;
+  if (!meta?.regularMarketPrice || !(meta.regularMarketPrice > 0)) {
+    throw new Error(parsed.chart?.error?.description ?? `Yahoo has no price for "${symbol}"`);
   }
+  return {
+    spot: meta.regularMarketPrice,
+    asOf: meta.regularMarketTime ? new Date(meta.regularMarketTime * 1000).toISOString() : '',
+    source: proxied ? 'yahoo (proxied)' : 'yahoo',
+    currency: meta.currency,
+  };
+}
+
+async function fetchSpotStooq(symbol: string): Promise<SpotFetchResult> {
+  const url = `https://stooq.com/q/l/?s=${encodeURIComponent(toStooqSymbol(symbol))}&f=sd2t2ohlcv&e=csv`;
+  const { text, proxied } = await fetchTextWithCorsFallback(
+    url,
+    5000,
+    (t) => !t.trimStart().startsWith('<'),
+  );
+  const { close, date } = parseStooqCsv(text);
+  return { spot: close, asOf: date, source: proxied ? 'stooq (proxied)' : 'stooq' };
 }
 
 /**
- * Fetch text, retrying through a public CORS proxy when the origin doesn't
- * send CORS headers (Stooq, ECB). Returns the body and whether the proxy
- * was used.
- */
-export async function fetchTextWithCorsFallback(
-  url: string,
-  ms = 5000,
-  isValid: (text: string) => boolean = () => true,
-): Promise<{ text: string; proxied: boolean }> {
-  try {
-    const text = await fetchWithTimeout(url, ms);
-    if (!isValid(text)) throw new Error('unexpected response body');
-    return { text, proxied: false };
-  } catch {
-    const proxied = `https://corsproxy.io/?url=${encodeURIComponent(url)}`;
-    const text = await fetchWithTimeout(proxied, ms);
-    if (!isValid(text)) throw new Error('unexpected response body');
-    return { text, proxied: true };
-  }
-}
-
-/**
- * Fetch a last-traded price for `symbol` from Stooq, falling back to a CORS
- * proxy if the direct request fails. Never blocks manual entry — callers
- * should catch and show "Fetch unavailable — enter spot manually".
+ * Fetch a last/delayed price for a Yahoo-style symbol (BA, ^SPX, BMW.DE).
+ * Yahoo chart endpoint first (near-live), Stooq as backup. Callers surface
+ * the error message — never fail silently.
  */
 export async function fetchSpot(symbol: string): Promise<SpotFetchResult> {
-  const stooqUrl = `https://stooq.com/q/l/?s=${encodeURIComponent(symbol)}&f=sd2t2ohlcv&e=csv`;
-
+  if (!symbol.trim()) throw new Error('Pick an underlying first');
   try {
-    const csv = await fetchWithTimeout(stooqUrl, 5000);
-    const { close, date } = parseStooqCsv(csv);
-    return { spot: close, asOf: date, source: 'stooq' };
-  } catch {
-    // fall through to proxy
-  }
-
-  try {
-    const proxied = `https://corsproxy.io/?url=${encodeURIComponent(stooqUrl)}`;
-    const csv = await fetchWithTimeout(proxied, 5000);
-    const { close, date } = parseStooqCsv(csv);
-    return { spot: close, asOf: date, source: 'stooq (proxied)' };
-  } catch {
-    throw new Error('Fetch unavailable — enter spot manually');
+    return await fetchSpotYahoo(symbol);
+  } catch (yahooErr) {
+    try {
+      return await fetchSpotStooq(symbol);
+    } catch {
+      throw yahooErr instanceof Error ? yahooErr : new Error('Spot fetch failed — enter manually');
+    }
   }
 }

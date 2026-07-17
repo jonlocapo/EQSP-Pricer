@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { annualizedVolFromCloses, fetchHistVol, fetchRefRate } from '../src/services/marketFetch';
-import { fetchImpliedFromOptions, toCboeSymbol } from '../src/services/impliedFetch';
+import { fetchImpliedFromOptions } from '../src/services/impliedFetch';
+import { toCboeSymbol, toStooqSymbol } from '../src/services/symbols';
 
 // Live-network tests: skipped unless LIVE=1 (not suitable for CI).
 // Run with: LIVE=1 NODE_USE_ENV_PROXY=1 npx vitest run tests/marketFetch.test.ts
@@ -34,7 +35,7 @@ live('marketFetch (live network)', () => {
   });
 
   it('implies dividend yield and ATM vol from SPX options (European parity)', async () => {
-    const r = await fetchImpliedFromOptions('SPX Index', 'index', 1, 0.036);
+    const r = await fetchImpliedFromOptions('^SPX', 1, 0.036);
     expect(r.divYield).toBeGreaterThan(-0.01);
     expect(r.divYield).toBeLessThan(0.06);
     expect(r.atmVol).toBeGreaterThan(0.05);
@@ -44,14 +45,14 @@ live('marketFetch (live network)', () => {
   });
 
   it('implies from AAPL options (flagged approximate)', async () => {
-    const r = await fetchImpliedFromOptions('AAPL', 'share', 1, 0.036);
+    const r = await fetchImpliedFromOptions('AAPL', 1, 0.036);
     expect(r.divYield).toBeGreaterThan(-0.05);
     expect(r.divYield).toBeLessThan(0.2);
     expect(r.approximate).toBe(true);
   });
 
   it('fails loudly for unknown tickers', async () => {
-    await expect(fetchImpliedFromOptions('ZZZZQQ', 'share', 1, 0.03)).rejects.toThrow(/no option chain|blocked/i);
+    await expect(fetchImpliedFromOptions('ZZZZQQ', 1, 0.03)).rejects.toThrow(/no option chain|blocked/i);
   });
 });
 
@@ -90,10 +91,13 @@ describe('marketFetch (offline)', () => {
     expect(() => annualizedVolFromCloses([100, 101, 99])).toThrow(/Not enough/);
   });
 
-  it('maps UI names to CBOE symbols', () => {
-    expect(toCboeSymbol('SPX Index', 'index')).toBe('_SPX');
-    expect(toCboeSymbol('^spx', 'index')).toBe('_SPX');
-    expect(toCboeSymbol('aapl', 'share')).toBe('AAPL');
-    expect(() => toCboeSymbol('  ', 'share')).toThrow(/ticker/);
+  it('maps Yahoo symbols to per-source conventions', () => {
+    expect(toCboeSymbol('^SPX')).toBe('_SPX');
+    expect(toCboeSymbol('aapl')).toBe('AAPL');
+    expect(() => toCboeSymbol('BMW.DE')).toThrow(/US options/);
+    expect(() => toCboeSymbol('  ')).toThrow(/underlying/);
+    expect(toStooqSymbol('BA')).toBe('ba.us');
+    expect(toStooqSymbol('^SPX')).toBe('^spx');
+    expect(toStooqSymbol('BMW.DE')).toBe('bmw.de');
   });
 });

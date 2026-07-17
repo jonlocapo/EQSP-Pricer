@@ -8,6 +8,7 @@
  * Everything is a suggestion; manual override always wins.
  */
 import { fetchTextWithCorsFallback } from './spotFetch';
+import { toStooqSymbol } from './symbols';
 
 /** Stooq serves an HTML bot-challenge with HTTP 200 to some IPs; treat any
  * non-CSV body as a failed attempt so the proxy fallback kicks in. */
@@ -34,8 +35,9 @@ export function annualizedVolFromCloses(closes: number[]): { vol: number; days: 
   return { vol: Math.sqrt(variance * 252), days: rets.length };
 }
 
+/** `symbol` is Yahoo-style (BA, ^SPX, BMW.DE); mapped to Stooq internally. */
 export async function fetchHistVol(symbol: string): Promise<HistVolResult> {
-  const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(symbol)}&i=d`;
+  const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(toStooqSymbol(symbol))}&i=d`;
   const { text, proxied } = await fetchTextWithCorsFallback(url, 8000, looksLikeCsv);
   const lines = text.trim().split('\n');
   // Date,Open,High,Low,Close,Volume
