@@ -65,6 +65,7 @@ describe('buildGrid — accumulator', () => {
   function baseAccumulator(overrides: Partial<AccumulatorSpec>): AccumulatorSpec {
     return {
       kind: 'accumulator',
+      direction: 'accumulate',
       underlyings: [{ name: 'TEST' }],
       currency: 'EUR',
       strikePct: 100,

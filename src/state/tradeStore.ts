@@ -111,6 +111,7 @@ export const DEFAULT_TWIN_WIN: TwinWinSpec = {
 
 export const DEFAULT_ACCUMULATOR: AccumulatorSpec = {
   kind: 'accumulator',
+  direction: 'accumulate',
   underlyings: [{ name: 'SPX Index' }],
   currency: 'EUR',
   strikePct: 100,

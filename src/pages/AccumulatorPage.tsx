@@ -45,6 +45,17 @@ export function AccumulatorPage() {
     return solve.kind === kind;
   }
 
+  function setDirection(direction: 'accumulate' | 'decumulate') {
+    if (direction === spec.direction) return;
+    // Only swap the trigger default if the user hasn't touched it away from
+    // the outgoing direction's default (don't clobber a hand-entered value).
+    const prevDefault = spec.direction === 'decumulate' ? 90 : 110;
+    const nextDefault = direction === 'decumulate' ? 90 : 110;
+    const patch: Partial<typeof spec> = { direction };
+    if (spec.koTriggerPct === prevDefault) patch.koTriggerPct = nextDefault;
+    setSpec(patch);
+  }
+
   function updateTenor(value: number, unit: TenorUnit) {
     setTenorValue(value);
     setTenorUnit(unit);
@@ -63,11 +74,25 @@ export function AccumulatorPage() {
     <div className="page-grid">
       {indexBlocked && (
         <div className="page-banner error" role="alert">
-          Accumulators (AQ/DQ) are share-only — an index underlying cannot be accumulated. Set
-          Asset type to Share in the Market Data panel.
+          Accumulators/Decumulators (AQ/DQ) are share-only — an index underlying cannot be
+          accumulated. Set Asset type to Share in the Market Data panel.
         </div>
       )}
-      <Card title="Accumulator Terms">
+      <Card title={spec.direction === 'decumulate' ? 'Decumulator Terms' : 'Accumulator Terms'}>
+        <div className="field">
+          <div className="field-label">
+            <span>Product type</span>
+          </div>
+          <Segmented<'accumulate' | 'decumulate'>
+            value={spec.direction}
+            options={[
+              { value: 'accumulate', label: 'Accumulator' },
+              { value: 'decumulate', label: 'Decumulator' },
+            ]}
+            onChange={setDirection}
+          />
+        </div>
+
         <div className="field">
           <div className="field-label">
             <span>Solve for</span>
@@ -211,7 +236,7 @@ export function AccumulatorPage() {
         <ActionRow
           label={priceLabel}
           disabled={priceDisabled}
-          tooltip={indexBlocked ? 'Accumulators are share-only — switch Asset type to Share.' : 'Fix validation errors above.'}
+          tooltip={indexBlocked ? 'Accumulators/Decumulators are share-only — switch Asset type to Share.' : 'Fix validation errors above.'}
           onRun={handleRun}
           greeks={greeks}
           onGreeksChange={setGreeks}

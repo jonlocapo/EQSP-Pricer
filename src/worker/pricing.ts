@@ -233,7 +233,7 @@ export function solveBounds(
     case 'rebate':
       return { lo: 0, hi: 50, hardLo: 0, hardHi: 100, targetPct: reoffer };
     case 'strike':
-      return { lo: 50, hi: 120, hardLo: 10, hardHi: 200, targetPct: reoffer };
+      return { lo: 50, hi: 200, hardLo: 10, hardHi: 250, targetPct: reoffer };
     default:
       throw new Error(`solve target ${target.kind} has no bounds`);
   }

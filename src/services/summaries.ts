@@ -36,7 +36,8 @@ export function participationTermsSummary(spec: ParticipationSpec): string {
 }
 
 export function accumulatorTermsSummary(spec: AccumulatorSpec): string {
-  return `strike ${fmtPct(spec.strikePct)} trigger ${fmtPct(spec.koTriggerPct)} · ${spec.dailyShares}sh/day · ${spec.gearing}x · ${spec.tenorYears.toFixed(2)}y`;
+  const tag = spec.direction === 'decumulate' ? 'DQ' : 'AQ';
+  return `${tag} strike ${fmtPct(spec.strikePct)} trigger ${fmtPct(spec.koTriggerPct)} · ${spec.dailyShares}sh/day · ${spec.gearing}x · ${spec.tenorYears.toFixed(2)}y`;
 }
 
 export function marketSummary(market: MarketData, underlyingName: string): string {

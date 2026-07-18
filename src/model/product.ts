@@ -155,8 +155,17 @@ export type ParticipationSpec = BoosterSpec | BonusSpec | CapitalGuaranteedSpec 
 
 export type KoSettlement = 'ko0' | 'ko1' | 'periodEnd';
 
+/**
+ * 'accumulate': investor buys shares below spot (Accumulator/AQ) — geared on
+ * down days, KO triggers above spot. 'decumulate': investor sells shares
+ * above spot (Decumulator/DQ) — geared on up days, KO triggers below spot.
+ * Mirror-image economics; see accumulator.ts payoff for the shared formula.
+ */
+export type AccumulatorDirection = 'accumulate' | 'decumulate';
+
 export interface AccumulatorSpec {
   kind: 'accumulator';
+  direction: AccumulatorDirection;
   underlyings: Underlying[];
   currency: string;
   strikePct: number;
