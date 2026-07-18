@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { DEFAULT_MARKET, type MarketData } from '../model/market';
+import { DEFAULT_MARKET, type MarketData, type QuantoParams } from '../model/market';
 
 export interface FetchStatus {
   state: 'idle' | 'loading' | 'ok' | 'error';
@@ -22,11 +22,17 @@ interface MarketState {
   /**
    * Currency the underlying actually trades in, per the last successful
    * spot fetch (Yahoo meta). May differ from `market.currency` (the trade's
-   * settlement currency) — that's a quanto/composite note, not modeled in
-   * pricing; see MarketPanel's warning line.
+   * settlement currency) — that's a quanto/composite note. When it differs,
+   * MarketPanel shows quanto inputs that populate `market.quanto`; see its
+   * warning line.
    */
   underlyingCurrency?: string;
   setMarket: (patch: Partial<MarketData>) => void;
+  /**
+   * Sets or clears the quanto params without flagging `manualOverride` (that
+   * flag tracks manual spot edits, not the quanto/cross-currency mechanics).
+   */
+  setQuanto: (quanto: QuantoParams | undefined) => void;
   setUnderlyingName: (name: string) => void;
   /** Set from a search pick: symbol + display name + inferred asset type. */
   setUnderlying: (ticker: string, name: string, assetType: AssetType) => void;
@@ -47,6 +53,7 @@ export const useMarketStore = create<MarketState>((set) => ({
   underlyingCurrency: undefined,
   setMarket: (patch) =>
     set((s) => ({ market: { ...s.market, ...patch }, manualOverride: true })),
+  setQuanto: (quanto) => set((s) => ({ market: { ...s.market, quanto } })),
   setUnderlyingName: (name) => set({ underlyingName: name }),
   setUnderlying: (ticker, underlyingName, assetType) =>
     set({ ticker, underlyingName, assetType, fetchStatus: { state: 'idle' } }),

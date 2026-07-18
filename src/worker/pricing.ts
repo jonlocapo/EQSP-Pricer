@@ -316,6 +316,10 @@ export async function executePriceRequest(req: PriceRequest, hooks: PricingHooks
       priceOnce(spec, m, mc.numPaths, mc.seed, mc.antithetic, hooks, 'greeks', i * mc.numPaths, mc.numPaths * 4);
     const up = await bump({ ...market, spot: market.spot * 1.01 }, 0);
     const dn = await bump({ ...market, spot: market.spot * 0.99 }, 1);
+    // Bumping vol here also shifts the quanto drift term (−corrEqFx · vol · fxVol
+    // in riskNeutralDrift), so under a quanto this vega is the *total* vega —
+    // vol's effect on both the diffusion and the drift. That's intentional:
+    // it's the correct sensitivity to a re-quoted equity vol, not a bug.
     const vu = await bump({ ...market, vol: market.vol + 0.01 }, 2);
     const vd = await bump({ ...market, vol: Math.max(0.001, market.vol - 0.01) }, 3);
     if ([up, dn, vu, vd].some((r) => r.cancelled) || hooks.isCancelled()) return null;

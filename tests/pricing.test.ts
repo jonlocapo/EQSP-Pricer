@@ -54,11 +54,11 @@ const brc: CouponProductSpec = {
   acCouponPct: 0,
 };
 
-function req(product: PriceRequest['product'], solve: PriceRequest['solve']): PriceRequest {
+function req(product: PriceRequest['product'], solve: PriceRequest['solve'], m: MarketData = market): PriceRequest {
   return {
     id: 't',
     product,
-    market,
+    market: m,
     mc: { numPaths: 100_000, seed: 42, antithetic: true },
     solve,
     greeks: false,
@@ -99,6 +99,21 @@ describe('executePriceRequest', () => {
     expect(res!.diagnostics.kiProb).toBeLessThan(0.5);
     expect(res!.diagnostics.expectedLifeYears).toBeGreaterThan(0.2);
     expect(res!.diagnostics.expectedLifeYears).toBeLessThan(1.01);
+  });
+
+  it('prices with a quanto market set and yields a lower PV than the matching single-ccy case (positive rho)', async () => {
+    const quantoMarket: MarketData = {
+      ...market,
+      currency: 'USD',
+      quanto: { rateUnderlying: market.rate, fxVol: 0.12, corrEqFx: 0.4 },
+    };
+    const withQuanto = await executePriceRequest(req(capGuar, { kind: 'none' }, quantoMarket), hooks);
+    const withoutQuanto = await executePriceRequest(req(capGuar, { kind: 'none' }), hooks);
+    expect(withQuanto).not.toBeNull();
+    expect(withoutQuanto).not.toBeNull();
+    expect(Number.isFinite(withQuanto!.pvPct)).toBe(true);
+    expect(Number.isFinite(withoutQuanto!.pvPct)).toBe(true);
+    expect(withQuanto!.pvPct).toBeLessThan(withoutQuanto!.pvPct);
   });
 
   it('respects cancellation', async () => {

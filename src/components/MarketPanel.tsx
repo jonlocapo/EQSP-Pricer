@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMarketStore } from '../state/marketStore';
 import { fetchSpot } from '../services/spotFetch';
 import { fetchHistVol, fetchRefRate, REF_RATE_CCYS } from '../services/marketFetch';
@@ -26,6 +26,7 @@ export function MarketPanel() {
   const ticker = useMarketStore((s) => s.ticker);
   const underlyingCurrency = useMarketStore((s) => s.underlyingCurrency);
   const setMarket = useMarketStore((s) => s.setMarket);
+  const setQuanto = useMarketStore((s) => s.setQuanto);
   const setUnderlying = useMarketStore((s) => s.setUnderlying);
   const setFetchStatus = useMarketStore((s) => s.setFetchStatus);
   const applyFetchedSpot = useMarketStore((s) => s.applyFetchedSpot);
@@ -87,6 +88,20 @@ export function MarketPanel() {
       setImplStatus({ kind: 'err', msg: err instanceof Error ? err.message : 'Implied fetch failed' });
     }
   }
+
+  const quantoMismatch = !!underlyingCurrency && underlyingCurrency !== market.currency;
+
+  // When a currency mismatch first appears, seed quanto params from the
+  // current note rate; when it resolves (or the underlying ccy is unknown),
+  // clear them so single-currency pricing is untouched.
+  useEffect(() => {
+    if (quantoMismatch && !market.quanto) {
+      setQuanto({ rateUnderlying: market.rate, fxVol: 0.1, corrEqFx: 0 });
+    } else if (!quantoMismatch && market.quanto) {
+      setQuanto(undefined);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quantoMismatch, market.quanto]);
 
   async function handleFetch(sym = ticker) {
     setFetching(true);
@@ -167,10 +182,43 @@ export function MarketPanel() {
         {fetchStatus.state === 'error' && (
           <div className="status-line error">{fetchStatus.message}</div>
         )}
-        {underlyingCurrency && underlyingCurrency !== market.currency && (
+        {quantoMismatch && (
           <div className="status-line warn">
-            Underlying trades in {underlyingCurrency}, note in {market.currency} — quanto/composite effects are NOT
-            modeled; prices assume a single currency.
+            {market.quanto
+              ? 'Cross-currency note — quanto drift adjustment active.'
+              : `Underlying trades in ${underlyingCurrency}, note in ${market.currency} — quanto/composite effects are NOT modeled; prices assume a single currency.`}
+          </div>
+        )}
+        {quantoMismatch && market.quanto && (
+          <div className="field-group">
+            <div className="field-label">
+              <span>Quanto</span>
+            </div>
+            <NumericField
+              label="Underlying rate"
+              value={Number((market.quanto.rateUnderlying * 100).toFixed(4))}
+              step={0.1}
+              suffix="%"
+              onChange={(v) => setQuanto({ ...market.quanto!, rateUnderlying: v / 100 })}
+            />
+            <NumericField
+              label="FX vol"
+              value={Number((market.quanto.fxVol * 100).toFixed(4))}
+              step={0.5}
+              suffix="%"
+              onChange={(v) => setQuanto({ ...market.quanto!, fxVol: v / 100 })}
+            />
+            <NumericField
+              label="Eq-FX correlation"
+              value={Number(market.quanto.corrEqFx.toFixed(2))}
+              step={0.05}
+              min={-1}
+              max={1}
+              onChange={(v) => setQuanto({ ...market.quanto!, corrEqFx: Math.min(1, Math.max(-1, v)) })}
+            />
+            <span className="text-muted" style={{ fontSize: 11 }}>
+              FX quoted as {market.currency} per {underlyingCurrency}
+            </span>
           </div>
         )}
 
