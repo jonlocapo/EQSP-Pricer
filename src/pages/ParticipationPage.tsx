@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTradeStore } from '../state/tradeStore';
 import { useMarketStore } from '../state/marketStore';
 import { useResultsStore } from '../state/resultsStore';
@@ -13,6 +13,14 @@ import { participationSolveOptions } from '../services/solveOptions';
 import { runPricing } from '../services/runPricing';
 import type { BarrierMonitoring, ParticipationSubtype, UpsideVariant } from '../model/product';
 import type { SolveTarget } from '../model/request';
+
+/** Standard downside leverage: 1/downsideStrike so a 100% stock decline exhausts the leg. */
+function autoDownsideLeverage(downsideStrikePct: number): number {
+  if (!(downsideStrikePct > 0)) return 100;
+  return Math.round((10000 / downsideStrikePct) * 100) / 100;
+}
+
+const AUTO_LEVERAGE_EPS = 0.01;
 
 const SUBTYPE_OPTIONS: { value: ParticipationSubtype; label: string }[] = [
   { value: 'booster', label: 'Booster' },
@@ -36,6 +44,24 @@ export function ParticipationPage() {
   const [lastLowerStrike, setLastLowerStrike] = useState(90);
 
   const spec = drafts[subtype];
+
+  // Booster downside leverage auto-tracks 1/downsideStrike until the user
+  // types a value that diverges from it (mirrors the RC/AC coupon page's
+  // put-strike tracking).
+  const prevDownsideStrikeRef = useRef(drafts.booster.downsideStrikePct);
+  useEffect(() => {
+    const prevStrike = prevDownsideStrikeRef.current;
+    const boosterSpec = drafts.booster;
+    if (prevStrike !== boosterSpec.downsideStrikePct) {
+      const autoForOld = autoDownsideLeverage(prevStrike);
+      if (Math.abs(boosterSpec.downsideLeveragePct - autoForOld) < AUTO_LEVERAGE_EPS) {
+        patchDraft('booster', { downsideLeveragePct: autoDownsideLeverage(boosterSpec.downsideStrikePct) });
+      }
+      prevDownsideStrikeRef.current = boosterSpec.downsideStrikePct;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drafts.booster.downsideStrikePct]);
+
   const validation = validateParticipation(spec, market);
   const solveOptions = participationSolveOptions(spec);
   const currentSolveOpt = solveOptions.find((o) => o.value === solve.kind);
@@ -150,6 +176,11 @@ export function ParticipationPage() {
                 step={5}
                 suffix="%"
                 onChange={(v) => patchDraft('booster', { downsideLeveragePct: v })}
+                badge={
+                  Math.abs(spec.downsideLeveragePct - autoDownsideLeverage(spec.downsideStrikePct)) < AUTO_LEVERAGE_EPS
+                    ? 'AUTO'
+                    : undefined
+                }
               />
             </div>
             <div className="field">

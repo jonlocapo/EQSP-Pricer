@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTradeStore, rebuildCustomCallSchedule } from '../state/tradeStore';
 import { useMarketStore } from '../state/marketStore';
 import { useResultsStore } from '../state/resultsStore';
@@ -6,13 +6,20 @@ import { Card } from '../components/Card';
 import { Segmented } from '../components/Segmented';
 import { NumericField } from '../components/NumericField';
 import { TenorField } from '../components/TenorField';
-import { Toggle } from '../components/Toggle';
 import { ActionRow } from '../components/ActionRow';
 import { validateCoupon } from '../services/validation';
 import { couponSolveOptions } from '../services/solveOptions';
 import { runPricing } from '../services/runPricing';
-import type { BarrierMonitoring, CallType, CouponType, Frequency } from '../model/product';
+import type { AcCouponType, BarrierMonitoring, CallType, CouponType, Frequency } from '../model/product';
 import type { SolveTarget } from '../model/request';
+
+/** Standard downside leverage: 1/putStrike so a 100% stock decline redeems to 0. */
+function autoDownsideLeverage(putStrikePct: number): number {
+  if (!(putStrikePct > 0)) return 100;
+  return Math.round((10000 / putStrikePct) * 100) / 100;
+}
+
+const AUTO_LEVERAGE_EPS = 0.01;
 
 const FREQ_OPTIONS: { value: Frequency; label: string }[] = [
   { value: 'monthly', label: 'Monthly' },
@@ -31,7 +38,6 @@ export function CouponPage() {
   const running = useResultsStore((s) => s.running);
 
   const [greeks, setGreeks] = useState(false);
-  const [lastAcCouponPa, setLastAcCouponPa] = useState(2);
 
   // Keep custom call schedule sized to the current number of call observations.
   useEffect(() => {
@@ -45,6 +51,24 @@ export function CouponPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spec.callType, spec.tenorYears, spec.callFrequency]);
+
+  // Downside leverage auto-tracks 1/putStrike (the industry-standard geared
+  // put) until the user types a value that diverges from it. Detected by:
+  // when putStrike changes, if the leverage still equals the auto value for
+  // the OLD strike, carry the tracking forward to the new strike's auto
+  // value; otherwise leave the user's override alone.
+  const prevPutStrikeRef = useRef(spec.putStrikePct);
+  useEffect(() => {
+    const prevStrike = prevPutStrikeRef.current;
+    if (prevStrike !== spec.putStrikePct) {
+      const autoForOld = autoDownsideLeverage(prevStrike);
+      if (Math.abs(spec.downsideLeveragePct - autoForOld) < AUTO_LEVERAGE_EPS) {
+        setSpec({ downsideLeveragePct: autoDownsideLeverage(spec.putStrikePct) });
+      }
+      prevPutStrikeRef.current = spec.putStrikePct;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spec.putStrikePct]);
 
   const validation = validateCoupon(spec, market);
   const solveOptions = couponSolveOptions(spec);
@@ -167,6 +191,11 @@ export function CouponPage() {
             step={5}
             suffix="%"
             onChange={(v) => setSpec({ downsideLeveragePct: v })}
+            badge={
+              Math.abs(spec.downsideLeveragePct - autoDownsideLeverage(spec.putStrikePct)) < AUTO_LEVERAGE_EPS
+                ? 'AUTO'
+                : undefined
+            }
           />
         </div>
       </Card>
@@ -183,7 +212,7 @@ export function CouponPage() {
               { value: 'constant', label: 'Constant' },
               { value: 'stepdown', label: 'Step-down' },
               { value: 'custom', label: 'Custom' },
-              { value: 'issuerCallable', label: 'Issuer Callable' },
+              { value: 'issuerCallable', label: 'Issuer' },
             ]}
             onChange={(v) => setSpec({ callType: v })}
           />
@@ -202,13 +231,14 @@ export function CouponPage() {
             </div>
             <div className="field-row">
               <NumericField
-                label="Callable from period"
-                value={spec.callFromPeriod}
+                label="Non-call periods"
+                value={spec.callFromPeriod - 1}
                 step={1}
-                min={1}
-                max={nCallObs}
-                onChange={(v) => setSpec({ callFromPeriod: v })}
+                min={0}
+                max={Math.max(0, nCallObs - 1)}
+                onChange={(v) => setSpec({ callFromPeriod: v + 1 })}
                 error={validation.errors.callFromPeriod}
+                hint={`first call: period ${spec.callFromPeriod}`}
               />
             </div>
             {(spec.callType === 'constant' || spec.callType === 'stepdown') && (
@@ -325,25 +355,29 @@ export function CouponPage() {
 
       {spec.callType !== 'none' && (
         <Card title="Autocall Coupon">
-          <Toggle
-            label="AC coupon"
-            checked={spec.autocallCouponPaPct > 0}
-            onChange={(on) => {
-              if (on) {
-                setSpec({ autocallCouponPaPct: lastAcCouponPa || 2 });
-              } else {
-                setLastAcCouponPa(spec.autocallCouponPaPct || 2);
-                setSpec({ autocallCouponPaPct: 0 });
+          <div className="field">
+            <div className="field-label">
+              <span>AC coupon type</span>
+            </div>
+            <Segmented<AcCouponType>
+              value={spec.acCouponType}
+              options={[
+                { value: 'none', label: 'None' },
+                { value: 'flat', label: 'Flat' },
+                { value: 'snowball', label: 'Snowball' },
+              ]}
+              onChange={(v) =>
+                setSpec({ acCouponType: v, acCouponPct: v === 'none' ? spec.acCouponPct : spec.acCouponPct || 2 })
               }
-            }}
-          />
-          {spec.autocallCouponPaPct > 0 && (
+            />
+          </div>
+          {spec.acCouponType !== 'none' && (
             <NumericField
-              label="AC coupon p.a."
-              value={spec.autocallCouponPaPct}
+              label={spec.acCouponType === 'flat' ? 'AC Coupon (%)' : 'AC Coupon p.a. (%)'}
+              value={spec.acCouponPct}
               step={0.1}
               suffix="%"
-              onChange={(v) => setSpec({ autocallCouponPaPct: v })}
+              onChange={(v) => setSpec({ acCouponPct: v })}
               solved={fieldSolved('acCouponPa')}
             />
           )}

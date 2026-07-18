@@ -44,7 +44,8 @@ function baseSpec(overrides: Partial<CouponProductSpec> = {}): CouponProductSpec
     couponFrequency: 'quarterly',
     couponBarrierPct: 100,
     couponPaPct: 8, // 2 per quarter
-    autocallCouponPaPct: 0,
+    acCouponType: 'none',
+    acCouponPct: 0,
     ...overrides,
   };
 }
@@ -87,12 +88,13 @@ describe('coupon products', () => {
     expect(out.pvPct).toBeCloseTo(8 + 100, 10);
   });
 
-  it('autocall constant barrier 100: called at period 2', () => {
+  it('autocall constant barrier 100, snowball AC coupon: called at period 2', () => {
     const spec = baseSpec({
       callType: 'constant',
       callFromPeriod: 1,
       callBarrierPct: 100,
-      autocallCouponPaPct: 4,
+      acCouponType: 'snowball',
+      acCouponPct: 4,
     });
     const ev = makeCouponEvaluator(spec, ctx());
     const spots = path(100, 95, 105, 999, 999);
@@ -105,13 +107,33 @@ describe('coupon products', () => {
     expect(out.lifeYears).toBeCloseTo(0.5, 10);
   });
 
+  it('autocall constant barrier 100, flat AC coupon: called at period 2, full flat coupon paid', () => {
+    const spec = baseSpec({
+      callType: 'constant',
+      callFromPeriod: 1,
+      callBarrierPct: 100,
+      acCouponType: 'flat',
+      acCouponPct: 4,
+    });
+    const ev = makeCouponEvaluator(spec, ctx());
+    const spots = path(100, 95, 105, 999, 999);
+    const out = ev(spots);
+    // obs1: perf0.95<1 not called, coupon 2 paid (fixed)
+    // obs2: perf1.05>=1 called; coupon 2 paid; redemption = 100 + 4 (flat, paid in full regardless of period)
+    // pv = 2 + 2 + 104 = 108
+    expect(out.pvPct).toBeCloseTo(108, 10);
+    expect(out.calledAtPeriod).toBe(2);
+    expect(out.lifeYears).toBeCloseTo(0.5, 10);
+  });
+
   it('stepdown call barrier: called at period 3', () => {
     const spec = baseSpec({
       callType: 'stepdown',
       callFromPeriod: 2,
       callBarrierPct: 100,
       stepDownPct: 5,
-      autocallCouponPaPct: 4,
+      acCouponType: 'snowball',
+      acCouponPct: 4,
     });
     const ev = makeCouponEvaluator(spec, ctx());
     // period1 not callable (j=1 < callFromPeriod 2); period2 barrier=100, perf<100 not called;
@@ -129,7 +151,8 @@ describe('coupon products', () => {
       callType: 'custom',
       callFromPeriod: 1,
       customCallBarriersPct: [102, 101, 95, 90],
-      autocallCouponPaPct: 4,
+      acCouponType: 'snowball',
+      acCouponPct: 4,
     });
     const ev = makeCouponEvaluator(spec, ctx());
     // period1 barrier 102, perf 1.00 -> not called; period2 barrier 101, perf 1.00 -> not called;
@@ -212,8 +235,10 @@ describe('coupon products', () => {
     const ev = makeCouponEvaluator(spec, ctx());
     const spots = path(100, 90, 80, 70, 60);
     const out = ev(spots);
-    // perf_T = 0.6; redemption = 100*(1 - 0.5*(0.8-0.6)/0.8) = 87.5
-    expect(out.pvPct).toBeCloseTo(87.5, 10);
+    // perf_T = 0.6; industry-standard convention: leverage multiplies the raw
+    // shortfall (not normalized by strike): shortfall = 80 - 100*0.6 = 20;
+    // redemption = 100 - 0.5*20 = 90.
+    expect(out.pvPct).toBeCloseTo(90, 10);
   });
 
   it('cashflow extractor: never-called walk matches fixed-coupon flows', () => {
@@ -221,7 +246,8 @@ describe('coupon products', () => {
       callType: 'constant',
       callFromPeriod: 1,
       callBarrierPct: 100,
-      autocallCouponPaPct: 4,
+      acCouponType: 'snowball',
+      acCouponPct: 4,
       barrierType: 'none',
     });
     const { extractor, redemptionCostPct } = makeCouponCashflowExtractor(spec, ctx());

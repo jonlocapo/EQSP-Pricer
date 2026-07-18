@@ -12,6 +12,8 @@ const TENOR_PRESETS: { label: string; years: number }[] = [
   { label: '5Y', years: 5 },
 ];
 
+type TenorUnit = 'months' | 'years';
+
 interface TenorFieldProps {
   years: number;
   onChange: (years: number) => void;
@@ -21,8 +23,10 @@ interface TenorFieldProps {
 export function TenorField({ years, onChange, error }: TenorFieldProps) {
   const matchedPreset = TENOR_PRESETS.find((t) => t.years === years);
   const [customMode, setCustomMode] = useState(!matchedPreset);
+  const [unit, setUnit] = useState<TenorUnit>('months');
 
   const segValue = customMode || !matchedPreset ? 'custom' : matchedPreset.label;
+  const customValue = unit === 'months' ? years * 12 : years;
 
   return (
     <div className="field">
@@ -45,14 +49,29 @@ export function TenorField({ years, onChange, error }: TenorFieldProps) {
         }}
       />
       {(customMode || !matchedPreset) && (
-        <NumericField
-          label="Custom years"
-          value={years}
-          step={0.25}
-          suffix="y"
-          onChange={onChange}
-          error={error}
-        />
+        <div className="field-row">
+          <NumericField
+            label="Custom tenor"
+            value={customValue}
+            step={unit === 'months' ? 1 : 0.25}
+            suffix={unit === 'months' ? 'm' : 'y'}
+            onChange={(v) => onChange(unit === 'months' ? v / 12 : v)}
+            error={error}
+          />
+          <div className="field">
+            <div className="field-label">
+              <span>Unit</span>
+            </div>
+            <Segmented<TenorUnit>
+              value={unit}
+              options={[
+                { value: 'months', label: 'Months' },
+                { value: 'years', label: 'Years' },
+              ]}
+              onChange={setUnit}
+            />
+          </div>
+        </div>
       )}
     </div>
   );

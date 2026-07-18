@@ -25,7 +25,8 @@ function baseCoupon(overrides: Partial<CouponProductSpec>): CouponProductSpec {
     couponFrequency: 'quarterly',
     couponBarrierPct: 0,
     couponPaPct: 8,
-    autocallCouponPaPct: 0,
+    acCouponType: 'none',
+    acCouponPct: 0,
     ...overrides,
   };
 }
