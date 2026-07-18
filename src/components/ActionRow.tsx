@@ -1,3 +1,6 @@
+import { createPortal } from 'react-dom';
+import { useActionPortalNode } from './ActionPortalContext';
+
 interface ActionRowProps {
   label: string;
   disabled: boolean;
@@ -8,6 +11,12 @@ interface ActionRowProps {
   running: boolean;
 }
 
+/**
+ * Renders nothing in place — its content is portaled into the results
+ * panel's action slot (see ActionPortalContext) so the Price/Solve button
+ * and greeks checkbox sit next to the result they produce. All state and
+ * handlers are still owned entirely by the calling page.
+ */
 export function ActionRow({
   label,
   disabled,
@@ -17,8 +26,10 @@ export function ActionRow({
   onGreeksChange,
   running,
 }: ActionRowProps) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginTop: 4 }}>
+  const portalNode = useActionPortalNode();
+
+  const content = (
+    <div className="panel-action-row">
       <button
         type="button"
         className="btn btn-primary has-tooltip"
@@ -28,10 +39,13 @@ export function ActionRow({
       >
         {running ? 'Running…' : label}
       </button>
-      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: 'var(--text-muted)' }}>
+      <label className="panel-greeks-row">
         <input type="checkbox" checked={greeks} onChange={(e) => onGreeksChange(e.target.checked)} />
         Compute greeks (delta/vega)
       </label>
     </div>
   );
+
+  if (!portalNode) return null;
+  return createPortal(content, portalNode);
 }

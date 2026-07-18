@@ -7,8 +7,8 @@ interface CardProps {
 
 export function Card({ title, children }: CardProps) {
   return (
-    <section className="card">
-      <h3 className="card-title">{title}</h3>
+    <section className="section">
+      <h3 className="section-title">{title}</h3>
       <div className="field-group">{children}</div>
     </section>
   );
