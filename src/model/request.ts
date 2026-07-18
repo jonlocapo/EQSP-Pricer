@@ -18,9 +18,10 @@ export type SolveTarget =
   | { kind: 'kiBarrier' }
   // participation page
   | { kind: 'gearing' }
+  | { kind: 'upsideStrike' }
+  | { kind: 'downsideLeverage' }
   | { kind: 'bonusLevel' }
-  | { kind: 'participation' }
-  | { kind: 'partUp' }
+  | { kind: 'twinWin' }
   | { kind: 'upperStrike' }
   | { kind: 'upsideKoBarrier' }
   | { kind: 'rebate' }

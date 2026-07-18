@@ -85,12 +85,11 @@ export interface CouponProductSpec extends CommonTerms {
 
 // ---------------------------------------------------------------------------
 // Page 2: participation products.
-// Every subtype decomposes into an upside leg and a downside leg; the upside
-// variant (vanilla / call spread / KO+rebate) and the downside put-spread
-// floor apply uniformly across subtypes.
+// Every participation payoff = one upside leg + one downside leg + optional
+// bonus + optional protection floor. The four classic subtypes (Booster,
+// Bonus, Capital Guaranteed, Twin Win) are UI presets that prefill this one
+// generic spec — they are not separate model shapes.
 // ---------------------------------------------------------------------------
-
-export type ParticipationSubtype = 'booster' | 'bonus' | 'capitalGuaranteed' | 'twinWin';
 
 export type UpsideVariant =
   | { variant: 'vanilla' }
@@ -108,53 +107,33 @@ export interface PutSpread {
   lowerStrikePct: number;
 }
 
-export interface ParticipationBase extends CommonTerms {
+export interface ParticipationSpec extends CommonTerms {
   kind: 'participation';
-  subtype: ParticipationSubtype;
-  upside: UpsideVariant;
-  /** Optional loss floor; not applicable to capitalGuaranteed. */
-  downsidePutSpread?: PutSpread;
-}
-
-export interface BoosterSpec extends ParticipationBase {
-  subtype: 'booster';
-  strikePct: number;
-  /** Upside gearing, 100 = 1:1. */
-  gearingPct: number;
-  downsideStrikePct: number;
-  downsideLeveragePct: number;
-  /** Downside protected unless KI'd (or 'none' => always exposed). */
-  barrierType: BarrierMonitoring;
-  kiBarrierPct: number;
-}
-
-export interface BonusSpec extends ParticipationBase {
-  subtype: 'bonus';
-  /** Minimum redemption if no KI, e.g. 110. */
-  bonusLevelPct: number;
-  barrierType: 'european' | 'american';
-  kiBarrierPct: number;
-}
-
-export interface CapitalGuaranteedSpec extends ParticipationBase {
-  subtype: 'capitalGuaranteed';
-  /** Protection floor, e.g. 90..100. */
+  upside: {
+    strikePct: number;
+    /** Upside participation/gearing, 100 = 1:1. */
+    participationPct: number;
+    variant: UpsideVariant;
+  };
+  downside: {
+    strikePct: number;
+    /** Raw-shortfall leverage convention; auto-default 10000/strikePct. */
+    leveragePct: number;
+    /** 'none' => loss leg always live (no knock-in condition). */
+    barrierType: BarrierMonitoring;
+    kiBarrierPct: number;
+    putSpread?: PutSpread;
+    /**
+     * Positive participation in the downside while NOT knocked in
+     * (twin-win). Only meaningful when barrierType !== 'none'. 0 = off.
+     */
+    twinWinPct: number;
+  };
+  /** Bonus amount in % ABOVE par (user quotes 15, not 115). 0 = none. */
+  bonusPct: number;
+  /** Capital protection floor as % of notional. 0 = none. */
   protectionPct: number;
-  strikePct: number;
-  /** Upside participation, 100 = 1:1. */
-  participationPct: number;
 }
-
-export interface TwinWinSpec extends ParticipationBase {
-  subtype: 'twinWin';
-  /** Participation in |performance| above/below initial, 100 = 1:1. */
-  partUpPct: number;
-  partDownPct: number;
-  barrierType: 'european' | 'american';
-  kiBarrierPct: number;
-}
-
-export type ParticipationSpec = BoosterSpec | BonusSpec | CapitalGuaranteedSpec | TwinWinSpec;
 
 // ---------------------------------------------------------------------------
 // Page 3: accumulator.

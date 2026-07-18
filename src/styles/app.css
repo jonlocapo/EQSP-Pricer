@@ -431,6 +431,10 @@ select.input:focus {
   color: var(--success);
 }
 
+.status-line.warn {
+  color: var(--warn);
+}
+
 /* ---------- Results bar ---------- */
 
 .results-bar {
@@ -562,20 +566,33 @@ select.input:focus {
 
 .bar-chart {
   display: flex;
-  align-items: flex-end;
+  align-items: stretch;
   gap: 3px;
   height: 60px;
 }
 
-.bar-chart .bar {
+/*
+ * Each column is a full-height, full-width hover/tooltip target so
+ * near-zero probabilities (which render as a barely-visible bar) stay
+ * reachable with the mouse — the bar itself is anchored to the bottom
+ * inside it and can be much shorter than the cell.
+ */
+.bar-chart .bar-cell {
   flex: 1;
-  background: var(--accent);
-  border-radius: 2px 2px 0 0;
-  min-height: 2px;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
   position: relative;
+  cursor: default;
 }
 
-.bar-chart .bar:hover::after {
+.bar-chart .bar {
+  width: 100%;
+  background: var(--accent);
+  border-radius: 2px 2px 0 0;
+}
+
+.bar-chart .bar-cell:hover::after {
   content: attr(data-label);
   position: absolute;
   bottom: 100%;

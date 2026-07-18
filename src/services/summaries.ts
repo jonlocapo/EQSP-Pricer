@@ -16,23 +16,15 @@ export function couponTermsSummary(spec: CouponProductSpec): string {
 }
 
 export function participationTermsSummary(spec: ParticipationSpec): string {
-  const head = spec.subtype;
-  let body = '';
-  switch (spec.subtype) {
-    case 'booster':
-      body = `strike ${fmtPct(spec.strikePct)} gearing ${fmtPct(spec.gearingPct)}`;
-      break;
-    case 'bonus':
-      body = `bonus ${fmtPct(spec.bonusLevelPct)} KI ${fmtPct(spec.kiBarrierPct)}`;
-      break;
-    case 'capitalGuaranteed':
-      body = `protection ${fmtPct(spec.protectionPct)} part ${fmtPct(spec.participationPct)}`;
-      break;
-    case 'twinWin':
-      body = `up ${fmtPct(spec.partUpPct)} down ${fmtPct(spec.partDownPct)} KI ${fmtPct(spec.kiBarrierPct)}`;
-      break;
-  }
-  return `${head} · ${spec.tenorYears}y · ${body} · ${spec.upside.variant}`;
+  const parts = [
+    `up ${fmtPct(spec.upside.strikePct)}/${fmtPct(spec.upside.participationPct)}`,
+    `dn ${fmtPct(spec.downside.strikePct)}/${fmtPct(spec.downside.leveragePct)} (${spec.downside.barrierType})`,
+  ];
+  if (spec.downside.barrierType !== 'none') parts.push(`KI ${fmtPct(spec.downside.kiBarrierPct)}`);
+  if (spec.downside.twinWinPct > 0) parts.push(`twinWin ${fmtPct(spec.downside.twinWinPct)}`);
+  if (spec.bonusPct > 0) parts.push(`bonus +${fmtPct(spec.bonusPct)}`);
+  if (spec.protectionPct > 0) parts.push(`prot ${fmtPct(spec.protectionPct)}`);
+  return `participation · ${spec.tenorYears}y · ${parts.join(' · ')} · ${spec.upside.variant.variant}`;
 }
 
 export function accumulatorTermsSummary(spec: AccumulatorSpec): string {

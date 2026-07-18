@@ -24,6 +24,7 @@ export function MarketPanel() {
   const fetchStatus = useMarketStore((s) => s.fetchStatus);
   const manualOverride = useMarketStore((s) => s.manualOverride);
   const ticker = useMarketStore((s) => s.ticker);
+  const underlyingCurrency = useMarketStore((s) => s.underlyingCurrency);
   const setMarket = useMarketStore((s) => s.setMarket);
   const setUnderlying = useMarketStore((s) => s.setUnderlying);
   const setFetchStatus = useMarketStore((s) => s.setFetchStatus);
@@ -69,7 +70,7 @@ export function MarketPanel() {
         page === 'coupon'
           ? trade.couponSpec
           : page === 'participation'
-            ? trade.participationDrafts[trade.participationSubtype]
+            ? trade.participationSpec
             : trade.accumulatorSpec;
       const res = await fetchImpliedFromOptions(ticker, spec.tenorYears, market.rate);
       useMarketStore.setState((s) => ({
@@ -92,7 +93,7 @@ export function MarketPanel() {
     setFetchStatus({ state: 'loading' });
     try {
       const res = await fetchSpot(sym);
-      applyFetchedSpot(res.spot, res.source, res.asOf);
+      applyFetchedSpot(res.spot, res.source, res.asOf, res.currency);
     } catch (err) {
       setFetchStatus({
         state: 'error',
@@ -165,6 +166,12 @@ export function MarketPanel() {
         )}
         {fetchStatus.state === 'error' && (
           <div className="status-line error">{fetchStatus.message}</div>
+        )}
+        {underlyingCurrency && underlyingCurrency !== market.currency && (
+          <div className="status-line warn">
+            Underlying trades in {underlyingCurrency}, note in {market.currency} — quanto/composite effects are NOT
+            modeled; prices assume a single currency.
+          </div>
         )}
 
         <NumericField

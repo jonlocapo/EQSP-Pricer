@@ -97,12 +97,19 @@ export class MockPricerClient implements PricerClient {
           solvedValue = 55 + rand() * 40;
           break;
         case 'gearing':
-        case 'partUp':
-        case 'participation':
           solvedValue = 100 + rand() * 100;
           break;
+        case 'upsideStrike':
+          solvedValue = 90 + rand() * 30;
+          break;
+        case 'downsideLeverage':
+          solvedValue = 80 + rand() * 60;
+          break;
+        case 'twinWin':
+          solvedValue = rand() * 100;
+          break;
         case 'bonusLevel':
-          solvedValue = 105 + rand() * 25;
+          solvedValue = 5 + rand() * 25;
           break;
         case 'upperStrike':
           solvedValue = 105 + rand() * 20;
@@ -143,7 +150,7 @@ export class MockPricerClient implements PricerClient {
         callProb,
         kiProb: req.product.kind !== 'accumulator' ? rand() * 0.3 : undefined,
         upsideKoProb:
-          req.product.kind === 'participation' && req.product.upside.variant === 'koRebate'
+          req.product.kind === 'participation' && req.product.upside.variant.variant === 'koRebate'
             ? rand() * 0.4
             : undefined,
         koProb: req.product.kind === 'accumulator' ? rand() * 0.5 : undefined,

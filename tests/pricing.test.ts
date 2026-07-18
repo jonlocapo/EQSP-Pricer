@@ -3,7 +3,7 @@ import { executePriceRequest } from '../src/worker/pricing';
 import type { PricingHooks } from '../src/worker/pricing';
 import { bsCall } from '../src/engine/blackScholes';
 import type { MarketData } from '../src/model/market';
-import type { CapitalGuaranteedSpec, CouponProductSpec } from '../src/model/product';
+import type { CouponProductSpec, ParticipationSpec } from '../src/model/product';
 import type { PriceRequest } from '../src/model/request';
 
 const market: MarketData = { spot: 100, vol: 0.25, rate: 0.02, divYield: 0.02, currency: 'EUR' };
@@ -14,19 +14,18 @@ const hooks: PricingHooks = {
   yieldNow: () => Promise.resolve(),
 };
 
-const capGuar: CapitalGuaranteedSpec = {
+const capGuar: ParticipationSpec = {
   kind: 'participation',
-  subtype: 'capitalGuaranteed',
   underlyings: [{ name: 'TEST' }],
   currency: 'EUR',
   notional: 1_000_000,
   tenorYears: 1,
   reofferPct: 100,
   issuePricePct: 100,
-  upside: { variant: 'vanilla' },
+  upside: { strikePct: 100, participationPct: 100, variant: { variant: 'vanilla' } },
+  downside: { strikePct: 100, leveragePct: 0, barrierType: 'none', kiBarrierPct: 60, twinWinPct: 0 },
+  bonusPct: 0,
   protectionPct: 100,
-  strikePct: 100,
-  participationPct: 100,
 };
 
 const brc: CouponProductSpec = {

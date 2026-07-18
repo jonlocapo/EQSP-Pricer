@@ -20,10 +20,11 @@ const SOLVE_LABELS: Record<SolveTarget['kind'], string> = {
   couponBarrier: 'Coupon Barrier',
   callBarrier: 'Call Barrier',
   kiBarrier: 'KI Barrier',
-  gearing: 'Gearing',
-  bonusLevel: 'Bonus Level',
-  participation: 'Participation',
-  partUp: 'Part Up',
+  gearing: 'Upside participation',
+  upsideStrike: 'Upside strike',
+  downsideLeverage: 'Downside leverage',
+  bonusLevel: 'Bonus',
+  twinWin: 'Twin-win participation',
   upperStrike: 'Upper Strike',
   upsideKoBarrier: 'KO Barrier',
   rebate: 'Rebate',
@@ -79,44 +80,42 @@ function writeBackSolvedValue(
   if (product.kind === 'participation') {
     switch (solve.kind) {
       case 'gearing':
-        if (product.subtype === 'booster') {
-          trade.patchParticipationDraft('booster', { gearingPct: solvedValue });
-        }
+        trade.patchParticipationSpec({ upside: { ...product.upside, participationPct: solvedValue } });
+        break;
+      case 'upsideStrike':
+        trade.patchParticipationSpec({ upside: { ...product.upside, strikePct: solvedValue } });
+        break;
+      case 'downsideLeverage':
+        trade.patchParticipationSpec({ downside: { ...product.downside, leveragePct: solvedValue } });
+        break;
+      case 'kiBarrier':
+        trade.patchParticipationSpec({ downside: { ...product.downside, kiBarrierPct: solvedValue } });
         break;
       case 'bonusLevel':
-        if (product.subtype === 'bonus') {
-          trade.patchParticipationDraft('bonus', { bonusLevelPct: solvedValue });
-        }
+        trade.patchParticipationSpec({ bonusPct: solvedValue });
         break;
-      case 'participation':
-        if (product.subtype === 'capitalGuaranteed') {
-          trade.patchParticipationDraft('capitalGuaranteed', { participationPct: solvedValue });
-        }
-        break;
-      case 'partUp':
-        if (product.subtype === 'twinWin') {
-          trade.patchParticipationDraft('twinWin', { partUpPct: solvedValue });
-        }
+      case 'twinWin':
+        trade.patchParticipationSpec({ downside: { ...product.downside, twinWinPct: solvedValue } });
         break;
       case 'upperStrike':
-        if (product.upside.variant === 'callSpread') {
-          trade.patchParticipationDraft(product.subtype, {
-            upside: { ...product.upside, upperStrikePct: solvedValue },
-          } as never);
+        if (product.upside.variant.variant === 'callSpread') {
+          trade.patchParticipationSpec({
+            upside: { ...product.upside, variant: { ...product.upside.variant, upperStrikePct: solvedValue } },
+          });
         }
         break;
       case 'upsideKoBarrier':
-        if (product.upside.variant === 'koRebate') {
-          trade.patchParticipationDraft(product.subtype, {
-            upside: { ...product.upside, koBarrierPct: solvedValue },
-          } as never);
+        if (product.upside.variant.variant === 'koRebate') {
+          trade.patchParticipationSpec({
+            upside: { ...product.upside, variant: { ...product.upside.variant, koBarrierPct: solvedValue } },
+          });
         }
         break;
       case 'rebate':
-        if (product.upside.variant === 'koRebate') {
-          trade.patchParticipationDraft(product.subtype, {
-            upside: { ...product.upside, rebatePct: solvedValue },
-          } as never);
+        if (product.upside.variant.variant === 'koRebate') {
+          trade.patchParticipationSpec({
+            upside: { ...product.upside, variant: { ...product.upside.variant, rebatePct: solvedValue } },
+          });
         }
         break;
       default:

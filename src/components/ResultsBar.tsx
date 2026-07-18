@@ -12,12 +12,12 @@ function BarChart({ values, labelPrefix }: { values: number[]; labelPrefix: stri
   return (
     <div className="bar-chart">
       {values.map((v, i) => (
-        <div
-          key={i}
-          className="bar"
-          style={{ height: `${Math.max(2, (v / max) * 100)}%` }}
-          data-label={`${labelPrefix} ${i + 1}: ${(v * 100).toFixed(1)}%`}
-        />
+        // Each column is a full-height flex cell that owns the hover/tooltip
+        // target, so near-zero probabilities (a near-invisible bar) are
+        // still fully hoverable across the column's whole height.
+        <div key={i} className="bar-cell" data-label={`${labelPrefix} ${i + 1}: ${(v * 100).toFixed(1)}%`}>
+          <div className="bar" style={{ height: v > 0 ? `${Math.max(2, (v / max) * 100)}%` : '0%' }} />
+        </div>
       ))}
     </div>
   );

@@ -17,7 +17,7 @@ export function HistoryModal({ onClose }: HistoryModalProps) {
   const restoreMarket = useMarketStore((s) => s.restoreMarket);
   const setActivePage = useTradeStore((s) => s.setActivePage);
   const replaceCouponSpec = useTradeStore((s) => s.replaceCouponSpec);
-  const replaceParticipationDraft = useTradeStore((s) => s.replaceParticipationDraft);
+  const replaceParticipationSpec = useTradeStore((s) => s.replaceParticipationSpec);
   const replaceAccumulatorSpec = useTradeStore((s) => s.replaceAccumulatorSpec);
   const setCouponSolve = useTradeStore((s) => s.setCouponSolve);
   const setParticipationSolve = useTradeStore((s) => s.setParticipationSolve);
@@ -29,7 +29,7 @@ export function HistoryModal({ onClose }: HistoryModalProps) {
       replaceCouponSpec(entry.product);
       setCouponSolve(entry.solve);
     } else if (entry.product.kind === 'participation') {
-      replaceParticipationDraft(entry.product);
+      replaceParticipationSpec(entry.product);
       setParticipationSolve(entry.solve);
     } else {
       replaceAccumulatorSpec(entry.product);

@@ -48,35 +48,53 @@ export function couponSolveOptions(spec: CouponProductSpec): SolveOption[] {
 }
 
 export function participationSolveOptions(spec: ParticipationSpec): SolveOption[] {
-  const headline: SolveOption =
-    spec.subtype === 'booster'
-      ? { value: 'gearing', label: 'Gearing' }
-      : spec.subtype === 'bonus'
-        ? { value: 'bonusLevel', label: 'Bonus Level' }
-        : spec.subtype === 'capitalGuaranteed'
-          ? { value: 'participation', label: 'Participation' }
-          : { value: 'partUp', label: 'Part Up' };
+  const isCallSpread = spec.upside.variant.variant === 'callSpread';
+  const isKoRebate = spec.upside.variant.variant === 'koRebate';
+  const hasBarrier = spec.downside.barrierType !== 'none';
+  const downsideExposed = spec.downside.barrierType === 'none' || spec.downside.leveragePct > 0;
 
-  const opts: SolveOption[] = [{ value: 'none', label: 'Price (reoffer)' }, headline];
-
-  opts.push({
-    value: 'upperStrike',
-    label: 'Upper Strike',
-    disabled: spec.upside.variant !== 'callSpread',
-    tooltip: spec.upside.variant !== 'callSpread' ? 'Only for call-spread upside.' : undefined,
-  });
-  opts.push({
-    value: 'upsideKoBarrier',
-    label: 'KO Barrier',
-    disabled: spec.upside.variant !== 'koRebate',
-    tooltip: spec.upside.variant !== 'koRebate' ? 'Only for KO + rebate upside.' : undefined,
-  });
-  opts.push({
-    value: 'rebate',
-    label: 'Rebate',
-    disabled: spec.upside.variant !== 'koRebate',
-    tooltip: spec.upside.variant !== 'koRebate' ? 'Only for KO + rebate upside.' : undefined,
-  });
+  const opts: SolveOption[] = [
+    { value: 'none', label: 'Price (reoffer)' },
+    { value: 'gearing', label: 'Upside participation' },
+    { value: 'upsideStrike', label: 'Upside strike' },
+    {
+      value: 'downsideLeverage',
+      label: 'Downside leverage',
+      disabled: !downsideExposed,
+      tooltip: !downsideExposed ? 'Downside is not exposed (leverage is 0 and barrier is set).' : undefined,
+    },
+    {
+      value: 'kiBarrier',
+      label: 'KI Barrier',
+      disabled: !hasBarrier,
+      tooltip: !hasBarrier ? 'No knock-in barrier set.' : undefined,
+    },
+    { value: 'bonusLevel', label: 'Bonus' },
+    {
+      value: 'twinWin',
+      label: 'Twin-win participation',
+      disabled: !hasBarrier,
+      tooltip: !hasBarrier ? 'Twin-win only applies when a KI barrier is set.' : undefined,
+    },
+    {
+      value: 'upperStrike',
+      label: 'Upper Strike',
+      disabled: !isCallSpread,
+      tooltip: !isCallSpread ? 'Only for call-spread upside.' : undefined,
+    },
+    {
+      value: 'upsideKoBarrier',
+      label: 'KO Barrier',
+      disabled: !isKoRebate,
+      tooltip: !isKoRebate ? 'Only for KO + rebate upside.' : undefined,
+    },
+    {
+      value: 'rebate',
+      label: 'Rebate',
+      disabled: !isKoRebate,
+      tooltip: !isKoRebate ? 'Only for KO + rebate upside.' : undefined,
+    },
+  ];
 
   return opts;
 }
