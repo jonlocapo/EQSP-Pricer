@@ -39,6 +39,7 @@ export interface CommonTerms {
 
 export type CallType = 'none' | 'constant' | 'stepdown' | 'custom' | 'issuerCallable';
 export type CouponType = 'fixed' | 'conditional' | 'memory';
+export type AcCouponType = 'none' | 'flat' | 'snowball';
 
 export interface CouponProductSpec extends CommonTerms {
   kind: 'coupon';
@@ -72,8 +73,14 @@ export interface CouponProductSpec extends CommonTerms {
   /** Coupon in % of notional per annum. */
   couponPaPct: number;
 
-  /** Additional coupon accruing to call/maturity, % p.a. 0 = none. */
-  autocallCouponPaPct: number;
+  /**
+   * Additional coupon paid on redemption at call. 'none' => no AC coupon.
+   * 'flat' => acCouponPct paid once, in full, at whichever period the note
+   * is called. 'snowball' => acCouponPct is % p.a.; pays acCouponPct × j /
+   * PERIODS_PER_YEAR[callFrequency] at call period j (accrues with time).
+   */
+  acCouponType: AcCouponType;
+  acCouponPct: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -155,8 +162,17 @@ export type ParticipationSpec = BoosterSpec | BonusSpec | CapitalGuaranteedSpec 
 
 export type KoSettlement = 'ko0' | 'ko1' | 'periodEnd';
 
+/**
+ * 'accumulate': investor buys shares below spot (Accumulator/AQ) — geared on
+ * down days, KO triggers above spot. 'decumulate': investor sells shares
+ * above spot (Decumulator/DQ) — geared on up days, KO triggers below spot.
+ * Mirror-image economics; see accumulator.ts payoff for the shared formula.
+ */
+export type AccumulatorDirection = 'accumulate' | 'decumulate';
+
 export interface AccumulatorSpec {
   kind: 'accumulator';
+  direction: AccumulatorDirection;
   underlyings: Underlying[];
   currency: string;
   strikePct: number;

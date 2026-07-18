@@ -51,7 +51,8 @@ const brc: CouponProductSpec = {
   couponFrequency: 'quarterly',
   couponBarrierPct: 60,
   couponPaPct: 8,
-  autocallCouponPaPct: 0,
+  acCouponType: 'none',
+  acCouponPct: 0,
 };
 
 function req(product: PriceRequest['product'], solve: PriceRequest['solve']): PriceRequest {

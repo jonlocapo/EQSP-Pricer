@@ -25,7 +25,8 @@ function baseCoupon(overrides: Partial<CouponProductSpec>): CouponProductSpec {
     couponFrequency: 'quarterly',
     couponBarrierPct: 0,
     couponPaPct: 8,
-    autocallCouponPaPct: 0,
+    acCouponType: 'none',
+    acCouponPct: 0,
     ...overrides,
   };
 }
@@ -65,6 +66,7 @@ describe('buildGrid — accumulator', () => {
   function baseAccumulator(overrides: Partial<AccumulatorSpec>): AccumulatorSpec {
     return {
       kind: 'accumulator',
+      direction: 'accumulate',
       underlyings: [{ name: 'TEST' }],
       currency: 'EUR',
       strikePct: 100,

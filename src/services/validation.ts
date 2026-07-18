@@ -47,7 +47,7 @@ export function validateCoupon(spec: CouponProductSpec, market: MarketData): Val
   const nObs = callObservationCount(spec);
   if (spec.callType !== 'none') {
     if (!(spec.callFromPeriod >= 1) || spec.callFromPeriod > nObs) {
-      errors.callFromPeriod = `Must be between 1 and ${nObs}.`;
+      errors.callFromPeriod = `Non-call periods must be between 0 and ${nObs - 1}.`;
     }
   }
 
@@ -85,7 +85,11 @@ export function validateAccumulator(spec: AccumulatorSpec, market: MarketData): 
   const errors: FieldErrors = { ...commonErrors(1, spec.tenorYears), ...marketErrors(market) };
   delete errors.notional;
   if (!(spec.dailyShares > 0)) errors.dailyShares = 'Must be positive.';
-  if (!(spec.koTriggerPct > spec.strikePct)) errors.koTriggerPct = 'Trigger must be above strike.';
+  if (spec.direction === 'decumulate') {
+    if (!(spec.koTriggerPct < spec.strikePct)) errors.koTriggerPct = 'Trigger must be below strike.';
+  } else {
+    if (!(spec.koTriggerPct > spec.strikePct)) errors.koTriggerPct = 'Trigger must be above strike.';
+  }
   const valid = Object.keys(errors).length === 0;
   return { errors, valid };
 }

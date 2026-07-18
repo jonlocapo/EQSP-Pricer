@@ -17,9 +17,9 @@ export function couponSolveOptions(spec: CouponProductSpec): SolveOption[] {
     { value: 'couponPa', label: 'Coupon p.a.', disabled: issuerCallable, tooltip: hint },
     {
       value: 'acCouponPa',
-      label: 'AC Coupon p.a.',
-      disabled: issuerCallable || spec.autocallCouponPaPct === 0,
-      tooltip: issuerCallable ? hint : spec.autocallCouponPaPct === 0 ? 'Enable AC coupon first.' : undefined,
+      label: 'AC Coupon',
+      disabled: issuerCallable || spec.acCouponType === 'none',
+      tooltip: issuerCallable ? hint : spec.acCouponType === 'none' ? 'Set AC coupon type first.' : undefined,
     },
     {
       value: 'couponBarrier',

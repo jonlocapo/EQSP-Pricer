@@ -53,7 +53,8 @@ export const DEFAULT_COUPON_SPEC: CouponProductSpec = {
   couponBarrierPct: 60,
   couponPaPct: 8,
 
-  autocallCouponPaPct: 0,
+  acCouponType: 'none',
+  acCouponPct: 0,
 };
 
 const commonDefaults = {
@@ -111,6 +112,7 @@ export const DEFAULT_TWIN_WIN: TwinWinSpec = {
 
 export const DEFAULT_ACCUMULATOR: AccumulatorSpec = {
   kind: 'accumulator',
+  direction: 'accumulate',
   underlyings: [{ name: 'SPX Index' }],
   currency: 'EUR',
   strikePct: 100,
@@ -167,7 +169,11 @@ export const useTradeStore = create<TradeState>((set) => ({
   couponSolve: { kind: 'none' },
   setCouponSpec: (patch) => set((s) => ({ couponSpec: { ...s.couponSpec, ...patch } })),
   setCouponSolve: (couponSolve) => set({ couponSolve }),
-  replaceCouponSpec: (couponSpec) => set({ couponSpec, couponSolve: { kind: 'none' } }),
+  // Merge OVER the default spec: older localStorage history entries (or
+  // anything predating a model field addition) won't carry newer fields,
+  // so defaults backfill anything missing from the restored spec.
+  replaceCouponSpec: (couponSpec) =>
+    set({ couponSpec: { ...DEFAULT_COUPON_SPEC, ...couponSpec }, couponSolve: { kind: 'none' } }),
 
   participationSubtype: 'booster',
   participationDrafts: {
@@ -187,15 +193,27 @@ export const useTradeStore = create<TradeState>((set) => ({
     })),
   setParticipationSolve: (participationSolve) => set({ participationSolve }),
   replaceParticipationDraft: (spec) =>
-    set((s) => ({
-      participationSubtype: spec.subtype,
-      participationDrafts: { ...s.participationDrafts, [spec.subtype]: spec },
-      participationSolve: { kind: 'none' },
-    })),
+    set((s) => {
+      const defaults: ParticipationDrafts = {
+        booster: DEFAULT_BOOSTER,
+        bonus: DEFAULT_BONUS,
+        capitalGuaranteed: DEFAULT_CAP_GUARANTEED,
+        twinWin: DEFAULT_TWIN_WIN,
+      };
+      // Merge OVER the subtype's default draft so older/incomplete history
+      // entries backfill any fields missing from the restored spec.
+      const merged = { ...defaults[spec.subtype], ...spec } as ParticipationDrafts[typeof spec.subtype];
+      return {
+        participationSubtype: spec.subtype,
+        participationDrafts: { ...s.participationDrafts, [spec.subtype]: merged },
+        participationSolve: { kind: 'none' },
+      };
+    }),
 
   accumulatorSpec: DEFAULT_ACCUMULATOR,
   accumulatorSolve: { kind: 'strike' },
   setAccumulatorSpec: (patch) => set((s) => ({ accumulatorSpec: { ...s.accumulatorSpec, ...patch } })),
   setAccumulatorSolve: (accumulatorSolve) => set({ accumulatorSolve }),
-  replaceAccumulatorSpec: (accumulatorSpec) => set({ accumulatorSpec }),
+  replaceAccumulatorSpec: (accumulatorSpec) =>
+    set({ accumulatorSpec: { ...DEFAULT_ACCUMULATOR, ...accumulatorSpec } }),
 }));

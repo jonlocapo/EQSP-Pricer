@@ -325,6 +325,7 @@ select.input:focus {
 
 .segmented button {
   flex: 1;
+  min-width: 0;
   border: none;
   background: var(--bg);
   padding: 6px 8px;
@@ -333,6 +334,8 @@ select.input:focus {
   border-right: 1px solid var(--border-strong);
   transition: background 0.15s, color 0.15s;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .segmented button:last-child {

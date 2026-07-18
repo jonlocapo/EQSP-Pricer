@@ -16,7 +16,7 @@ import {
 const SOLVE_LABELS: Record<SolveTarget['kind'], string> = {
   none: 'Price',
   couponPa: 'Coupon p.a.',
-  acCouponPa: 'AC Coupon p.a.',
+  acCouponPa: 'AC Coupon',
   couponBarrier: 'Coupon Barrier',
   callBarrier: 'Call Barrier',
   kiBarrier: 'KI Barrier',
@@ -59,7 +59,7 @@ function writeBackSolvedValue(
         trade.setCouponSpec({ couponPaPct: solvedValue });
         break;
       case 'acCouponPa':
-        trade.setCouponSpec({ autocallCouponPaPct: solvedValue });
+        trade.setCouponSpec({ acCouponPct: solvedValue });
         break;
       case 'couponBarrier':
         trade.setCouponSpec({ couponBarrierPct: solvedValue });

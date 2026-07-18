@@ -18,6 +18,12 @@ export function makeAccumulatorEvaluator(
   const nSteps = grid.nSteps;
   const settlementObs = grid.settlementObs;
   const estimatedNotional = spec.dailyShares * nSteps * (spec.strikePct / 100) * ctx.market.spot;
+  // sign = +1 accumulate (buy cheap), -1 decumulate (sell rich). All three
+  // direction-dependent comparisons reduce to this single constant:
+  //   KO:      sign * (S - trigger) >= 0   (accumulate: S >= trigger; decumulate: S <= trigger)
+  //   geared:  sign * (S - strike)  <  0   (accumulate: S < strike;  decumulate: S > strike)
+  //   cashflow: shares * sign * (S_settle - strike)  (accumulate: S_settle - strike; decumulate: strike - S_settle)
+  const sign = spec.direction === 'decumulate' ? -1 : 1;
 
   return (spots: Float64Array): PathOutcome => {
     const S0 = spots[0];
@@ -26,7 +32,7 @@ export function makeAccumulatorEvaluator(
 
     let koIdx = Infinity;
     for (let i = 1; i <= nSteps; i++) {
-      if (spots[i] >= trigger) {
+      if (sign * (spots[i] - trigger) >= 0) {
         koIdx = i;
         break;
       }
@@ -55,13 +61,14 @@ export function makeAccumulatorEvaluator(
       for (let i = periodStart; i <= periodEndIdx; i++) {
         const accumulates = p <= spec.guaranteePeriods || i < cutoff;
         if (accumulates) {
-          const shares = spec.dailyShares * (spots[i] < strike ? spec.gearing : 1);
+          const geared = sign * (spots[i] - strike) < 0;
+          const shares = spec.dailyShares * (geared ? spec.gearing : 1);
           accumulatedShares += shares;
           lastAccumulatingDay = i;
         }
       }
       if (accumulatedShares > 0) {
-        const cashflow = accumulatedShares * (spots[periodEndIdx] - strike);
+        const cashflow = accumulatedShares * sign * (spots[periodEndIdx] - strike);
         pv += ctx.df(timeOf(periodEndIdx, grid)) * cashflow;
       }
       periodStart = periodEndIdx + 1;

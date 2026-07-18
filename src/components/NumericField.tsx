@@ -10,6 +10,9 @@ interface NumericFieldProps {
   solved?: boolean;
   disabled?: boolean;
   title?: string;
+  /** Extra badge rendered next to the label, e.g. an "AUTO" indicator. */
+  badge?: string;
+  hint?: string;
 }
 
 export function NumericField({
@@ -24,13 +27,18 @@ export function NumericField({
   solved,
   disabled,
   title,
+  badge,
+  hint,
 }: NumericFieldProps) {
   const readOnly = solved || disabled;
   return (
     <div className="field" title={title}>
       <div className="field-label">
         <span>{label}</span>
-        {solved && <span className="solved-badge">SOLVED</span>}
+        <span style={{ display: 'flex', gap: 4 }}>
+          {badge && !solved && <span className="solved-badge">{badge}</span>}
+          {solved && <span className="solved-badge">SOLVED</span>}
+        </span>
       </div>
       <div className={`numeric-field ${solved ? 'solved' : ''}`}>
         <input
@@ -46,6 +54,7 @@ export function NumericField({
         {suffix && <span className="suffix">{suffix}</span>}
       </div>
       {error && <span className="field-hint">{error}</span>}
+      {!error && hint && <span className="text-muted" style={{ fontSize: 11 }}>{hint}</span>}
     </div>
   );
 }
