@@ -53,7 +53,8 @@ export const DEFAULT_COUPON_SPEC: CouponProductSpec = {
   couponBarrierPct: 60,
   couponPaPct: 8,
 
-  autocallCouponPaPct: 0,
+  acCouponType: 'none',
+  acCouponPct: 0,
 };
 
 const commonDefaults = {

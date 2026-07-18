@@ -47,7 +47,7 @@ export function validateCoupon(spec: CouponProductSpec, market: MarketData): Val
   const nObs = callObservationCount(spec);
   if (spec.callType !== 'none') {
     if (!(spec.callFromPeriod >= 1) || spec.callFromPeriod > nObs) {
-      errors.callFromPeriod = `Must be between 1 and ${nObs}.`;
+      errors.callFromPeriod = `Non-call periods must be between 0 and ${nObs - 1}.`;
     }
   }
 

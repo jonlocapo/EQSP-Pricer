@@ -61,7 +61,14 @@ function isCallable(spec: CouponProductSpec, j: number): boolean {
 
 /** Autocall coupon paid on redemption (call or, in the extractor, hypothetical) at period j. */
 function redemptionCostPctAt(spec: CouponProductSpec, j: number): number {
-  return 100 + (spec.autocallCouponPaPct * j) / PERIODS_PER_YEAR[spec.callFrequency];
+  switch (spec.acCouponType) {
+    case 'flat':
+      return 100 + spec.acCouponPct;
+    case 'snowball':
+      return 100 + (spec.acCouponPct * j) / PERIODS_PER_YEAR[spec.callFrequency];
+    default:
+      return 100;
+  }
 }
 
 function couponAmountPct(spec: CouponProductSpec): number {
@@ -97,9 +104,11 @@ function maturityRedemptionPct(spec: CouponProductSpec, spots: Float64Array): nu
   const perfT = spots[nSteps] / spots[0];
   const ki = isKnockedIn(spec, spots);
   if (!ki) return 100;
-  const strike = spec.putStrikePct / 100;
-  const loss = (spec.downsideLeveragePct / 100) * Math.max(0, strike - perfT) / strike;
-  return 100 * Math.max(0, 1 - loss);
+  // Industry-standard geared put: leverage multiplies the raw shortfall
+  // (not the shortfall normalized by strike), so e.g. strike 80 / leverage
+  // 125% redeems to exactly 0 on a 100% stock decline.
+  const shortfall = Math.max(0, spec.putStrikePct - 100 * perfT);
+  return Math.max(0, 100 - (spec.downsideLeveragePct / 100) * shortfall);
 }
 
 export function makeCouponEvaluator(spec: CouponProductSpec, ctx: EvaluatorContext): PayoffEvaluator {

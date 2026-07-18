@@ -160,7 +160,7 @@ export function applySolveValue(spec: ProductSpec, target: SolveTarget, x: numbe
     case 'couponPa':
       return { ...(spec as CouponProductSpec), couponPaPct: x };
     case 'acCouponPa':
-      return { ...(spec as CouponProductSpec), autocallCouponPaPct: x };
+      return { ...(spec as CouponProductSpec), acCouponPct: x };
     case 'couponBarrier':
       return { ...(spec as CouponProductSpec), couponBarrierPct: x };
     case 'callBarrier':
