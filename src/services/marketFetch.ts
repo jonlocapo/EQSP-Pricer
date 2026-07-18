@@ -35,8 +35,36 @@ export function annualizedVolFromCloses(closes: number[]): { vol: number; days: 
   return { vol: Math.sqrt(variance * 252), days: rets.length };
 }
 
-/** `symbol` is Yahoo-style (BA, ^SPX, BMW.DE); mapped to Stooq internally. */
-export async function fetchHistVol(symbol: string): Promise<HistVolResult> {
+/** Extracts the daily close series from a Yahoo chart-endpoint JSON payload. */
+export function closesFromYahooChart(json: unknown): number[] {
+  const parsed = json as {
+    chart?: {
+      result?: { indicators?: { quote?: { close?: (number | null)[] }[] } }[];
+      error?: { description?: string } | null;
+    };
+  };
+  const result = parsed?.chart?.result?.[0];
+  if (!result) {
+    throw new Error(parsed?.chart?.error?.description ?? 'Yahoo chart response has no result');
+  }
+  const raw = result.indicators?.quote?.[0]?.close;
+  if (!Array.isArray(raw)) throw new Error('Yahoo chart response has no close series');
+  const closes: number[] = [];
+  for (const c of raw) {
+    if (typeof c === 'number' && Number.isFinite(c) && c > 0) closes.push(c);
+  }
+  return closes;
+}
+
+async function fetchHistVolYahoo(symbol: string): Promise<HistVolResult> {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1y&interval=1d`;
+  const { text, proxied } = await fetchTextWithCorsFallback(url, 8000, (t) => t.trimStart().startsWith('{'));
+  const closes = closesFromYahooChart(JSON.parse(text));
+  const { vol, days } = annualizedVolFromCloses(closes);
+  return { vol, days, source: proxied ? 'yahoo 1Y hist (proxied)' : 'yahoo 1Y hist' };
+}
+
+async function fetchHistVolStooq(symbol: string): Promise<HistVolResult> {
   const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(toStooqSymbol(symbol))}&i=d`;
   const { text, proxied } = await fetchTextWithCorsFallback(url, 8000, looksLikeCsv);
   const lines = text.trim().split('\n');
@@ -52,6 +80,25 @@ export async function fetchHistVol(symbol: string): Promise<HistVolResult> {
     days,
     source: proxied ? 'stooq 1Y hist (proxied)' : 'stooq 1Y hist',
   };
+}
+
+/** `symbol` is Yahoo-style (BA, ^SPX, BMW.DE). Yahoo chart endpoint first
+ * (near-live daily closes), Stooq as backup — Stooq frequently serves an
+ * HTML bot-challenge with HTTP 200 instead of CSV. */
+export async function fetchHistVol(symbol: string): Promise<HistVolResult> {
+  try {
+    return await fetchHistVolYahoo(symbol);
+  } catch (yahooErr) {
+    const yahooMsg = yahooErr instanceof Error ? yahooErr.message : String(yahooErr);
+    try {
+      return await fetchHistVolStooq(symbol);
+    } catch (stooqErr) {
+      const stooqMsg = stooqErr instanceof Error ? stooqErr.message : String(stooqErr);
+      throw new Error(
+        `Vol history unavailable (yahoo: ${yahooMsg}; stooq: ${stooqMsg}) — enter vol manually`,
+      );
+    }
+  }
 }
 
 export interface RefRateResult {

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { annualizedVolFromCloses, fetchHistVol, fetchRefRate } from '../src/services/marketFetch';
+import {
+  annualizedVolFromCloses,
+  closesFromYahooChart,
+  fetchHistVol,
+  fetchRefRate,
+} from '../src/services/marketFetch';
 import { fetchImpliedFromOptions } from '../src/services/impliedFetch';
 import { toCboeSymbol, toStooqSymbol } from '../src/services/symbols';
 
@@ -28,10 +33,11 @@ live('marketFetch (live network)', () => {
   });
 
   it('estimates 1Y historical vol for AAPL', async () => {
-    const r = await fetchHistVol('aapl.us');
+    const r = await fetchHistVol('AAPL');
     expect(r.vol).toBeGreaterThan(0.05);
     expect(r.vol).toBeLessThan(1.5);
     expect(r.days).toBeGreaterThan(100);
+    expect(r.source).toMatch(/yahoo|stooq/);
   });
 
   it('implies dividend yield and ATM vol from SPX options (European parity)', async () => {
@@ -89,6 +95,29 @@ describe('marketFetch (offline)', () => {
 
   it('rejects series that are too short', () => {
     expect(() => annualizedVolFromCloses([100, 101, 99])).toThrow(/Not enough/);
+  });
+
+  it('extracts closes from a Yahoo chart payload, filtering nulls', () => {
+    const json = {
+      chart: {
+        result: [
+          {
+            indicators: {
+              quote: [{ close: [100.5, null, 101.25, 0, -5, 102] }],
+            },
+          },
+        ],
+      },
+    };
+    expect(closesFromYahooChart(json)).toEqual([100.5, 101.25, 102]);
+  });
+
+  it('throws a clear message for malformed Yahoo chart shapes', () => {
+    expect(() => closesFromYahooChart({})).toThrow(/no result/);
+    expect(() => closesFromYahooChart({ chart: { result: [{}] } })).toThrow(/no close series/);
+    expect(() =>
+      closesFromYahooChart({ chart: { result: [], error: { description: 'No data found' } } }),
+    ).toThrow(/No data found/);
   });
 
   it('maps Yahoo symbols to per-source conventions', () => {
