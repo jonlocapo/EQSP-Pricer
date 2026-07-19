@@ -1,39 +1,89 @@
 :root {
-  /* Terminal-dark dense — committed dark theme, no light-mode switching. */
-  --bg: #0b0e14;
-  --bg-raised: #0e1219;
-  --bg-sunken: #070910;
-  --bg-input: #10141c;
-  --border: #1e2530;
-  --border-strong: #2c3542;
-  --text: #e8e9ed;
-  --text-muted: #838c9c;
-  --text-faint: #545d6d;
-
-  /* Single restrained accent, used sparingly: active states, solved values,
-     primary action. */
-  --accent: #d99a3d;
-  --accent-hover: #e8ac54;
-  --accent-soft: rgba(217, 154, 61, 0.14);
-  --accent-dim: rgba(217, 154, 61, 0.35);
-
-  /* Muted semantic red/green — never neon. */
-  --danger: #c1626a;
-  --danger-soft: rgba(193, 98, 106, 0.12);
-  --success: #6faf85;
-  --success-soft: rgba(111, 175, 133, 0.12);
-  --warn: #b98d4a;
-  --warn-soft: rgba(185, 141, 74, 0.12);
-
-  --radius: 2px;
-  --radius-sm: 2px;
-  --shadow-sm: none;
-  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.5);
-
+  --bg: #f7f7f9;
+  --bg-elevated: #ffffff;
+  --bg-sunken: #eef0f3;
+  --border: #e0e2e7;
+  --border-strong: #cbced6;
+  --text: #16181d;
+  --text-muted: #63676f;
+  --text-faint: #92959c;
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-soft: #eef0ff;
+  --danger: #d1293d;
+  --danger-soft: #fdecee;
+  --success: #16794f;
+  --success-soft: #e7f7ef;
+  --warn: #9a6700;
+  --warn-soft: #fff6df;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow-sm: 0 1px 2px rgba(16, 18, 22, 0.06);
+  --shadow-md: 0 8px 24px rgba(16, 18, 22, 0.12);
   --font: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  --mono: 'JetBrains Mono', 'SF Mono', 'Menlo', Consolas, ui-monospace, monospace;
+  --mono: 'SF Mono', 'Roboto Mono', ui-monospace, monospace;
+  color-scheme: light;
+}
 
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #101116;
+    --bg-elevated: #17181f;
+    --bg-sunken: #0c0d11;
+    --border: #2a2c35;
+    --border-strong: #3a3d49;
+    --text: #eef0f4;
+    --text-muted: #a3a7b3;
+    --text-faint: #6b6f7b;
+    --accent: #818cf8;
+    --accent-hover: #a5b0fb;
+    --accent-soft: #24263a;
+    --danger: #f2657a;
+    --danger-soft: #33161c;
+    --success: #4ade95;
+    --success-soft: #12271d;
+    --warn: #e2b64f;
+    --warn-soft: #2e2611;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 8px 28px rgba(0, 0, 0, 0.55);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme='dark'] {
+  --bg: #101116;
+  --bg-elevated: #17181f;
+  --bg-sunken: #0c0d11;
+  --border: #2a2c35;
+  --border-strong: #3a3d49;
+  --text: #eef0f4;
+  --text-muted: #a3a7b3;
+  --text-faint: #6b6f7b;
+  --accent: #818cf8;
+  --accent-hover: #a5b0fb;
+  --accent-soft: #24263a;
+  --danger: #f2657a;
+  --danger-soft: #33161c;
+  --success: #4ade95;
+  --success-soft: #12271d;
+  --warn: #e2b64f;
+  --warn-soft: #2e2611;
   color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  --bg: #f7f7f9;
+  --bg-elevated: #ffffff;
+  --bg-sunken: #eef0f3;
+  --border: #e0e2e7;
+  --border-strong: #cbced6;
+  --text: #16181d;
+  --text-muted: #63676f;
+  --text-faint: #92959c;
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-soft: #eef0ff;
+  color-scheme: light;
 }
 
 * {
@@ -51,8 +101,8 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font);
-  font-size: 13px;
-  line-height: 1.4;
+  font-size: 13.5px;
+  line-height: 1.45;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -64,28 +114,10 @@ button {
   color: inherit;
 }
 
-input[type='number'] {
-  font-family: var(--mono);
-  font-variant-numeric: tabular-nums;
-}
-
 button {
   cursor: pointer;
 }
 
 ::selection {
   background: var(--accent-soft);
-}
-
-::-webkit-scrollbar {
-  width: 9px;
-  height: 9px;
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
 }

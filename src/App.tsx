@@ -2,8 +2,7 @@ import { useState } from 'react';
 import { useTradeStore, type PageId } from './state/tradeStore';
 import { useResultsStore } from './state/resultsStore';
 import { MarketPanel } from './components/MarketPanel';
-import { ResultsPanel } from './components/ResultsPanel';
-import { ActionPortalContext } from './components/ActionPortalContext';
+import { ResultsBar } from './components/ResultsBar';
 import { HistoryModal } from './components/HistoryModal';
 import { CouponPage } from './pages/CouponPage';
 import { ParticipationPage } from './pages/ParticipationPage';
@@ -19,7 +18,6 @@ export default function App() {
   const activePage = useTradeStore((s) => s.activePage);
   const setActivePage = useTradeStore((s) => s.setActivePage);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [actionPortalNode, setActionPortalNode] = useState<HTMLDivElement | null>(null);
 
   return (
     <div className="app-shell">
@@ -44,26 +42,24 @@ export default function App() {
           ))}
         </nav>
         <div className="header-actions">
-          <button className="btn-quiet" type="button" onClick={() => setHistoryOpen(true)}>
+          <button className="btn btn-sm" type="button" onClick={() => setHistoryOpen(true)}>
             History
           </button>
         </div>
       </header>
 
-      <ActionPortalContext.Provider value={actionPortalNode}>
-        <div className="app-body">
-          <aside className="sidebar">
-            <MarketPanel />
-          </aside>
-          <main className="main-area">
-            {activePage === 'coupon' && <CouponPage />}
-            {activePage === 'participation' && <ParticipationPage />}
-            {activePage === 'accumulator' && <AccumulatorPage />}
-          </main>
-          <ResultsPanel actionSlotRef={setActionPortalNode} />
-        </div>
-      </ActionPortalContext.Provider>
+      <div className="app-body">
+        <aside className="sidebar">
+          <MarketPanel />
+        </aside>
+        <main className="main-area">
+          {activePage === 'coupon' && <CouponPage />}
+          {activePage === 'participation' && <ParticipationPage />}
+          {activePage === 'accumulator' && <AccumulatorPage />}
+        </main>
+      </div>
 
+      <ResultsBar />
       {historyOpen && <HistoryModal onClose={() => setHistoryOpen(false)} />}
     </div>
   );
