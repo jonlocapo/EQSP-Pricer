@@ -12,6 +12,13 @@ interface NumericFieldProps {
   title?: string;
   /** Extra badge rendered next to the label, e.g. an "AUTO" indicator. */
   badge?: string;
+  /**
+   * When set, `badge` is rendered as a clickable toggle button instead of a
+   * passive label (e.g. the AUTO leverage toggle). `badgeOn` controls its
+   * active/inactive visual state.
+   */
+  onBadgeClick?: () => void;
+  badgeOn?: boolean;
   hint?: string;
 }
 
@@ -28,6 +35,8 @@ export function NumericField({
   disabled,
   title,
   badge,
+  onBadgeClick,
+  badgeOn,
   hint,
 }: NumericFieldProps) {
   const readOnly = solved || disabled;
@@ -36,7 +45,17 @@ export function NumericField({
       <div className="field-label">
         <span>{label}</span>
         <span style={{ display: 'flex', gap: 4 }}>
-          {badge && !solved && <span className="solved-badge">{badge}</span>}
+          {badge && !solved && onBadgeClick && (
+            <button
+              type="button"
+              className={`auto-toggle ${badgeOn ? 'on' : ''}`}
+              onClick={onBadgeClick}
+              aria-pressed={badgeOn}
+            >
+              {badge}
+            </button>
+          )}
+          {badge && !solved && !onBadgeClick && <span className="solved-badge">{badge}</span>}
           {solved && <span className="solved-badge">SOLVED</span>}
         </span>
       </div>

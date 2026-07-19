@@ -313,6 +313,30 @@ select.input:focus {
   white-space: nowrap;
 }
 
+.auto-toggle {
+  font-size: 10px;
+  color: var(--text-faint);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border-strong);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+.auto-toggle:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.auto-toggle.on {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+
 /* ---------- Segmented control ---------- */
 
 .segmented {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTradeStore, rebuildCustomCallSchedule } from '../state/tradeStore';
 import { useMarketStore } from '../state/marketStore';
 import { useResultsStore } from '../state/resultsStore';
@@ -38,6 +38,7 @@ export function CouponPage() {
   const running = useResultsStore((s) => s.running);
 
   const [greeks, setGreeks] = useState(false);
+  const [leverageAuto, setLeverageAuto] = useState(true);
 
   // Keep custom call schedule sized to the current number of call observations.
   useEffect(() => {
@@ -52,23 +53,18 @@ export function CouponPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spec.callType, spec.tenorYears, spec.callFrequency]);
 
-  // Downside leverage auto-tracks 1/putStrike (the industry-standard geared
-  // put) until the user types a value that diverges from it. Detected by:
-  // when putStrike changes, if the leverage still equals the auto value for
-  // the OLD strike, carry the tracking forward to the new strike's auto
-  // value; otherwise leave the user's override alone.
-  const prevPutStrikeRef = useRef(spec.putStrikePct);
+  // When AUTO is on, downside leverage is locked to 1/putStrike (the
+  // industry-standard geared put) and recomputed whenever the put strike
+  // changes or AUTO is toggled on. Guarded so it only writes when the value
+  // actually differs, to avoid redundant re-renders.
   useEffect(() => {
-    const prevStrike = prevPutStrikeRef.current;
-    if (prevStrike !== spec.putStrikePct) {
-      const autoForOld = autoDownsideLeverage(prevStrike);
-      if (Math.abs(spec.downsideLeveragePct - autoForOld) < AUTO_LEVERAGE_EPS) {
-        setSpec({ downsideLeveragePct: autoDownsideLeverage(spec.putStrikePct) });
-      }
-      prevPutStrikeRef.current = spec.putStrikePct;
+    if (!leverageAuto) return;
+    const auto = autoDownsideLeverage(spec.putStrikePct);
+    if (Math.abs(spec.downsideLeveragePct - auto) >= AUTO_LEVERAGE_EPS) {
+      setSpec({ downsideLeveragePct: auto });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spec.putStrikePct]);
+  }, [leverageAuto, spec.putStrikePct]);
 
   const validation = validateCoupon(spec, market);
   const solveOptions = couponSolveOptions(spec);
@@ -198,11 +194,10 @@ export function CouponPage() {
             step={5}
             suffix="%"
             onChange={(v) => setSpec({ downsideLeveragePct: v })}
-            badge={
-              Math.abs(spec.downsideLeveragePct - autoDownsideLeverage(spec.putStrikePct)) < AUTO_LEVERAGE_EPS
-                ? 'AUTO'
-                : undefined
-            }
+            disabled={leverageAuto}
+            badge="AUTO"
+            badgeOn={leverageAuto}
+            onBadgeClick={() => setLeverageAuto((on) => !on)}
           />
         </div>
       </Card>

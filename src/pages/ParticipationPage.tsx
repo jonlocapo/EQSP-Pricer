@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTradeStore, PARTICIPATION_PRESET_LABELS, type ParticipationPreset } from '../state/tradeStore';
 import { useMarketStore } from '../state/marketStore';
 import { useResultsStore } from '../state/resultsStore';
@@ -36,22 +36,25 @@ export function ParticipationPage() {
 
   const [greeks, setGreeks] = useState(false);
   const [lastLowerStrike, setLastLowerStrike] = useState(90);
+  const [leverageAuto, setLeverageAuto] = useState(true);
 
-  // Downside leverage auto-tracks 1/downsideStrike until the user types a
-  // value that diverges from it (mirrors the RC/AC coupon page's put-strike
-  // tracking).
-  const prevDownsideStrikeRef = useRef(spec.downside.strikePct);
+  // If the user is solving for downside leverage, the solver owns the field —
+  // force AUTO off so it doesn't fight the solve, and hide the toggle (below).
+  const leverageIsSolveTarget = solve.kind === 'downsideLeverage';
+  const leverageAutoActive = leverageAuto && !leverageIsSolveTarget;
+
+  // When AUTO is on, downside leverage is locked to 1/downsideStrike and
+  // recomputed whenever the downside strike changes or AUTO is toggled on
+  // (mirrors the RC/AC coupon page's put-strike tracking). Guarded so it only
+  // writes when the value actually differs, to avoid redundant re-renders.
   useEffect(() => {
-    const prevStrike = prevDownsideStrikeRef.current;
-    if (prevStrike !== spec.downside.strikePct) {
-      const autoForOld = autoDownsideLeverage(prevStrike);
-      if (Math.abs(spec.downside.leveragePct - autoForOld) < AUTO_LEVERAGE_EPS) {
-        patchSpec({ downside: { ...spec.downside, leveragePct: autoDownsideLeverage(spec.downside.strikePct) } });
-      }
-      prevDownsideStrikeRef.current = spec.downside.strikePct;
+    if (!leverageAutoActive) return;
+    const auto = autoDownsideLeverage(spec.downside.strikePct);
+    if (Math.abs(spec.downside.leveragePct - auto) >= AUTO_LEVERAGE_EPS) {
+      patchSpec({ downside: { ...spec.downside, leveragePct: auto } });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spec.downside.strikePct]);
+  }, [leverageAutoActive, spec.downside.strikePct]);
 
   const validation = validateParticipation(spec, market);
   const solveOptions = participationSolveOptions(spec);
@@ -251,11 +254,10 @@ export function ParticipationPage() {
             suffix="%"
             onChange={(v) => patchDownside({ leveragePct: v })}
             solved={fieldSolved('downsideLeverage')}
-            badge={
-              Math.abs(spec.downside.leveragePct - autoDownsideLeverage(spec.downside.strikePct)) < AUTO_LEVERAGE_EPS
-                ? 'AUTO'
-                : undefined
-            }
+            disabled={leverageAutoActive}
+            badge={leverageIsSolveTarget ? undefined : 'AUTO'}
+            badgeOn={leverageAutoActive}
+            onBadgeClick={leverageIsSolveTarget ? undefined : () => setLeverageAuto((on) => !on)}
           />
         </div>
         <div className="field">
