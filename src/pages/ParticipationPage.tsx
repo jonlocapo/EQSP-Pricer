@@ -38,23 +38,18 @@ export function ParticipationPage() {
   const [lastLowerStrike, setLastLowerStrike] = useState(90);
   const [leverageAuto, setLeverageAuto] = useState(true);
 
-  // If the user is solving for downside leverage, the solver owns the field —
-  // force AUTO off so it doesn't fight the solve, and hide the toggle (below).
-  const leverageIsSolveTarget = solve.kind === 'downsideLeverage';
-  const leverageAutoActive = leverageAuto && !leverageIsSolveTarget;
-
   // When AUTO is on, downside leverage is locked to 1/downsideStrike and
   // recomputed whenever the downside strike changes or AUTO is toggled on
   // (mirrors the RC/AC coupon page's put-strike tracking). Guarded so it only
   // writes when the value actually differs, to avoid redundant re-renders.
   useEffect(() => {
-    if (!leverageAutoActive) return;
+    if (!leverageAuto) return;
     const auto = autoDownsideLeverage(spec.downside.strikePct);
     if (Math.abs(spec.downside.leveragePct - auto) >= AUTO_LEVERAGE_EPS) {
       patchSpec({ downside: { ...spec.downside, leveragePct: auto } });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leverageAutoActive, spec.downside.strikePct]);
+  }, [leverageAuto, spec.downside.strikePct]);
 
   const validation = validateParticipation(spec, market);
   const solveOptions = participationSolveOptions(spec);
@@ -253,11 +248,10 @@ export function ParticipationPage() {
             step={5}
             suffix="%"
             onChange={(v) => patchDownside({ leveragePct: v })}
-            solved={fieldSolved('downsideLeverage')}
-            disabled={leverageAutoActive}
-            badge={leverageIsSolveTarget ? undefined : 'AUTO'}
-            badgeOn={leverageAutoActive}
-            onBadgeClick={leverageIsSolveTarget ? undefined : () => setLeverageAuto((on) => !on)}
+            disabled={leverageAuto}
+            badge="AUTO"
+            badgeOn={leverageAuto}
+            onBadgeClick={() => setLeverageAuto((on) => !on)}
           />
         </div>
         <div className="field">

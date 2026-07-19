@@ -22,7 +22,6 @@ const SOLVE_LABELS: Record<SolveTarget['kind'], string> = {
   kiBarrier: 'KI Barrier',
   gearing: 'Upside participation',
   upsideStrike: 'Upside strike',
-  downsideLeverage: 'Downside leverage',
   bonusLevel: 'Bonus',
   twinWin: 'Twin-win participation',
   upperStrike: 'Upper Strike',
@@ -84,9 +83,6 @@ function writeBackSolvedValue(
         break;
       case 'upsideStrike':
         trade.patchParticipationSpec({ upside: { ...product.upside, strikePct: solvedValue } });
-        break;
-      case 'downsideLeverage':
-        trade.patchParticipationSpec({ downside: { ...product.downside, leveragePct: solvedValue } });
         break;
       case 'kiBarrier':
         trade.patchParticipationSpec({ downside: { ...product.downside, kiBarrierPct: solvedValue } });

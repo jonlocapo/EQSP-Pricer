@@ -51,18 +51,11 @@ export function participationSolveOptions(spec: ParticipationSpec): SolveOption[
   const isCallSpread = spec.upside.variant.variant === 'callSpread';
   const isKoRebate = spec.upside.variant.variant === 'koRebate';
   const hasBarrier = spec.downside.barrierType !== 'none';
-  const downsideExposed = spec.downside.barrierType === 'none' || spec.downside.leveragePct > 0;
 
   const opts: SolveOption[] = [
     { value: 'none', label: 'Price (reoffer)' },
     { value: 'gearing', label: 'Upside participation' },
     { value: 'upsideStrike', label: 'Upside strike' },
-    {
-      value: 'downsideLeverage',
-      label: 'Downside leverage',
-      disabled: !downsideExposed,
-      tooltip: !downsideExposed ? 'Downside is not exposed (leverage is 0 and barrier is set).' : undefined,
-    },
     {
       value: 'kiBarrier',
       label: 'KI Barrier',

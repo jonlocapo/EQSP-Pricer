@@ -102,9 +102,6 @@ export class MockPricerClient implements PricerClient {
         case 'upsideStrike':
           solvedValue = 90 + rand() * 30;
           break;
-        case 'downsideLeverage':
-          solvedValue = 80 + rand() * 60;
-          break;
         case 'twinWin':
           solvedValue = rand() * 100;
           break;
