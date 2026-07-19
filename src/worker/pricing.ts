@@ -165,30 +165,47 @@ export function applySolveValue(spec: ProductSpec, target: SolveTarget, x: numbe
       return { ...(spec as CouponProductSpec), couponBarrierPct: x };
     case 'callBarrier':
       return { ...(spec as CouponProductSpec), callBarrierPct: x };
-    case 'kiBarrier':
+    case 'kiBarrier': {
+      if (spec.kind === 'participation') {
+        const p = spec;
+        return { ...p, downside: { ...p.downside, kiBarrierPct: x } };
+      }
       return { ...spec, kiBarrierPct: x } as ProductSpec;
-    case 'gearing':
-      return { ...spec, gearingPct: x } as ProductSpec;
-    case 'bonusLevel':
-      return { ...spec, bonusLevelPct: x } as ProductSpec;
-    case 'participation':
-      return { ...spec, participationPct: x } as ProductSpec;
-    case 'partUp':
-      return { ...spec, partUpPct: x } as ProductSpec;
+    }
+    case 'gearing': {
+      const p = spec as ParticipationSpec;
+      return { ...p, upside: { ...p.upside, participationPct: x } };
+    }
+    case 'upsideStrike': {
+      const p = spec as ParticipationSpec;
+      return { ...p, upside: { ...p.upside, strikePct: x } };
+    }
+    case 'downsideLeverage': {
+      const p = spec as ParticipationSpec;
+      return { ...p, downside: { ...p.downside, leveragePct: x } };
+    }
+    case 'bonusLevel': {
+      const p = spec as ParticipationSpec;
+      return { ...p, bonusPct: x };
+    }
+    case 'twinWin': {
+      const p = spec as ParticipationSpec;
+      return { ...p, downside: { ...p.downside, twinWinPct: x } };
+    }
     case 'upperStrike': {
       const p = spec as ParticipationSpec;
-      if (p.upside.variant !== 'callSpread') throw new Error('upperStrike solve requires callSpread upside');
-      return { ...p, upside: { ...p.upside, upperStrikePct: x } };
+      if (p.upside.variant.variant !== 'callSpread') throw new Error('upperStrike solve requires callSpread upside');
+      return { ...p, upside: { ...p.upside, variant: { ...p.upside.variant, upperStrikePct: x } } };
     }
     case 'upsideKoBarrier': {
       const p = spec as ParticipationSpec;
-      if (p.upside.variant !== 'koRebate') throw new Error('upsideKoBarrier solve requires koRebate upside');
-      return { ...p, upside: { ...p.upside, koBarrierPct: x } };
+      if (p.upside.variant.variant !== 'koRebate') throw new Error('upsideKoBarrier solve requires koRebate upside');
+      return { ...p, upside: { ...p.upside, variant: { ...p.upside.variant, koBarrierPct: x } } };
     }
     case 'rebate': {
       const p = spec as ParticipationSpec;
-      if (p.upside.variant !== 'koRebate') throw new Error('rebate solve requires koRebate upside');
-      return { ...p, upside: { ...p.upside, rebatePct: x } };
+      if (p.upside.variant.variant !== 'koRebate') throw new Error('rebate solve requires koRebate upside');
+      return { ...p, upside: { ...p.upside, variant: { ...p.upside.variant, rebatePct: x } } };
     }
     case 'strike':
       return { ...spec, strikePct: x } as ProductSpec;
@@ -215,17 +232,18 @@ export function solveBounds(
       return { lo: 1, hi: cap, hardLo: 0.5, hardHi: cap, targetPct: reoffer };
     }
     case 'gearing':
-      return { lo: 0, hi: 500, hardLo: 0, hardHi: 1000, targetPct: reoffer };
-    case 'bonusLevel':
-      return { lo: 100, hi: 160, hardLo: 100, hardHi: 300, targetPct: reoffer };
-    case 'participation':
-    case 'partUp':
+      return { lo: 0, hi: 1000, hardLo: 0, hardHi: 1000, targetPct: reoffer };
+    case 'upsideStrike':
+      return { lo: 50, hi: 200, hardLo: 10, hardHi: 300, targetPct: reoffer };
+    case 'downsideLeverage':
       return { lo: 0, hi: 300, hardLo: 0, hardHi: 500, targetPct: reoffer };
+    case 'bonusLevel':
+      return { lo: 0, hi: 100, hardLo: 0, hardHi: 100, targetPct: reoffer };
+    case 'twinWin':
+      return { lo: 0, hi: 500, hardLo: 0, hardHi: 500, targetPct: reoffer };
     case 'upperStrike': {
       const base =
-        spec.kind === 'participation' && 'strikePct' in spec && typeof spec.strikePct === 'number'
-          ? spec.strikePct
-          : 100;
+        spec.kind === 'participation' ? spec.upside.strikePct : 100;
       return { lo: base + 0.5, hi: 250, hardLo: base + 0.1, hardHi: 400, targetPct: reoffer };
     }
     case 'upsideKoBarrier':
@@ -298,6 +316,10 @@ export async function executePriceRequest(req: PriceRequest, hooks: PricingHooks
       priceOnce(spec, m, mc.numPaths, mc.seed, mc.antithetic, hooks, 'greeks', i * mc.numPaths, mc.numPaths * 4);
     const up = await bump({ ...market, spot: market.spot * 1.01 }, 0);
     const dn = await bump({ ...market, spot: market.spot * 0.99 }, 1);
+    // Bumping vol here also shifts the quanto drift term (−corrEqFx · vol · fxVol
+    // in riskNeutralDrift), so under a quanto this vega is the *total* vega —
+    // vol's effect on both the diffusion and the drift. That's intentional:
+    // it's the correct sensitivity to a re-quoted equity vol, not a bug.
     const vu = await bump({ ...market, vol: market.vol + 0.01 }, 2);
     const vd = await bump({ ...market, vol: Math.max(0.001, market.vol - 0.01) }, 3);
     if ([up, dn, vu, vd].some((r) => r.cancelled) || hooks.isCancelled()) return null;

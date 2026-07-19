@@ -58,22 +58,24 @@ export function validateCoupon(spec: CouponProductSpec, market: MarketData): Val
 export function validateParticipation(spec: ParticipationSpec, market: MarketData): ValidationResult {
   const errors: FieldErrors = { ...commonErrors(spec.notional, spec.tenorYears), ...marketErrors(market) };
 
-  if (spec.upside.variant === 'callSpread') {
-    const strikeRef = spec.subtype === 'booster' ? spec.strikePct : 100;
-    if (!(spec.upside.upperStrikePct > strikeRef)) {
-      errors.upperStrikePct = `Must be above ${spec.subtype === 'booster' ? 'strike' : '100'}.`;
+  if (spec.upside.variant.variant === 'callSpread') {
+    if (!(spec.upside.variant.upperStrikePct > spec.upside.strikePct)) {
+      errors.upperStrikePct = 'Must be above upside strike.';
     }
   }
-  if (spec.upside.variant === 'koRebate') {
-    if (!(spec.upside.koBarrierPct > 100)) {
+  if (spec.upside.variant.variant === 'koRebate') {
+    if (!(spec.upside.variant.koBarrierPct > 100)) {
       errors.koBarrierPct = 'Must be > 100.';
     }
   }
 
-  if (spec.downsidePutSpread) {
-    const downsideRef = spec.subtype === 'booster' ? spec.downsideStrikePct : 100;
-    if (!(spec.downsidePutSpread.lowerStrikePct < downsideRef)) {
-      errors.lowerStrikePct = `Must be below ${spec.subtype === 'booster' ? 'downside strike' : '100'}.`;
+  if (spec.downside.barrierType !== 'none' && !(spec.downside.kiBarrierPct < spec.downside.strikePct)) {
+    errors.kiBarrierPct = 'KI barrier must be below downside strike.';
+  }
+
+  if (spec.downside.putSpread) {
+    if (!(spec.downside.putSpread.lowerStrikePct < spec.downside.strikePct)) {
+      errors.lowerStrikePct = 'Must be below downside strike.';
     }
   }
 

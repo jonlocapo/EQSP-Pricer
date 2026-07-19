@@ -1,12 +1,8 @@
 import { create } from 'zustand';
 import type {
   AccumulatorSpec,
-  BonusSpec,
-  BoosterSpec,
-  CapitalGuaranteedSpec,
   CouponProductSpec,
-  ParticipationSubtype,
-  TwinWinSpec,
+  ParticipationSpec,
 } from '../model/product';
 import type { SolveTarget } from '../model/request';
 
@@ -66,49 +62,92 @@ const commonDefaults = {
   issuePricePct: 100,
 };
 
-export const DEFAULT_BOOSTER: BoosterSpec = {
-  ...commonDefaults,
-  kind: 'participation',
-  subtype: 'booster',
-  upside: { variant: 'vanilla' },
-  strikePct: 100,
-  gearingPct: 150,
-  downsideStrikePct: 100,
-  downsideLeveragePct: 100,
-  barrierType: 'none',
-  kiBarrierPct: 60,
+/** Standard downside leverage: 1/downsideStrike so a 100% stock decline exhausts the leg. */
+function autoDownsideLeverage(downsideStrikePct: number): number {
+  if (!(downsideStrikePct > 0)) return 100;
+  return Math.round((10000 / downsideStrikePct) * 100) / 100;
+}
+
+export type ParticipationPreset = 'booster' | 'bonus' | 'capitalGuaranteed' | 'twinWin';
+
+export const PARTICIPATION_PRESET_LABELS: Record<ParticipationPreset, string> = {
+  booster: 'Booster',
+  bonus: 'Bonus',
+  capitalGuaranteed: 'Capital Guaranteed',
+  twinWin: 'Twin Win',
 };
 
-export const DEFAULT_BONUS: BonusSpec = {
-  ...commonDefaults,
-  kind: 'participation',
-  subtype: 'bonus',
-  upside: { variant: 'vanilla' },
-  bonusLevelPct: 115,
-  barrierType: 'american',
-  kiBarrierPct: 65,
-};
+/**
+ * Presets are UI prefills for the one generic ParticipationSpec shape, not
+ * separate model shapes. CommonTerms (notional/tenor/reoffer/...) are left
+ * untouched by presets — only the participation-specific fields below.
+ */
+export function participationPreset(
+  preset: ParticipationPreset,
+  common: Pick<ParticipationSpec, keyof typeof commonDefaults>
+): ParticipationSpec {
+  const base = { ...common, kind: 'participation' as const };
+  switch (preset) {
+    case 'booster':
+      return {
+        ...base,
+        upside: { strikePct: 100, participationPct: 150, variant: { variant: 'vanilla' } },
+        downside: {
+          strikePct: 100,
+          leveragePct: autoDownsideLeverage(100),
+          barrierType: 'none',
+          kiBarrierPct: 60,
+          twinWinPct: 0,
+        },
+        bonusPct: 0,
+        protectionPct: 0,
+      };
+    case 'bonus':
+      return {
+        ...base,
+        upside: { strikePct: 100, participationPct: 100, variant: { variant: 'vanilla' } },
+        downside: {
+          strikePct: 100,
+          leveragePct: autoDownsideLeverage(100),
+          barrierType: 'american',
+          kiBarrierPct: 65,
+          twinWinPct: 0,
+        },
+        bonusPct: 5,
+        protectionPct: 0,
+      };
+    case 'capitalGuaranteed':
+      return {
+        ...base,
+        upside: { strikePct: 100, participationPct: 100, variant: { variant: 'vanilla' } },
+        downside: {
+          strikePct: 100,
+          leveragePct: 0,
+          barrierType: 'none',
+          kiBarrierPct: 60,
+          twinWinPct: 0,
+        },
+        bonusPct: 0,
+        protectionPct: 100,
+      };
+    case 'twinWin':
+      return {
+        ...base,
+        upside: { strikePct: 100, participationPct: 100, variant: { variant: 'vanilla' } },
+        downside: {
+          strikePct: 100,
+          leveragePct: autoDownsideLeverage(100),
+          barrierType: 'american',
+          kiBarrierPct: 65,
+          twinWinPct: 100,
+        },
+        bonusPct: 0,
+        protectionPct: 0,
+      };
+  }
+}
 
-export const DEFAULT_CAP_GUARANTEED: CapitalGuaranteedSpec = {
-  ...commonDefaults,
-  kind: 'participation',
-  subtype: 'capitalGuaranteed',
-  upside: { variant: 'vanilla' },
-  protectionPct: 100,
-  strikePct: 100,
-  participationPct: 100,
-};
-
-export const DEFAULT_TWIN_WIN: TwinWinSpec = {
-  ...commonDefaults,
-  kind: 'participation',
-  subtype: 'twinWin',
-  upside: { variant: 'vanilla' },
-  partUpPct: 100,
-  partDownPct: 100,
-  barrierType: 'american',
-  kiBarrierPct: 65,
-};
+export const DEFAULT_PARTICIPATION: ParticipationSpec = participationPreset('booster', commonDefaults);
 
 export const DEFAULT_ACCUMULATOR: AccumulatorSpec = {
   kind: 'accumulator',
@@ -126,13 +165,6 @@ export const DEFAULT_ACCUMULATOR: AccumulatorSpec = {
   guaranteePeriods: 0,
 };
 
-export interface ParticipationDrafts {
-  booster: BoosterSpec;
-  bonus: BonusSpec;
-  capitalGuaranteed: CapitalGuaranteedSpec;
-  twinWin: TwinWinSpec;
-}
-
 interface TradeState {
   activePage: PageId;
   setActivePage: (p: PageId) => void;
@@ -143,16 +175,12 @@ interface TradeState {
   setCouponSolve: (s: SolveTarget) => void;
   replaceCouponSpec: (spec: CouponProductSpec) => void;
 
-  participationSubtype: ParticipationSubtype;
-  participationDrafts: ParticipationDrafts;
+  participationSpec: ParticipationSpec;
   participationSolve: SolveTarget;
-  setParticipationSubtype: (t: ParticipationSubtype) => void;
-  patchParticipationDraft: <K extends ParticipationSubtype>(
-    subtype: K,
-    patch: Partial<ParticipationDrafts[K]>
-  ) => void;
+  patchParticipationSpec: (patch: Partial<ParticipationSpec>) => void;
   setParticipationSolve: (s: SolveTarget) => void;
-  replaceParticipationDraft: (spec: ParticipationDrafts[ParticipationSubtype]) => void;
+  replaceParticipationSpec: (spec: ParticipationSpec) => void;
+  applyParticipationPreset: (preset: ParticipationPreset) => void;
 
   accumulatorSpec: AccumulatorSpec;
   accumulatorSolve: SolveTarget;
@@ -175,40 +203,46 @@ export const useTradeStore = create<TradeState>((set) => ({
   replaceCouponSpec: (couponSpec) =>
     set({ couponSpec: { ...DEFAULT_COUPON_SPEC, ...couponSpec }, couponSolve: { kind: 'none' } }),
 
-  participationSubtype: 'booster',
-  participationDrafts: {
-    booster: DEFAULT_BOOSTER,
-    bonus: DEFAULT_BONUS,
-    capitalGuaranteed: DEFAULT_CAP_GUARANTEED,
-    twinWin: DEFAULT_TWIN_WIN,
-  },
+  participationSpec: DEFAULT_PARTICIPATION,
   participationSolve: { kind: 'none' },
-  setParticipationSubtype: (participationSubtype) => set({ participationSubtype }),
-  patchParticipationDraft: (subtype, patch) =>
-    set((s) => ({
-      participationDrafts: {
-        ...s.participationDrafts,
-        [subtype]: { ...s.participationDrafts[subtype], ...patch },
-      },
-    })),
+  patchParticipationSpec: (patch) => set((s) => ({ participationSpec: { ...s.participationSpec, ...patch } })),
   setParticipationSolve: (participationSolve) => set({ participationSolve }),
-  replaceParticipationDraft: (spec) =>
-    set((s) => {
-      const defaults: ParticipationDrafts = {
-        booster: DEFAULT_BOOSTER,
-        bonus: DEFAULT_BONUS,
-        capitalGuaranteed: DEFAULT_CAP_GUARANTEED,
-        twinWin: DEFAULT_TWIN_WIN,
-      };
-      // Merge OVER the subtype's default draft so older/incomplete history
-      // entries backfill any fields missing from the restored spec.
-      const merged = { ...defaults[spec.subtype], ...spec } as ParticipationDrafts[typeof spec.subtype];
-      return {
-        participationSubtype: spec.subtype,
-        participationDrafts: { ...s.participationDrafts, [spec.subtype]: merged },
-        participationSolve: { kind: 'none' },
-      };
+  // Merge OVER the default spec, and shape-check first: older localStorage
+  // history entries predate the generic-spec redesign entirely (they carried
+  // a `subtype` and flat fields instead of nested upside/downside), so a
+  // naive merge would silently mix incompatible shapes. Fall back to
+  // defaults rather than let a malformed restore crash the history modal.
+  replaceParticipationSpec: (spec) =>
+    set(() => {
+      try {
+        const raw = spec as unknown as Record<string, unknown>;
+        const upside = raw.upside as Record<string, unknown> | undefined;
+        const downside = raw.downside as Record<string, unknown> | undefined;
+        const looksValid =
+          raw &&
+          raw.kind === 'participation' &&
+          typeof upside === 'object' &&
+          upside !== null &&
+          typeof (upside as { variant?: unknown }).variant === 'object' &&
+          typeof downside === 'object' &&
+          downside !== null;
+        if (!looksValid) throw new Error('legacy/incompatible participation spec shape');
+        const merged: ParticipationSpec = {
+          ...DEFAULT_PARTICIPATION,
+          ...spec,
+          upside: { ...DEFAULT_PARTICIPATION.upside, ...spec.upside },
+          downside: { ...DEFAULT_PARTICIPATION.downside, ...spec.downside },
+        };
+        return { participationSpec: merged, participationSolve: { kind: 'none' } };
+      } catch {
+        return { participationSpec: DEFAULT_PARTICIPATION, participationSolve: { kind: 'none' } };
+      }
     }),
+  applyParticipationPreset: (preset) =>
+    set((s) => ({
+      participationSpec: participationPreset(preset, s.participationSpec),
+      participationSolve: { kind: 'none' },
+    })),
 
   accumulatorSpec: DEFAULT_ACCUMULATOR,
   accumulatorSolve: { kind: 'strike' },

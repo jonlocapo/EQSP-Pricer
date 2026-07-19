@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useTradeStore } from '../state/tradeStore';
+import { useTradeStore, PARTICIPATION_PRESET_LABELS, type ParticipationPreset } from '../state/tradeStore';
 import { useMarketStore } from '../state/marketStore';
 import { useResultsStore } from '../state/resultsStore';
 import { Card } from '../components/Card';
@@ -11,7 +11,7 @@ import { ActionRow } from '../components/ActionRow';
 import { validateParticipation } from '../services/validation';
 import { participationSolveOptions } from '../services/solveOptions';
 import { runPricing } from '../services/runPricing';
-import type { BarrierMonitoring, ParticipationSubtype, UpsideVariant } from '../model/product';
+import type { BarrierMonitoring, UpsideVariant } from '../model/product';
 import type { SolveTarget } from '../model/request';
 
 /** Standard downside leverage: 1/downsideStrike so a 100% stock decline exhausts the leg. */
@@ -22,19 +22,13 @@ function autoDownsideLeverage(downsideStrikePct: number): number {
 
 const AUTO_LEVERAGE_EPS = 0.01;
 
-const SUBTYPE_OPTIONS: { value: ParticipationSubtype; label: string }[] = [
-  { value: 'booster', label: 'Booster' },
-  { value: 'bonus', label: 'Bonus' },
-  { value: 'capitalGuaranteed', label: 'Capital Guaranteed' },
-  { value: 'twinWin', label: 'Twin Win' },
-];
+const PRESET_OPTIONS: ParticipationPreset[] = ['booster', 'bonus', 'capitalGuaranteed', 'twinWin'];
 
 export function ParticipationPage() {
-  const subtype = useTradeStore((s) => s.participationSubtype);
-  const drafts = useTradeStore((s) => s.participationDrafts);
+  const spec = useTradeStore((s) => s.participationSpec);
   const solve = useTradeStore((s) => s.participationSolve);
-  const setSubtype = useTradeStore((s) => s.setParticipationSubtype);
-  const patchDraft = useTradeStore((s) => s.patchParticipationDraft);
+  const patchSpec = useTradeStore((s) => s.patchParticipationSpec);
+  const applyPreset = useTradeStore((s) => s.applyParticipationPreset);
   const setSolve = useTradeStore((s) => s.setParticipationSolve);
   const market = useMarketStore((s) => s.market);
   const underlyingName = useMarketStore((s) => s.underlyingName);
@@ -43,24 +37,21 @@ export function ParticipationPage() {
   const [greeks, setGreeks] = useState(false);
   const [lastLowerStrike, setLastLowerStrike] = useState(90);
 
-  const spec = drafts[subtype];
-
-  // Booster downside leverage auto-tracks 1/downsideStrike until the user
-  // types a value that diverges from it (mirrors the RC/AC coupon page's
-  // put-strike tracking).
-  const prevDownsideStrikeRef = useRef(drafts.booster.downsideStrikePct);
+  // Downside leverage auto-tracks 1/downsideStrike until the user types a
+  // value that diverges from it (mirrors the RC/AC coupon page's put-strike
+  // tracking).
+  const prevDownsideStrikeRef = useRef(spec.downside.strikePct);
   useEffect(() => {
     const prevStrike = prevDownsideStrikeRef.current;
-    const boosterSpec = drafts.booster;
-    if (prevStrike !== boosterSpec.downsideStrikePct) {
+    if (prevStrike !== spec.downside.strikePct) {
       const autoForOld = autoDownsideLeverage(prevStrike);
-      if (Math.abs(boosterSpec.downsideLeveragePct - autoForOld) < AUTO_LEVERAGE_EPS) {
-        patchDraft('booster', { downsideLeveragePct: autoDownsideLeverage(boosterSpec.downsideStrikePct) });
+      if (Math.abs(spec.downside.leveragePct - autoForOld) < AUTO_LEVERAGE_EPS) {
+        patchSpec({ downside: { ...spec.downside, leveragePct: autoDownsideLeverage(spec.downside.strikePct) } });
       }
-      prevDownsideStrikeRef.current = boosterSpec.downsideStrikePct;
+      prevDownsideStrikeRef.current = spec.downside.strikePct;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [drafts.booster.downsideStrikePct]);
+  }, [spec.downside.strikePct]);
 
   const validation = validateParticipation(spec, market);
   const solveOptions = participationSolveOptions(spec);
@@ -72,8 +63,16 @@ export function ParticipationPage() {
     return solve.kind === kind;
   }
 
-  function patchUpside(patch: Partial<UpsideVariant>) {
-    patchDraft(subtype, { upside: { ...spec.upside, ...patch } as UpsideVariant } as never);
+  function patchUpside(patch: Partial<{ strikePct: number; participationPct: number }>) {
+    patchSpec({ upside: { ...spec.upside, ...patch } });
+  }
+
+  function patchUpsideVariant(patch: Partial<UpsideVariant>) {
+    patchSpec({ upside: { ...spec.upside, variant: { ...spec.upside.variant, ...patch } as UpsideVariant } });
+  }
+
+  function patchDownside(patch: Partial<typeof spec.downside>) {
+    patchSpec({ downside: { ...spec.downside, ...patch } });
   }
 
   function handleRun() {
@@ -82,15 +81,12 @@ export function ParticipationPage() {
 
   return (
     <div className="page-grid">
-      <div style={{ gridColumn: '1 / -1' }}>
-        <Segmented<ParticipationSubtype>
-          value={subtype}
-          options={SUBTYPE_OPTIONS}
-          onChange={(v) => {
-            setSubtype(v);
-            setSolve({ kind: 'none' });
-          }}
-        />
+      <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 8 }}>
+        {PRESET_OPTIONS.map((p) => (
+          <button key={p} type="button" className="btn btn-sm" onClick={() => applyPreset(p)}>
+            {PARTICIPATION_PRESET_LABELS[p]}
+          </button>
+        ))}
       </div>
 
       <Card title="General Terms">
@@ -99,12 +95,12 @@ export function ParticipationPage() {
           value={spec.notional}
           step={10000}
           suffix={spec.currency}
-          onChange={(v) => patchDraft(subtype, { notional: v } as never)}
+          onChange={(v) => patchSpec({ notional: v })}
           error={validation.errors.notional}
         />
         <TenorField
           years={spec.tenorYears}
-          onChange={(v) => patchDraft(subtype, { tenorYears: v } as never)}
+          onChange={(v) => patchSpec({ tenorYears: v })}
           error={validation.errors.tenorYears}
         />
         <div className="field">
@@ -130,226 +126,80 @@ export function ParticipationPage() {
             value={spec.reofferPct}
             step={0.1}
             suffix="%"
-            onChange={(v) => patchDraft(subtype, { reofferPct: v } as never)}
+            onChange={(v) => patchSpec({ reofferPct: v })}
           />
           <NumericField
             label="Issue price"
             value={spec.issuePricePct}
             step={0.1}
             suffix="%"
-            onChange={(v) => patchDraft(subtype, { issuePricePct: v } as never)}
+            onChange={(v) => patchSpec({ issuePricePct: v })}
           />
         </div>
       </Card>
 
-      <Card title={SUBTYPE_OPTIONS.find((o) => o.value === subtype)!.label}>
-        {spec.subtype === 'booster' && (
-          <>
-            <div className="field-row">
-              <NumericField
-                label="Strike"
-                value={spec.strikePct}
-                step={1}
-                suffix="%"
-                onChange={(v) => patchDraft('booster', { strikePct: v })}
-              />
-              <NumericField
-                label="Gearing"
-                value={spec.gearingPct}
-                step={5}
-                suffix="%"
-                onChange={(v) => patchDraft('booster', { gearingPct: v })}
-                solved={fieldSolved('gearing')}
-              />
-            </div>
-            <div className="field-row">
-              <NumericField
-                label="Downside strike"
-                value={spec.downsideStrikePct}
-                step={1}
-                suffix="%"
-                onChange={(v) => patchDraft('booster', { downsideStrikePct: v })}
-              />
-              <NumericField
-                label="Downside leverage"
-                value={spec.downsideLeveragePct}
-                step={5}
-                suffix="%"
-                onChange={(v) => patchDraft('booster', { downsideLeveragePct: v })}
-                badge={
-                  Math.abs(spec.downsideLeveragePct - autoDownsideLeverage(spec.downsideStrikePct)) < AUTO_LEVERAGE_EPS
-                    ? 'AUTO'
-                    : undefined
-                }
-              />
-            </div>
-            <div className="field">
-              <div className="field-label">
-                <span>Barrier</span>
-              </div>
-              <Segmented<BarrierMonitoring>
-                value={spec.barrierType}
-                options={[
-                  { value: 'none', label: 'None' },
-                  { value: 'european', label: 'European' },
-                  { value: 'american', label: 'American' },
-                ]}
-                onChange={(v) => patchDraft('booster', { barrierType: v })}
-              />
-            </div>
-            {spec.barrierType !== 'none' && (
-              <NumericField
-                label="KI barrier"
-                value={spec.kiBarrierPct}
-                step={1}
-                suffix="%"
-                onChange={(v) => patchDraft('booster', { kiBarrierPct: v })}
-              />
-            )}
-          </>
-        )}
-
-        {spec.subtype === 'bonus' && (
-          <>
-            <NumericField
-              label="Bonus level"
-              value={spec.bonusLevelPct}
-              step={1}
-              suffix="%"
-              onChange={(v) => patchDraft('bonus', { bonusLevelPct: v })}
-              solved={fieldSolved('bonusLevel')}
-            />
-            <div className="field">
-              <div className="field-label">
-                <span>Barrier</span>
-              </div>
-              <Segmented<'european' | 'american'>
-                value={spec.barrierType}
-                options={[
-                  { value: 'european', label: 'European' },
-                  { value: 'american', label: 'American' },
-                ]}
-                onChange={(v) => patchDraft('bonus', { barrierType: v })}
-              />
-            </div>
-            <NumericField
-              label="KI barrier"
-              value={spec.kiBarrierPct}
-              step={1}
-              suffix="%"
-              onChange={(v) => patchDraft('bonus', { kiBarrierPct: v })}
-            />
-          </>
-        )}
-
-        {spec.subtype === 'capitalGuaranteed' && (
-          <>
-            <NumericField
-              label="Protection"
-              value={spec.protectionPct}
-              step={1}
-              suffix="%"
-              onChange={(v) => patchDraft('capitalGuaranteed', { protectionPct: v })}
-            />
-            <NumericField
-              label="Strike"
-              value={spec.strikePct}
-              step={1}
-              suffix="%"
-              onChange={(v) => patchDraft('capitalGuaranteed', { strikePct: v })}
-            />
-            <NumericField
-              label="Participation"
-              value={spec.participationPct}
-              step={5}
-              suffix="%"
-              onChange={(v) => patchDraft('capitalGuaranteed', { participationPct: v })}
-              solved={fieldSolved('participation')}
-            />
-          </>
-        )}
-
-        {spec.subtype === 'twinWin' && (
-          <>
-            <div className="field-row">
-              <NumericField
-                label="Part up"
-                value={spec.partUpPct}
-                step={5}
-                suffix="%"
-                onChange={(v) => patchDraft('twinWin', { partUpPct: v })}
-                solved={fieldSolved('partUp')}
-              />
-              <NumericField
-                label="Part down"
-                value={spec.partDownPct}
-                step={5}
-                suffix="%"
-                onChange={(v) => patchDraft('twinWin', { partDownPct: v })}
-              />
-            </div>
-            <div className="field">
-              <div className="field-label">
-                <span>Barrier</span>
-              </div>
-              <Segmented<'european' | 'american'>
-                value={spec.barrierType}
-                options={[
-                  { value: 'european', label: 'European' },
-                  { value: 'american', label: 'American' },
-                ]}
-                onChange={(v) => patchDraft('twinWin', { barrierType: v })}
-              />
-            </div>
-            <NumericField
-              label="KI barrier"
-              value={spec.kiBarrierPct}
-              step={1}
-              suffix="%"
-              onChange={(v) => patchDraft('twinWin', { kiBarrierPct: v })}
-            />
-          </>
-        )}
-      </Card>
-
       <Card title="Upside">
+        <div className="field-row">
+          <NumericField
+            label="Strike"
+            value={spec.upside.strikePct}
+            step={1}
+            suffix="%"
+            onChange={(v) => patchUpside({ strikePct: v })}
+            solved={fieldSolved('upsideStrike')}
+          />
+          <NumericField
+            label="Participation"
+            value={spec.upside.participationPct}
+            step={5}
+            suffix="%"
+            onChange={(v) => patchUpside({ participationPct: v })}
+            solved={fieldSolved('gearing')}
+          />
+        </div>
         <div className="field">
           <div className="field-label">
             <span>Variant</span>
           </div>
           <Segmented<UpsideVariant['variant']>
-            value={spec.upside.variant}
+            value={spec.upside.variant.variant}
             options={[
               { value: 'vanilla', label: 'Vanilla' },
               { value: 'callSpread', label: 'Call Spread' },
               { value: 'koRebate', label: 'KO + Rebate' },
             ]}
             onChange={(v) => {
-              if (v === 'vanilla') patchUpside({ variant: 'vanilla' });
-              else if (v === 'callSpread') patchUpside({ variant: 'callSpread', upperStrikePct: 120 } as never);
-              else patchUpside({ variant: 'koRebate', koBarrierPct: 120, koMonitoring: 'american', rebatePct: 5 } as never);
+              if (v === 'vanilla') patchUpsideVariant({ variant: 'vanilla' });
+              else if (v === 'callSpread') patchUpsideVariant({ variant: 'callSpread', upperStrikePct: 120 } as never);
+              else
+                patchUpsideVariant({
+                  variant: 'koRebate',
+                  koBarrierPct: 120,
+                  koMonitoring: 'american',
+                  rebatePct: 5,
+                } as never);
             }}
           />
         </div>
-        {spec.upside.variant === 'callSpread' && (
+        {spec.upside.variant.variant === 'callSpread' && (
           <NumericField
             label="Upper strike"
-            value={spec.upside.upperStrikePct}
+            value={spec.upside.variant.upperStrikePct}
             step={1}
             suffix="%"
-            onChange={(v) => patchUpside({ upperStrikePct: v } as never)}
+            onChange={(v) => patchUpsideVariant({ upperStrikePct: v } as never)}
             error={validation.errors.upperStrikePct}
             solved={fieldSolved('upperStrike')}
           />
         )}
-        {spec.upside.variant === 'koRebate' && (
+        {spec.upside.variant.variant === 'koRebate' && (
           <>
             <NumericField
               label="KO barrier"
-              value={spec.upside.koBarrierPct}
+              value={spec.upside.variant.koBarrierPct}
               step={1}
               suffix="%"
-              onChange={(v) => patchUpside({ koBarrierPct: v } as never)}
+              onChange={(v) => patchUpsideVariant({ koBarrierPct: v } as never)}
               error={validation.errors.koBarrierPct}
               solved={fieldSolved('upsideKoBarrier')}
             />
@@ -358,52 +208,130 @@ export function ParticipationPage() {
                 <span>Monitoring</span>
               </div>
               <Segmented<'american' | 'european'>
-                value={spec.upside.koMonitoring}
+                value={spec.upside.variant.koMonitoring}
                 options={[
                   { value: 'american', label: 'American' },
                   { value: 'european', label: 'European' },
                 ]}
-                onChange={(v) => patchUpside({ koMonitoring: v } as never)}
+                onChange={(v) => patchUpsideVariant({ koMonitoring: v } as never)}
               />
             </div>
             <NumericField
               label="Rebate"
-              value={spec.upside.rebatePct}
+              value={spec.upside.variant.rebatePct}
               step={1}
               suffix="%"
-              onChange={(v) => patchUpside({ rebatePct: v } as never)}
+              onChange={(v) => patchUpsideVariant({ rebatePct: v } as never)}
               solved={fieldSolved('rebate')}
             />
           </>
         )}
       </Card>
 
-      {subtype !== 'capitalGuaranteed' && (
-        <Card title="Downside">
-          <Toggle
-            label="Put spread floor"
-            checked={!!spec.downsidePutSpread}
-            onChange={(on) => {
-              if (on) {
-                patchDraft(subtype, { downsidePutSpread: { lowerStrikePct: lastLowerStrike } } as never);
-              } else {
-                if (spec.downsidePutSpread) setLastLowerStrike(spec.downsidePutSpread.lowerStrikePct);
-                patchDraft(subtype, { downsidePutSpread: undefined } as never);
-              }
-            }}
+      <Card title="Downside">
+        <div className="field-row">
+          <NumericField
+            label="Strike"
+            value={spec.downside.strikePct}
+            step={1}
+            suffix="%"
+            onChange={(v) => patchDownside({ strikePct: v })}
           />
-          {spec.downsidePutSpread && (
+          <NumericField
+            label="Leverage"
+            value={spec.downside.leveragePct}
+            step={5}
+            suffix="%"
+            onChange={(v) => patchDownside({ leveragePct: v })}
+            solved={fieldSolved('downsideLeverage')}
+            badge={
+              Math.abs(spec.downside.leveragePct - autoDownsideLeverage(spec.downside.strikePct)) < AUTO_LEVERAGE_EPS
+                ? 'AUTO'
+                : undefined
+            }
+          />
+        </div>
+        <div className="field">
+          <div className="field-label">
+            <span>KI Barrier</span>
+          </div>
+          <Segmented<BarrierMonitoring>
+            value={spec.downside.barrierType}
+            options={[
+              { value: 'none', label: 'None' },
+              { value: 'european', label: 'European' },
+              { value: 'american', label: 'American' },
+            ]}
+            onChange={(v) => patchDownside({ barrierType: v })}
+          />
+        </div>
+        {spec.downside.barrierType !== 'none' && (
+          <>
             <NumericField
-              label="Lower strike"
-              value={spec.downsidePutSpread.lowerStrikePct}
+              label="KI level"
+              value={spec.downside.kiBarrierPct}
               step={1}
               suffix="%"
-              onChange={(v) => patchDraft(subtype, { downsidePutSpread: { lowerStrikePct: v } } as never)}
-              error={validation.errors.lowerStrikePct}
+              onChange={(v) => patchDownside({ kiBarrierPct: v })}
+              error={validation.errors.kiBarrierPct}
+              solved={fieldSolved('kiBarrier')}
             />
-          )}
-        </Card>
-      )}
+            <NumericField
+              label="Twin-win participation"
+              value={spec.downside.twinWinPct}
+              step={5}
+              suffix="%"
+              onChange={(v) => patchDownside({ twinWinPct: v })}
+              solved={fieldSolved('twinWin')}
+              hint="Positive participation in the downside while not knocked in. 0 = off."
+            />
+          </>
+        )}
+        <Toggle
+          label="Put spread floor"
+          checked={!!spec.downside.putSpread}
+          onChange={(on) => {
+            if (on) {
+              patchDownside({ putSpread: { lowerStrikePct: lastLowerStrike } });
+            } else {
+              if (spec.downside.putSpread) setLastLowerStrike(spec.downside.putSpread.lowerStrikePct);
+              patchDownside({ putSpread: undefined });
+            }
+          }}
+        />
+        {spec.downside.putSpread && (
+          <NumericField
+            label="Lower strike"
+            value={spec.downside.putSpread.lowerStrikePct}
+            step={1}
+            suffix="%"
+            onChange={(v) => patchDownside({ putSpread: { lowerStrikePct: v } })}
+            error={validation.errors.lowerStrikePct}
+          />
+        )}
+      </Card>
+
+      <Card title="Bonus & Protection">
+        <div className="field-row">
+          <NumericField
+            label="Bonus"
+            value={spec.bonusPct}
+            step={1}
+            suffix="%"
+            onChange={(v) => patchSpec({ bonusPct: v })}
+            solved={fieldSolved('bonusLevel')}
+            hint="Amount above par, e.g. 15 = 115% if not knocked in. 0 = none."
+          />
+          <NumericField
+            label="Protection"
+            value={spec.protectionPct}
+            step={1}
+            suffix="%"
+            onChange={(v) => patchSpec({ protectionPct: v })}
+            hint="Capital protection floor, % of notional. 0 = none."
+          />
+        </div>
+      </Card>
 
       <div style={{ gridColumn: '1 / -1' }}>
         <ActionRow

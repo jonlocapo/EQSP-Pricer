@@ -1,4 +1,5 @@
 import type { MarketData } from '../model/market';
+import { riskNeutralDrift } from '../model/market';
 import { normals } from './rng';
 
 /** Daily simulation frequency used throughout the engine. */
@@ -17,8 +18,8 @@ export function fillPath(
   z: Float64Array,
   sign: 1 | -1,
 ): void {
-  const { rate, divYield, vol } = market;
-  const drift = (rate - divYield - 0.5 * vol * vol) * dtYears;
+  const { vol } = market;
+  const drift = (riskNeutralDrift(market) - 0.5 * vol * vol) * dtYears;
   const diffCoeff = vol * Math.sqrt(dtYears);
   spots[0] = s0;
   const nSteps = z.length;

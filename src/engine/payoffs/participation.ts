@@ -3,25 +3,36 @@ import type { EvaluatorContext, PathOutcome, PayoffEvaluator } from './types';
 import { timeOf } from './types';
 
 /**
- * Participation products decompose into an upside leg (subject to an upside
- * variant: vanilla / call spread / KO+rebate) and, where applicable, a
- * downside leg (subject to an optional put-spread floor).
+ * Generic participation payoff: one upside leg + one downside leg + optional
+ * bonus floor + optional protection floor. The four classic subtypes
+ * (Booster, Bonus, Capital Guaranteed, Twin Win) are just presets of this
+ * one shape (see tradeStore's participationPreset).
  *
- * KO-rebate rule (documented per the spec author's instruction, since the
- * plain "replace the upside leg" description is ambiguous for the additive
- * subtypes): when the KO event fires, the *entire* variant-upside amount
- * that would otherwise be added on top of the base leg is replaced by the
- * flat `rebatePct`, i.e. `variantUpsideAmt := rebatePct` instead of the
- * usual `(effPerf(perf) - 1) * 100`-shaped term. Any pre-existing
- * gearing/participation multiplier that would normally scale that term is
- * NOT reapplied to the rebate — the rebate is the leg, verbatim. Downside /
- * protection / bonus-floor logic is computed independently of KO status.
+ *   effPerf   = callSpread ? min(perf, upperStrike/100) : perf
+ *   upsideAmt = participationPct/100 * max(0, effPerf - upStrike/100) * 100
+ *   koRebate KO event -> upsideAmt := rebatePct (verbatim, not re-geared)
+ *
+ *   kiEvent   = barrierType 'none' -> always exposed (loss leg always live)
+ *             | 'european' -> perf_T < kiBarrier/100
+ *             | 'american' -> daily min perf < kiBarrier/100
+ *
+ *   NOT kiEvent (only reachable when barrierType !== 'none'):
+ *     twinWinAmt = twinWinPct/100 * max(0, dnStrike/100 - perf) * 100
+ *     red = max(100 + bonusPct, 100 + upsideAmt + twinWinAmt)
+ *   else (KI'd, or barrierType 'none'):
+ *     floorPerf  = putSpread ? max(perf, lowerStrike/100) : perf
+ *     loss       = leveragePct/100 * max(0, dnStrikePct - 100*floorPerf)
+ *     red        = 100 + upsideAmt - loss          (bonus / twin-win lost)
+ *
+ *   red = max(red, protectionPct, 0)
+ *
+ * kiEvent is reported on the outcome only when barrierType !== 'none'.
  */
 
 function evalKi(barrierType: BarrierMonitoring, kiBarrierPct: number, spots: Float64Array): boolean {
   const S0 = spots[0];
   const nSteps = spots.length - 1;
-  if (barrierType === 'none') return true; // caller only invokes this when relevant
+  if (barrierType === 'none') return true; // always exposed
   if (barrierType === 'european') {
     return spots[nSteps] / S0 < kiBarrierPct / 100;
   }
@@ -71,93 +82,37 @@ export function makeParticipationEvaluator(
   return (spots: Float64Array): PathOutcome => {
     const S0 = spots[0];
     const perfT = spots[grid.nSteps] / S0;
-    const koEvent = evalKo(spec.upside, spots);
-    let kiEvent: boolean | undefined;
-    let redemptionPct: number;
 
-    switch (spec.subtype) {
-      case 'booster': {
-        const strike = spec.strikePct / 100;
-        const gearing = spec.gearingPct / 100;
-        const effPerf = effUpsidePerf(spec.upside, perfT);
-        const upsideLeg = koEvent
-          ? spec.upside.variant === 'koRebate'
-            ? spec.upside.rebatePct
-            : 0
-          : gearing * Math.max(0, effPerf - strike) * 100;
-
-        const isKi = evalKi(spec.barrierType, spec.kiBarrierPct, spots);
-        kiEvent = spec.barrierType === 'none' ? undefined : isKi;
-        const exposed = spec.barrierType === 'none' || isKi;
-        let downsideLeg = 0;
-        if (exposed) {
-          const downStrike = spec.downsideStrikePct / 100;
-          const floored = effDownsidePerf(spec.downsidePutSpread?.lowerStrikePct, perfT);
-          if (floored < downStrike) {
-            downsideLeg = (spec.downsideLeveragePct / 100) * (downStrike - floored) * 100;
-          }
-        }
-        redemptionPct = 100 + upsideLeg - downsideLeg;
-        break;
-      }
-
-      case 'bonus': {
-        const isKi = evalKi(spec.barrierType, spec.kiBarrierPct, spots);
-        kiEvent = isKi;
-        const effPerf = effUpsidePerf(spec.upside, perfT);
-        const variantUpsideAmt = koEvent
-          ? spec.upside.variant === 'koRebate'
-            ? spec.upside.rebatePct
-            : 0
-          : (effPerf - 1) * 100;
-        if (!isKi) {
-          redemptionPct = Math.max(spec.bonusLevelPct, 100 + variantUpsideAmt);
-        } else {
-          const flooredPerf = effDownsidePerf(spec.downsidePutSpread?.lowerStrikePct, perfT);
-          redemptionPct = Math.min(100 * flooredPerf, 100 + variantUpsideAmt);
-        }
-        break;
-      }
-
-      case 'capitalGuaranteed': {
-        const strike = spec.strikePct / 100;
-        const effPerf = effUpsidePerf(spec.upside, perfT);
-        const upsideLeg = koEvent
-          ? spec.upside.variant === 'koRebate'
-            ? spec.upside.rebatePct
-            : 0
-          : (spec.participationPct / 100) * Math.max(0, effPerf - strike) * 100;
-        kiEvent = undefined;
-        redemptionPct = Math.max(spec.protectionPct, spec.protectionPct + upsideLeg);
-        break;
-      }
-
-      case 'twinWin': {
-        const isKi = evalKi(spec.barrierType, spec.kiBarrierPct, spots);
-        kiEvent = isKi;
-        const effPerf = effUpsidePerf(spec.upside, perfT);
-        const upLeg = koEvent
-          ? spec.upside.variant === 'koRebate'
-            ? spec.upside.rebatePct
-            : 0
-          : (spec.partUpPct / 100) * Math.max(0, effPerf - 1) * 100;
-        if (!isKi) {
-          const flooredPerf = effDownsidePerf(spec.downsidePutSpread?.lowerStrikePct, perfT);
-          const downLeg = (spec.partDownPct / 100) * Math.max(0, 1 - flooredPerf) * 100;
-          redemptionPct = 100 + upLeg + downLeg;
-        } else {
-          const flooredPerf = effDownsidePerf(spec.downsidePutSpread?.lowerStrikePct, perfT);
-          redemptionPct = Math.min(100 * flooredPerf, 100 + upLeg);
-        }
-        break;
-      }
+    const koEvent = evalKo(spec.upside.variant, spots);
+    const upStrike = spec.upside.strikePct / 100;
+    const effPerf = effUpsidePerf(spec.upside.variant, perfT);
+    let upsideAmt = (spec.upside.participationPct / 100) * Math.max(0, effPerf - upStrike) * 100;
+    if (koEvent) {
+      upsideAmt = spec.upside.variant.variant === 'koRebate' ? spec.upside.variant.rebatePct : 0;
     }
+
+    const isKi = evalKi(spec.downside.barrierType, spec.downside.kiBarrierPct, spots);
+    const kiEvent = spec.downside.barrierType === 'none' ? undefined : isKi;
+
+    let redemptionPct: number;
+    if (!isKi) {
+      // Only reachable when barrierType !== 'none'.
+      const dnStrike = spec.downside.strikePct / 100;
+      const twinWinAmt = (spec.downside.twinWinPct / 100) * Math.max(0, dnStrike - perfT) * 100;
+      redemptionPct = Math.max(100 + spec.bonusPct, 100 + upsideAmt + twinWinAmt);
+    } else {
+      const flooredPerf = effDownsidePerf(spec.downside.putSpread?.lowerStrikePct, perfT);
+      const loss = (spec.downside.leveragePct / 100) * Math.max(0, spec.downside.strikePct - 100 * flooredPerf);
+      redemptionPct = 100 + upsideAmt - loss;
+    }
+
+    redemptionPct = Math.max(redemptionPct, spec.protectionPct, 0);
 
     const T = timeOf(grid.nSteps, grid);
     return {
       pvPct: ctx.df(T) * redemptionPct,
       kiEvent,
-      upsideKoEvent: spec.upside.variant === 'koRebate' ? koEvent : undefined,
+      upsideKoEvent: spec.upside.variant.variant === 'koRebate' ? koEvent : undefined,
       lifeYears: spec.tenorYears,
     };
   };

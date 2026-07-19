@@ -3,7 +3,7 @@ import { executePriceRequest } from '../src/worker/pricing';
 import type { PricingHooks } from '../src/worker/pricing';
 import { bsCall } from '../src/engine/blackScholes';
 import type { MarketData } from '../src/model/market';
-import type { CapitalGuaranteedSpec, CouponProductSpec } from '../src/model/product';
+import type { CouponProductSpec, ParticipationSpec } from '../src/model/product';
 import type { PriceRequest } from '../src/model/request';
 
 const market: MarketData = { spot: 100, vol: 0.25, rate: 0.02, divYield: 0.02, currency: 'EUR' };
@@ -14,19 +14,18 @@ const hooks: PricingHooks = {
   yieldNow: () => Promise.resolve(),
 };
 
-const capGuar: CapitalGuaranteedSpec = {
+const capGuar: ParticipationSpec = {
   kind: 'participation',
-  subtype: 'capitalGuaranteed',
   underlyings: [{ name: 'TEST' }],
   currency: 'EUR',
   notional: 1_000_000,
   tenorYears: 1,
   reofferPct: 100,
   issuePricePct: 100,
-  upside: { variant: 'vanilla' },
+  upside: { strikePct: 100, participationPct: 100, variant: { variant: 'vanilla' } },
+  downside: { strikePct: 100, leveragePct: 0, barrierType: 'none', kiBarrierPct: 60, twinWinPct: 0 },
+  bonusPct: 0,
   protectionPct: 100,
-  strikePct: 100,
-  participationPct: 100,
 };
 
 const brc: CouponProductSpec = {
@@ -55,11 +54,11 @@ const brc: CouponProductSpec = {
   acCouponPct: 0,
 };
 
-function req(product: PriceRequest['product'], solve: PriceRequest['solve']): PriceRequest {
+function req(product: PriceRequest['product'], solve: PriceRequest['solve'], m: MarketData = market): PriceRequest {
   return {
     id: 't',
     product,
-    market,
+    market: m,
     mc: { numPaths: 100_000, seed: 42, antithetic: true },
     solve,
     greeks: false,
@@ -100,6 +99,21 @@ describe('executePriceRequest', () => {
     expect(res!.diagnostics.kiProb).toBeLessThan(0.5);
     expect(res!.diagnostics.expectedLifeYears).toBeGreaterThan(0.2);
     expect(res!.diagnostics.expectedLifeYears).toBeLessThan(1.01);
+  });
+
+  it('prices with a quanto market set and yields a lower PV than the matching single-ccy case (positive rho)', async () => {
+    const quantoMarket: MarketData = {
+      ...market,
+      currency: 'USD',
+      quanto: { rateUnderlying: market.rate, fxVol: 0.12, corrEqFx: 0.4 },
+    };
+    const withQuanto = await executePriceRequest(req(capGuar, { kind: 'none' }, quantoMarket), hooks);
+    const withoutQuanto = await executePriceRequest(req(capGuar, { kind: 'none' }), hooks);
+    expect(withQuanto).not.toBeNull();
+    expect(withoutQuanto).not.toBeNull();
+    expect(Number.isFinite(withQuanto!.pvPct)).toBe(true);
+    expect(Number.isFinite(withoutQuanto!.pvPct)).toBe(true);
+    expect(withQuanto!.pvPct).toBeLessThan(withoutQuanto!.pvPct);
   });
 
   it('respects cancellation', async () => {
