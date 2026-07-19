@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useMarketStore } from '../state/marketStore';
 import { fetchSpot } from '../services/spotFetch';
-import { fetchHistVol, fetchRefRate, REF_RATE_CCYS } from '../services/marketFetch';
+import { fetchFxRealizedVolAndCorr, fetchHistVol, fetchRefRate, REF_RATE_CCYS } from '../services/marketFetch';
 import { fetchImpliedFromOptions } from '../services/impliedFetch';
 import { useTradeStore } from '../state/tradeStore';
 import { NumericField } from './NumericField';
@@ -85,17 +85,18 @@ async function fetchLiveData(
 
   // Cross-currency note: the quanto drift needs the UNDERLYING currency's
   // rate (not the note rate). Fetch it when there's a mismatch and an open
-  // source exists; FX vol and correlation have no free source and stay
-  // manual.
+  // source exists; FX vol and Eq-FX correlation are auto-filled from Yahoo
+  // 1Y realized FX/equity closes (best-effort, manual edits still override).
   if (underlyingCcy && underlyingCcy !== noteCcy) {
     const cur = useMarketStore.getState().market.quanto;
     if ((REF_RATE_CCYS as readonly string[]).includes(underlyingCcy)) {
       try {
         const ur = await fetchRefRate(underlyingCcy);
+        const latest = useMarketStore.getState().market.quanto;
         useMarketStore.getState().setQuanto({
           rateUnderlying: ur.rate,
-          fxVol: cur?.fxVol ?? 0.1,
-          corrEqFx: cur?.corrEqFx ?? 0,
+          fxVol: latest?.fxVol ?? cur?.fxVol ?? 0.1,
+          corrEqFx: latest?.corrEqFx ?? cur?.corrEqFx ?? 0,
         });
         lines.push({ kind: 'ok', msg: `Underlying rate ${(ur.rate * 100).toFixed(3)}% · ${ur.source}` });
       } catch (urErr) {
@@ -104,7 +105,25 @@ async function fetchLiveData(
     } else {
       lines.push({ kind: 'info', msg: `No open rate source for ${underlyingCcy} — set underlying rate manually` });
     }
-    lines.push({ kind: 'info', msg: 'FX vol & Eq-FX correlation have no free source — enter manually' });
+
+    try {
+      const fx = await fetchFxRealizedVolAndCorr(underlyingCcy, noteCcy, ticker);
+      const latest = useMarketStore.getState().market.quanto;
+      useMarketStore.getState().setQuanto({
+        rateUnderlying: latest?.rateUnderlying ?? cur?.rateUnderlying ?? 0,
+        fxVol: fx.fxVol,
+        corrEqFx: fx.corrEqFx,
+      });
+      lines.push({
+        kind: 'ok',
+        msg: `FX vol ${(fx.fxVol * 100).toFixed(1)}%, eq-FX corr ${fx.corrEqFx.toFixed(2)} · ${fx.source}`,
+      });
+    } catch (fxErr) {
+      lines.push({
+        kind: 'info',
+        msg: `FX vol/correlation: ${fxErr instanceof Error ? fxErr.message : 'failed'} — enter manually`,
+      });
+    }
   }
 
   return lines;
@@ -277,8 +296,9 @@ export function MarketPanel() {
               onChange={(v) => setQuanto({ ...market.quanto!, corrEqFx: Math.min(1, Math.max(-1, v)) })}
             />
             <span className="text-muted" style={{ fontSize: 11 }}>
-              FX quoted as {market.currency} per {underlyingCurrency}. Underlying rate is fetched
-              with live data; FX vol &amp; correlation have no free source — enter manually.
+              FX quoted as {market.currency} per {underlyingCurrency}. Underlying rate, FX vol, and
+              Eq-FX correlation are fetched with live data (1Y realized) — overridable estimates,
+              not implied.
             </span>
           </div>
         )}

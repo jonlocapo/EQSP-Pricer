@@ -35,11 +35,24 @@ export function annualizedVolFromCloses(closes: number[]): { vol: number; days: 
   return { vol: Math.sqrt(variance * 252), days: rets.length };
 }
 
-/** Extracts the daily close series from a Yahoo chart-endpoint JSON payload. */
-export function closesFromYahooChart(json: unknown): number[] {
+/** A single daily close paired with its Yahoo epoch-seconds timestamp. */
+export interface DatedClose {
+  t: number;
+  close: number;
+}
+
+/**
+ * Extracts the parallel (timestamp, close) series from a Yahoo chart-endpoint
+ * JSON payload, dropping bars with a null/non-positive close (and their
+ * matching timestamp) so the two arrays stay aligned.
+ */
+export function closesWithDatesFromYahooChart(json: unknown): DatedClose[] {
   const parsed = json as {
     chart?: {
-      result?: { indicators?: { quote?: { close?: (number | null)[] }[] } }[];
+      result?: {
+        timestamp?: number[];
+        indicators?: { quote?: { close?: (number | null)[] }[] };
+      }[];
       error?: { description?: string } | null;
     };
   };
@@ -49,11 +62,23 @@ export function closesFromYahooChart(json: unknown): number[] {
   }
   const raw = result.indicators?.quote?.[0]?.close;
   if (!Array.isArray(raw)) throw new Error('Yahoo chart response has no close series');
-  const closes: number[] = [];
-  for (const c of raw) {
-    if (typeof c === 'number' && Number.isFinite(c) && c > 0) closes.push(c);
+  const timestamps = result.timestamp;
+  const out: DatedClose[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (typeof c === 'number' && Number.isFinite(c) && c > 0) {
+      // Fall back to the index when no timestamp array is present (some
+      // callers, e.g. plain vol history, don't need real dates).
+      const t = typeof timestamps?.[i] === 'number' ? timestamps[i] : i;
+      out.push({ t, close: c });
+    }
   }
-  return closes;
+  return out;
+}
+
+/** Extracts the daily close series from a Yahoo chart-endpoint JSON payload. */
+export function closesFromYahooChart(json: unknown): number[] {
+  return closesWithDatesFromYahooChart(json).map((d) => d.close);
 }
 
 async function fetchHistVolYahoo(symbol: string): Promise<HistVolResult> {
@@ -141,4 +166,115 @@ export async function fetchRefRate(currency: string): Promise<RefRateResult> {
     };
   }
   throw new Error(`No open reference-rate source for ${currency} — enter the rate manually`);
+}
+
+/**
+ * Fetches ~1Y of daily (timestamp, close) bars for a Yahoo-style symbol via
+ * the same chart endpoint used for spot/hist-vol. Works for equities and FX
+ * pairs alike (Yahoo serves FX crosses as `{BASE}{QUOTE}=X`).
+ */
+export async function fetchDailyCloses(yahooSymbol: string): Promise<DatedClose[]> {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=1y&interval=1d`;
+  let text: string;
+  try {
+    ({ text } = await fetchTextWithCorsFallback(url, 8000, (t) => t.trimStart().startsWith('{')));
+  } catch (e) {
+    throw new Error(`Daily closes unavailable for "${yahooSymbol}": ${e instanceof Error ? e.message : 'fetch failed'}`);
+  }
+  const closes = closesWithDatesFromYahooChart(JSON.parse(text));
+  if (closes.length === 0) throw new Error(`No daily closes returned for "${yahooSymbol}"`);
+  return closes;
+}
+
+/** Buckets an epoch-seconds timestamp to its UTC calendar date (YYYY-MM-DD). */
+function utcDateKey(epochSeconds: number): string {
+  return new Date(epochSeconds * 1000).toISOString().slice(0, 10);
+}
+
+/**
+ * Pearson correlation of daily log-returns between two dated close series,
+ * aligned by UTC calendar date (the two series may have different lengths
+ * and different trading calendars — FX trades ~365 days/yr, equities fewer).
+ * Throws if fewer than 30 overlapping days remain after alignment.
+ */
+export function realizedCorrelation(a: DatedClose[], b: DatedClose[]): number {
+  const bByDate = new Map<string, number>();
+  for (const d of b) bByDate.set(utcDateKey(d.t), d.close);
+
+  const alignedA: number[] = [];
+  const alignedB: number[] = [];
+  for (const d of a) {
+    const key = utcDateKey(d.t);
+    const bClose = bByDate.get(key);
+    if (bClose !== undefined) {
+      alignedA.push(d.close);
+      alignedB.push(bClose);
+    }
+  }
+  if (alignedA.length < 31) {
+    throw new Error('not enough overlapping history for correlation');
+  }
+
+  const retsA: number[] = [];
+  const retsB: number[] = [];
+  for (let i = 1; i < alignedA.length; i++) {
+    retsA.push(Math.log(alignedA[i] / alignedA[i - 1]));
+    retsB.push(Math.log(alignedB[i] / alignedB[i - 1]));
+  }
+  const meanA = retsA.reduce((x, y) => x + y, 0) / retsA.length;
+  const meanB = retsB.reduce((x, y) => x + y, 0) / retsB.length;
+  let cov = 0;
+  let varA = 0;
+  let varB = 0;
+  for (let i = 0; i < retsA.length; i++) {
+    const da = retsA[i] - meanA;
+    const db = retsB[i] - meanB;
+    cov += da * db;
+    varA += da * da;
+    varB += db * db;
+  }
+  if (varA === 0 || varB === 0) return 0;
+  const corr = cov / Math.sqrt(varA * varB);
+  return Math.min(1, Math.max(-1, corr));
+}
+
+export interface FxRealizedResult {
+  fxVol: number;
+  corrEqFx: number;
+  days: number;
+  source: string;
+}
+
+/**
+ * Realized FX vol and equity–FX correlation for a quanto note, from Yahoo
+ * daily closes (~1Y). FX rate X is quoted as units of NOTE currency per 1
+ * unit of UNDERLYING currency (`{UNDERLYING}{NOTE}=X`), matching the
+ * riskNeutralDrift sign convention and the "FX quoted as note per underlying"
+ * caption.
+ */
+export async function fetchFxRealizedVolAndCorr(
+  underlyingCcy: string,
+  noteCcy: string,
+  equityTicker: string,
+): Promise<FxRealizedResult> {
+  const fxSymbol = `${underlyingCcy.toUpperCase()}${noteCcy.toUpperCase()}=X`;
+  let fxCloses: DatedClose[];
+  try {
+    fxCloses = await fetchDailyCloses(fxSymbol);
+  } catch (e) {
+    throw new Error(`FX history unavailable for ${fxSymbol}: ${e instanceof Error ? e.message : 'fetch failed'}`);
+  }
+  const { vol: fxVol, days } = annualizedVolFromCloses(fxCloses.map((d) => d.close));
+
+  let corrEqFx = 0;
+  try {
+    const eqCloses = await fetchDailyCloses(equityTicker);
+    corrEqFx = realizedCorrelation(eqCloses, fxCloses);
+  } catch (e) {
+    throw new Error(
+      `FX vol ok but correlation failed (${e instanceof Error ? e.message : 'failed'}) — corr left as entered`,
+    );
+  }
+
+  return { fxVol, corrEqFx, days, source: 'yahoo 1Y realized' };
 }
