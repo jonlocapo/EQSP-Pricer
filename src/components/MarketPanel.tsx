@@ -41,7 +41,9 @@ async function fetchLiveData(
 
   const [spotR, rateR, impliedR] = await Promise.allSettled([spotP, rateP, impliedP]);
 
+  let underlyingCcy: string | undefined;
   if (spotR.status === 'fulfilled') {
+    underlyingCcy = spotR.value.currency;
     store.applyFetchedSpot(spotR.value.spot, spotR.value.source, spotR.value.asOf, spotR.value.currency);
     lines.push({ kind: 'ok', msg: `Spot ${spotR.value.spot} · ${spotR.value.source}` });
   } else {
@@ -79,6 +81,30 @@ async function fetchLiveData(
       lines.push({ kind: 'err', msg: `Vol: options (${impliedMsg}); hist (${hvErr instanceof Error ? hvErr.message : 'failed'})` });
       lines.push({ kind: 'info', msg: 'Div yield left as entered' });
     }
+  }
+
+  // Cross-currency note: the quanto drift needs the UNDERLYING currency's
+  // rate (not the note rate). Fetch it when there's a mismatch and an open
+  // source exists; FX vol and correlation have no free source and stay
+  // manual.
+  if (underlyingCcy && underlyingCcy !== noteCcy) {
+    const cur = useMarketStore.getState().market.quanto;
+    if ((REF_RATE_CCYS as readonly string[]).includes(underlyingCcy)) {
+      try {
+        const ur = await fetchRefRate(underlyingCcy);
+        useMarketStore.getState().setQuanto({
+          rateUnderlying: ur.rate,
+          fxVol: cur?.fxVol ?? 0.1,
+          corrEqFx: cur?.corrEqFx ?? 0,
+        });
+        lines.push({ kind: 'ok', msg: `Underlying rate ${(ur.rate * 100).toFixed(3)}% · ${ur.source}` });
+      } catch (urErr) {
+        lines.push({ kind: 'info', msg: `Underlying rate: ${urErr instanceof Error ? urErr.message : 'failed'} — enter manually` });
+      }
+    } else {
+      lines.push({ kind: 'info', msg: `No open rate source for ${underlyingCcy} — set underlying rate manually` });
+    }
+    lines.push({ kind: 'info', msg: 'FX vol & Eq-FX correlation have no free source — enter manually' });
   }
 
   return lines;
@@ -251,7 +277,8 @@ export function MarketPanel() {
               onChange={(v) => setQuanto({ ...market.quanto!, corrEqFx: Math.min(1, Math.max(-1, v)) })}
             />
             <span className="text-muted" style={{ fontSize: 11 }}>
-              FX quoted as {market.currency} per {underlyingCurrency}
+              FX quoted as {market.currency} per {underlyingCurrency}. Underlying rate is fetched
+              with live data; FX vol &amp; correlation have no free source — enter manually.
             </span>
           </div>
         )}
