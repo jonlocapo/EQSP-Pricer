@@ -80,6 +80,12 @@ export function CouponPage() {
     return solve.kind === kind;
   }
 
+  // "Price (reoffer)" is solve kind 'none' — its output is the price shown in
+  // the results panel, not a spec field. The Reoffer field is the closest
+  // analogue of that output (the target price the solve engine matches), so
+  // dim it the same way the other solve targets dim their own field.
+  const priceIsSolveTarget = solve.kind === 'none';
+
   function handleRun() {
     runPricing({
       page: 'coupon',
@@ -139,6 +145,7 @@ export function CouponPage() {
             suffix="%"
             onChange={(v) => setSpec({ reofferPct: v })}
             error={validation.errors.reofferPct}
+            solved={priceIsSolveTarget}
           />
           <NumericField
             label="Issue price"

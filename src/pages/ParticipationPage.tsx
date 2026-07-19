@@ -63,6 +63,12 @@ export function ParticipationPage() {
     return solve.kind === kind;
   }
 
+  // "Price (reoffer)" is solve kind 'none' — its output is the price shown in
+  // the results panel, not a spec field. The Reoffer field is the closest
+  // analogue of that output (the target price the solve engine matches), so
+  // dim it the same way the other solve targets dim their own field.
+  const priceIsSolveTarget = solve.kind === 'none';
+
   function patchUpside(patch: Partial<{ strikePct: number; participationPct: number }>) {
     patchSpec({ upside: { ...spec.upside, ...patch } });
   }
@@ -127,6 +133,7 @@ export function ParticipationPage() {
             step={0.1}
             suffix="%"
             onChange={(v) => patchSpec({ reofferPct: v })}
+            solved={priceIsSolveTarget}
           />
           <NumericField
             label="Issue price"
