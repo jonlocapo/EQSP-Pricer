@@ -180,10 +180,6 @@ export function applySolveValue(spec: ProductSpec, target: SolveTarget, x: numbe
       const p = spec as ParticipationSpec;
       return { ...p, upside: { ...p.upside, strikePct: x } };
     }
-    case 'downsideLeverage': {
-      const p = spec as ParticipationSpec;
-      return { ...p, downside: { ...p.downside, leveragePct: x } };
-    }
     case 'bonusLevel': {
       const p = spec as ParticipationSpec;
       return { ...p, bonusPct: x };
@@ -235,8 +231,6 @@ export function solveBounds(
       return { lo: 0, hi: 1000, hardLo: 0, hardHi: 1000, targetPct: reoffer };
     case 'upsideStrike':
       return { lo: 50, hi: 200, hardLo: 10, hardHi: 300, targetPct: reoffer };
-    case 'downsideLeverage':
-      return { lo: 0, hi: 300, hardLo: 0, hardHi: 500, targetPct: reoffer };
     case 'bonusLevel':
       return { lo: 0, hi: 100, hardLo: 0, hardHi: 100, targetPct: reoffer };
     case 'twinWin':

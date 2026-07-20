@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   annualizedVolFromCloses,
   closesFromYahooChart,
+  closesWithDatesFromYahooChart,
+  fetchFxRealizedVolAndCorr,
   fetchHistVol,
   fetchRefRate,
+  realizedCorrelation,
 } from '../src/services/marketFetch';
 import { fetchImpliedFromOptions } from '../src/services/impliedFetch';
 import { toCboeSymbol, toStooqSymbol } from '../src/services/symbols';
@@ -59,6 +62,17 @@ live('marketFetch (live network)', () => {
 
   it('fails loudly for unknown tickers', async () => {
     await expect(fetchImpliedFromOptions('ZZZZQQ', 1, 0.03)).rejects.toThrow(/no option chain|blocked/i);
+  });
+
+  it('fetches realized FX vol and eq-FX correlation for a USD underlying / EUR note', async () => {
+    // USD underlying, EUR note -> Yahoo symbol USDEUR=X (EUR per USD).
+    const r = await fetchFxRealizedVolAndCorr('USD', 'EUR', 'AAPL');
+    expect(r.fxVol).toBeGreaterThan(0.02);
+    expect(r.fxVol).toBeLessThan(0.4);
+    expect(r.corrEqFx).toBeGreaterThanOrEqual(-1);
+    expect(r.corrEqFx).toBeLessThanOrEqual(1);
+    expect(r.days).toBeGreaterThan(100);
+    expect(r.source).toContain('yahoo');
   });
 });
 
@@ -118,6 +132,93 @@ describe('marketFetch (offline)', () => {
     expect(() =>
       closesFromYahooChart({ chart: { result: [], error: { description: 'No data found' } } }),
     ).toThrow(/No data found/);
+  });
+
+  it('extracts (timestamp, close) pairs from a Yahoo chart payload, filtering nulls', () => {
+    const DAY = 86400;
+    const t0 = 1_700_000_000; // arbitrary epoch-seconds anchor
+    const json = {
+      chart: {
+        result: [
+          {
+            timestamp: [t0, t0 + DAY, t0 + 2 * DAY, t0 + 3 * DAY, t0 + 4 * DAY, t0 + 5 * DAY],
+            indicators: {
+              quote: [{ close: [100.5, null, 101.25, 0, -5, 102] }],
+            },
+          },
+        ],
+      },
+    };
+    expect(closesWithDatesFromYahooChart(json)).toEqual([
+      { t: t0, close: 100.5 },
+      { t: t0 + 2 * DAY, close: 101.25 },
+      { t: t0 + 5 * DAY, close: 102 },
+    ]);
+  });
+
+  it('throws a clear message for malformed shapes (dated variant)', () => {
+    expect(() => closesWithDatesFromYahooChart({})).toThrow(/no result/);
+    expect(() => closesWithDatesFromYahooChart({ chart: { result: [{}] } })).toThrow(/no close series/);
+  });
+
+  describe('realizedCorrelation', () => {
+    const DAY = 86400;
+    const t0 = 1_700_000_000;
+    // 40 daily bars so we clear the >=31-overlap threshold after log-returns.
+    const N = 40;
+    const days = Array.from({ length: N }, (_, i) => t0 + i * DAY);
+
+    // Deterministic pseudo-random walk (Park-Miller LCG) shared as the base
+    // series; "identical" duplicates it exactly, "negated" mirrors returns.
+    function walk(seedStart: number): number[] {
+      let seed = seedStart;
+      const rand = () => {
+        seed = (seed * 48271) % 2147483647;
+        return seed / 2147483647;
+      };
+      let s = 100;
+      const closes = [s];
+      for (let i = 0; i < N - 1; i++) {
+        const r = (rand() - 0.5) * 0.02; // small daily log-return
+        s *= Math.exp(r);
+        closes.push(s);
+      }
+      return closes;
+    }
+
+    it('is ~1 for identical series', () => {
+      const base = walk(12345);
+      const a = days.map((t, i) => ({ t, close: base[i] }));
+      const b = days.map((t, i) => ({ t, close: base[i] }));
+      expect(realizedCorrelation(a, b)).toBeCloseTo(1, 6);
+    });
+
+    it('is ~-1 for a negated-return series', () => {
+      const base = walk(12345);
+      // Build b whose log-returns are the exact negation of a's.
+      const bCloses = [100];
+      for (let i = 1; i < N; i++) {
+        const ret = Math.log(base[i] / base[i - 1]);
+        bCloses.push(bCloses[i - 1] * Math.exp(-ret));
+      }
+      const a = days.map((t, i) => ({ t, close: base[i] }));
+      const b = days.map((t, i) => ({ t, close: bCloses[i] }));
+      expect(realizedCorrelation(a, b)).toBeCloseTo(-1, 6);
+    });
+
+    it('is near 0 for two independent-ish walks', () => {
+      const a = days.map((t, i) => ({ t, close: walk(11)[i] }));
+      const b = days.map((t, i) => ({ t, close: walk(97531)[i] }));
+      expect(Math.abs(realizedCorrelation(a, b))).toBeLessThan(0.5);
+    });
+
+    it('throws when there is not enough overlapping history', () => {
+      const base = walk(12345);
+      const a = days.map((t, i) => ({ t, close: base[i] }));
+      // b lives on completely different calendar days -> zero overlap.
+      const b = days.map((t, i) => ({ t: t + 1000 * DAY, close: base[i] }));
+      expect(() => realizedCorrelation(a, b)).toThrow(/overlapping/);
+    });
   });
 
   it('maps Yahoo symbols to per-source conventions', () => {

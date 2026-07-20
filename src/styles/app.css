@@ -84,8 +84,16 @@
   flex-shrink: 0;
   border-right: 1px solid var(--border);
   background: var(--bg-elevated);
-  padding: 16px;
+  padding: 12px;
   overflow-y: auto;
+}
+
+.sidebar .field-group {
+  gap: 8px;
+}
+
+.sidebar .field {
+  gap: 3px;
 }
 
 .main-area {
@@ -99,7 +107,7 @@
 .page-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: 16px;
+  gap: 20px 28px;
   max-width: 1200px;
 }
 
@@ -121,6 +129,11 @@
 
 .btn:hover:not(:disabled) {
   border-color: var(--text-faint);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .btn-primary {
@@ -158,6 +171,22 @@
   padding: 6px 8px;
 }
 
+.btn-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.btn-active:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.pill-active {
+  background: var(--accent);
+  color: white;
+}
+
 .has-tooltip {
   position: relative;
 }
@@ -179,23 +208,21 @@
   pointer-events: none;
 }
 
-/* ---------- Cards ---------- */
+/* ---------- Sections (flat, no card chrome) ---------- */
 
 .card {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 14px 16px 16px;
-  box-shadow: var(--shadow-sm);
+  padding: 0;
 }
 
 .card-title {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
   color: var(--text-muted);
   margin: 0 0 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
 }
 
 .field-group {
@@ -313,6 +340,30 @@ select.input:focus {
   white-space: nowrap;
 }
 
+.auto-toggle {
+  font-size: 10px;
+  color: var(--text-faint);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border-strong);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+.auto-toggle:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.auto-toggle.on {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+
 /* ---------- Segmented control ---------- */
 
 .segmented {
@@ -415,9 +466,9 @@ select.input:focus {
 }
 
 .status-line {
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--text-muted);
-  margin-top: 4px;
+  margin-top: 3px;
   display: flex;
   align-items: center;
   gap: 5px;

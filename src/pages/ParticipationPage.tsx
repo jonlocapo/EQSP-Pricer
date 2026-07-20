@@ -6,12 +6,10 @@ import { Card } from '../components/Card';
 import { Segmented } from '../components/Segmented';
 import { NumericField } from '../components/NumericField';
 import { TenorField } from '../components/TenorField';
-import { Toggle } from '../components/Toggle';
 import { ActionRow } from '../components/ActionRow';
 import { validateParticipation } from '../services/validation';
-import { participationSolveOptions } from '../services/solveOptions';
 import { runPricing } from '../services/runPricing';
-import type { BarrierMonitoring, UpsideVariant } from '../model/product';
+import type { BarrierMonitoring, ParticipationSpec, UpsideVariant } from '../model/product';
 import type { SolveTarget } from '../model/request';
 
 /** Standard downside leverage: 1/downsideStrike so a 100% stock decline exhausts the leg. */
@@ -22,7 +20,20 @@ function autoDownsideLeverage(downsideStrikePct: number): number {
 
 const AUTO_LEVERAGE_EPS = 0.01;
 
-const PRESET_OPTIONS: ParticipationPreset[] = ['booster', 'bonus', 'capitalGuaranteed', 'twinWin'];
+const PRESET_OPTIONS: ParticipationPreset[] = ['booster', 'bonus', 'capitalGuaranteed', 'twinWin', 'twkg'];
+
+// Structural detection of "which product type does the current spec look
+// like" — ignores exact numeric values, only cares about the shape (barrier
+// on/off, twin-win/bonus/protection present or not). Order matters: the
+// first structural match wins (the definitions are mutually exclusive by
+// construction, so in practice only one ever matches).
+const PRESET_DETECT: Record<ParticipationPreset, (s: ParticipationSpec) => boolean> = {
+  booster: (s) => s.downside.barrierType === 'none' && s.downside.twinWinPct === 0 && s.protectionPct === 0 && s.bonusPct === 0,
+  bonus: (s) => s.downside.barrierType !== 'none' && s.bonusPct > 0 && s.downside.twinWinPct === 0 && s.protectionPct === 0,
+  capitalGuaranteed: (s) => s.protectionPct > 0 && s.downside.barrierType === 'none' && s.downside.twinWinPct === 0 && s.bonusPct === 0,
+  twinWin: (s) => s.downside.barrierType !== 'none' && s.downside.twinWinPct > 0 && s.protectionPct === 0,
+  twkg: (s) => s.downside.barrierType !== 'none' && s.downside.twinWinPct > 0 && s.protectionPct > 0,
+};
 
 export function ParticipationPage() {
   const spec = useTradeStore((s) => s.participationSpec);
@@ -35,33 +46,92 @@ export function ParticipationPage() {
   const running = useResultsStore((s) => s.running);
 
   const [greeks, setGreeks] = useState(false);
-  const [lastLowerStrike, setLastLowerStrike] = useState(90);
+  const [leverageAuto, setLeverageAuto] = useState(true);
 
-  // Downside leverage auto-tracks 1/downsideStrike until the user types a
-  // value that diverges from it (mirrors the RC/AC coupon page's put-strike
-  // tracking).
-  const prevDownsideStrikeRef = useRef(spec.downside.strikePct);
+  // Downside feature toggles (KI Barrier / Put Spread / Twin Win / KG) are
+  // DERIVED from the spec, not duplicated state — a toggle is "on" iff its
+  // underlying field is in its non-default state. Refs remember the last
+  // non-default value for each feature purely so re-enabling restores what
+  // the user had before (reset on page reload is fine; nothing here is
+  // persisted).
+  const lastBarrierType = useRef<'european' | 'american'>('american');
+  const lastKiLevel = useRef(65);
+  const lastLowerStrike = useRef(50);
+  const lastTwinWinPct = useRef(100);
+  const lastProtectionPct = useRef(100);
+
   useEffect(() => {
-    const prevStrike = prevDownsideStrikeRef.current;
-    if (prevStrike !== spec.downside.strikePct) {
-      const autoForOld = autoDownsideLeverage(prevStrike);
-      if (Math.abs(spec.downside.leveragePct - autoForOld) < AUTO_LEVERAGE_EPS) {
-        patchSpec({ downside: { ...spec.downside, leveragePct: autoDownsideLeverage(spec.downside.strikePct) } });
-      }
-      prevDownsideStrikeRef.current = spec.downside.strikePct;
+    if (spec.downside.barrierType !== 'none') lastBarrierType.current = spec.downside.barrierType;
+  }, [spec.downside.barrierType]);
+  useEffect(() => {
+    if (spec.downside.barrierType !== 'none') lastKiLevel.current = spec.downside.kiBarrierPct;
+  }, [spec.downside.barrierType, spec.downside.kiBarrierPct]);
+  useEffect(() => {
+    if (spec.downside.putSpread) lastLowerStrike.current = spec.downside.putSpread.lowerStrikePct;
+  }, [spec.downside.putSpread]);
+  useEffect(() => {
+    if (spec.downside.twinWinPct > 0) lastTwinWinPct.current = spec.downside.twinWinPct;
+  }, [spec.downside.twinWinPct]);
+  useEffect(() => {
+    if (spec.protectionPct > 0) lastProtectionPct.current = spec.protectionPct;
+  }, [spec.protectionPct]);
+
+  // When AUTO is on, downside leverage is locked to 1/downsideStrike and
+  // recomputed whenever the downside strike changes or AUTO is toggled on
+  // (mirrors the RC/AC coupon page's put-strike tracking). Guarded so it only
+  // writes when the value actually differs, to avoid redundant re-renders.
+  useEffect(() => {
+    if (!leverageAuto) return;
+    const auto = autoDownsideLeverage(spec.downside.strikePct);
+    if (Math.abs(spec.downside.leveragePct - auto) >= AUTO_LEVERAGE_EPS) {
+      patchSpec({ downside: { ...spec.downside, leveragePct: auto } });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spec.downside.strikePct]);
+  }, [leverageAuto, spec.downside.strikePct]);
 
   const validation = validateParticipation(spec, market);
-  const solveOptions = participationSolveOptions(spec);
-  const currentSolveOpt = solveOptions.find((o) => o.value === solve.kind);
-  const priceDisabled = !validation.valid || (currentSolveOpt?.disabled ?? false);
+
+  const isCallSpread = spec.upside.variant.variant === 'callSpread';
+  const isKoRebate = spec.upside.variant.variant === 'koRebate';
+  const hasBarrier = spec.downside.barrierType !== 'none';
+
+  // Whenever a spec change makes the current solve target unavailable, fall
+  // back to Price ('none') so no stale solve target reaches the worker.
+  useEffect(() => {
+    const kind = solve.kind;
+    if (kind === 'none') return;
+    const available =
+      kind === 'gearing' ||
+      kind === 'upsideStrike' ||
+      kind === 'bonusLevel' ||
+      (kind === 'kiBarrier' && hasBarrier) ||
+      (kind === 'twinWin' && hasBarrier) ||
+      (kind === 'upperStrike' && isCallSpread) ||
+      (kind === 'upsideKoBarrier' && isKoRebate) ||
+      (kind === 'rebate' && isKoRebate);
+    if (!available) setSolve({ kind: 'none' });
+  }, [solve.kind, hasBarrier, isCallSpread, isKoRebate, setSolve]);
+
+  const priceDisabled = !validation.valid;
   const priceLabel = solve.kind === 'none' ? 'Price' : 'Solve';
 
   function fieldSolved(kind: SolveTarget['kind']): boolean {
     return solve.kind === kind;
   }
+
+  // Radio semantics: clicking a chip activates that target and deactivates
+  // all others; clicking the already-active chip falls back to Price.
+  function toggleSolve(kind: Exclude<SolveTarget['kind'], 'none'>) {
+    setSolve(solve.kind === kind ? { kind: 'none' } : ({ kind } as SolveTarget));
+  }
+
+  // "Price (reoffer)" is solve kind 'none' — its output is the price shown in
+  // the results panel, not a spec field. The Reoffer field is the closest
+  // analogue of that output (the target price the solve engine matches), so
+  // dim it the same way the other solve targets dim their own field.
+  const priceIsSolveTarget = solve.kind === 'none';
+
+  const detectedPreset = PRESET_OPTIONS.find((p) => PRESET_DETECT[p](spec));
 
   function patchUpside(patch: Partial<{ strikePct: number; participationPct: number }>) {
     patchSpec({ upside: { ...spec.upside, ...patch } });
@@ -75,18 +145,72 @@ export function ParticipationPage() {
     patchSpec({ downside: { ...spec.downside, ...patch } });
   }
 
+  const kiOn = spec.downside.barrierType !== 'none';
+  const psOn = !!spec.downside.putSpread;
+  const twOn = spec.downside.twinWinPct > 0;
+  const kgOn = spec.protectionPct > 0;
+
+  function toggleKI() {
+    if (kiOn) {
+      const patch: Partial<typeof spec.downside> = { barrierType: 'none' };
+      // Twin-win only makes sense while knocked-in monitoring is live.
+      if (spec.downside.twinWinPct > 0) patch.twinWinPct = 0;
+      patchDownside(patch);
+    } else {
+      patchDownside({ barrierType: lastBarrierType.current, kiBarrierPct: lastKiLevel.current });
+    }
+  }
+
+  function togglePutSpread() {
+    if (psOn) {
+      patchDownside({ putSpread: undefined });
+    } else {
+      patchDownside({ putSpread: { lowerStrikePct: lastLowerStrike.current } });
+    }
+  }
+
+  function toggleTwinWin() {
+    if (!kiOn) return; // disabled control; no-op defensively
+    if (twOn) {
+      patchDownside({ twinWinPct: 0 });
+    } else {
+      patchDownside({ twinWinPct: lastTwinWinPct.current });
+    }
+  }
+
+  function toggleKG() {
+    if (kgOn) {
+      patchSpec({ protectionPct: 0 });
+    } else {
+      patchSpec({ protectionPct: lastProtectionPct.current });
+    }
+  }
+
   function handleRun() {
     runPricing({ page: 'participation', product: spec, market, underlyingName, solve, greeks });
   }
 
+  const kgKiNeverBites = spec.protectionPct >= 100 && spec.downside.barrierType !== 'none' && spec.downside.twinWinPct === 0;
+
   return (
     <div className="page-grid">
-      <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 8 }}>
-        {PRESET_OPTIONS.map((p) => (
-          <button key={p} type="button" className="btn btn-sm" onClick={() => applyPreset(p)}>
-            {PARTICIPATION_PRESET_LABELS[p]}
-          </button>
-        ))}
+      <div className="field" style={{ gridColumn: '1 / -1' }}>
+        <div className="field-label">
+          <span>Product type</span>
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {PRESET_OPTIONS.map((p) => (
+            <button
+              key={p}
+              type="button"
+              className={`btn btn-sm ${detectedPreset === p ? 'btn-active' : ''}`}
+              onClick={() => applyPreset(p)}
+            >
+              {PARTICIPATION_PRESET_LABELS[p]}
+            </button>
+          ))}
+          <span className={`pill ${detectedPreset ? '' : 'pill-active'}`}>Custom</span>
+        </div>
       </div>
 
       <Card title="General Terms">
@@ -103,23 +227,6 @@ export function ParticipationPage() {
           onChange={(v) => patchSpec({ tenorYears: v })}
           error={validation.errors.tenorYears}
         />
-        <div className="field">
-          <div className="field-label">
-            <span>Solve for</span>
-          </div>
-          <select
-            className="input"
-            value={solve.kind}
-            onChange={(e) => setSolve({ kind: e.target.value } as SolveTarget)}
-          >
-            {solveOptions.map((o) => (
-              <option key={o.value} value={o.value} disabled={o.disabled} title={o.tooltip}>
-                {o.label}
-                {o.disabled ? ` — ${o.tooltip ?? 'unavailable'}` : ''}
-              </option>
-            ))}
-          </select>
-        </div>
         <div className="field-row">
           <NumericField
             label="Reoffer"
@@ -127,6 +234,10 @@ export function ParticipationPage() {
             step={0.1}
             suffix="%"
             onChange={(v) => patchSpec({ reofferPct: v })}
+            solved={priceIsSolveTarget}
+            solveChip
+            solveActive={priceIsSolveTarget}
+            onSolveClick={() => setSolve({ kind: 'none' })}
           />
           <NumericField
             label="Issue price"
@@ -147,6 +258,9 @@ export function ParticipationPage() {
             suffix="%"
             onChange={(v) => patchUpside({ strikePct: v })}
             solved={fieldSolved('upsideStrike')}
+            solveChip
+            solveActive={fieldSolved('upsideStrike')}
+            onSolveClick={() => toggleSolve('upsideStrike')}
           />
           <NumericField
             label="Participation"
@@ -155,6 +269,9 @@ export function ParticipationPage() {
             suffix="%"
             onChange={(v) => patchUpside({ participationPct: v })}
             solved={fieldSolved('gearing')}
+            solveChip
+            solveActive={fieldSolved('gearing')}
+            onSolveClick={() => toggleSolve('gearing')}
           />
         </div>
         <div className="field">
@@ -190,6 +307,9 @@ export function ParticipationPage() {
             onChange={(v) => patchUpsideVariant({ upperStrikePct: v } as never)}
             error={validation.errors.upperStrikePct}
             solved={fieldSolved('upperStrike')}
+            solveChip
+            solveActive={fieldSolved('upperStrike')}
+            onSolveClick={() => toggleSolve('upperStrike')}
           />
         )}
         {spec.upside.variant.variant === 'koRebate' && (
@@ -202,6 +322,9 @@ export function ParticipationPage() {
               onChange={(v) => patchUpsideVariant({ koBarrierPct: v } as never)}
               error={validation.errors.koBarrierPct}
               solved={fieldSolved('upsideKoBarrier')}
+              solveChip
+              solveActive={fieldSolved('upsideKoBarrier')}
+              onSolveClick={() => toggleSolve('upsideKoBarrier')}
             />
             <div className="field">
               <div className="field-label">
@@ -223,9 +346,23 @@ export function ParticipationPage() {
               suffix="%"
               onChange={(v) => patchUpsideVariant({ rebatePct: v } as never)}
               solved={fieldSolved('rebate')}
+              solveChip
+              solveActive={fieldSolved('rebate')}
+              onSolveClick={() => toggleSolve('rebate')}
             />
           </>
         )}
+        <NumericField
+          label="Bonus"
+          value={spec.bonusPct}
+          step={1}
+          suffix="%"
+          onChange={(v) => patchSpec({ bonusPct: v })}
+          solved={fieldSolved('bonusLevel')}
+          solveChip
+          solveActive={fieldSolved('bonusLevel')}
+          onSolveClick={() => toggleSolve('bonusLevel')}
+        />
       </Card>
 
       <Card title="Downside">
@@ -243,30 +380,52 @@ export function ParticipationPage() {
             step={5}
             suffix="%"
             onChange={(v) => patchDownside({ leveragePct: v })}
-            solved={fieldSolved('downsideLeverage')}
-            badge={
-              Math.abs(spec.downside.leveragePct - autoDownsideLeverage(spec.downside.strikePct)) < AUTO_LEVERAGE_EPS
-                ? 'AUTO'
-                : undefined
-            }
+            disabled={leverageAuto}
+            badge="AUTO"
+            badgeOn={leverageAuto}
+            onBadgeClick={() => setLeverageAuto((on) => !on)}
           />
         </div>
-        <div className="field">
+        <div className="field" style={{ gridColumn: '1 / -1' }}>
           <div className="field-label">
-            <span>KI Barrier</span>
+            <span>Features</span>
           </div>
-          <Segmented<BarrierMonitoring>
-            value={spec.downside.barrierType}
-            options={[
-              { value: 'none', label: 'None' },
-              { value: 'european', label: 'European' },
-              { value: 'american', label: 'American' },
-            ]}
-            onChange={(v) => patchDownside({ barrierType: v })}
-          />
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button type="button" className={`btn btn-sm ${kiOn ? 'btn-active' : ''}`} onClick={toggleKI}>
+              KI Barrier
+            </button>
+            <button type="button" className={`btn btn-sm ${psOn ? 'btn-active' : ''}`} onClick={togglePutSpread}>
+              Put Spread
+            </button>
+            <button
+              type="button"
+              className={`btn btn-sm ${twOn ? 'btn-active' : ''}`}
+              onClick={toggleTwinWin}
+              disabled={!kiOn}
+              title={!kiOn ? 'Requires KI barrier' : undefined}
+            >
+              Twin Win
+            </button>
+            <button type="button" className={`btn btn-sm ${kgOn ? 'btn-active' : ''}`} onClick={toggleKG}>
+              KG
+            </button>
+          </div>
         </div>
-        {spec.downside.barrierType !== 'none' && (
+        {kiOn && (
           <>
+            <div className="field">
+              <div className="field-label">
+                <span>Monitoring</span>
+              </div>
+              <Segmented<BarrierMonitoring>
+                value={spec.downside.barrierType}
+                options={[
+                  { value: 'european', label: 'European' },
+                  { value: 'american', label: 'American' },
+                ]}
+                onChange={(v) => patchDownside({ barrierType: v })}
+              />
+            </div>
             <NumericField
               label="KI level"
               value={spec.downside.kiBarrierPct}
@@ -275,31 +434,13 @@ export function ParticipationPage() {
               onChange={(v) => patchDownside({ kiBarrierPct: v })}
               error={validation.errors.kiBarrierPct}
               solved={fieldSolved('kiBarrier')}
-            />
-            <NumericField
-              label="Twin-win participation"
-              value={spec.downside.twinWinPct}
-              step={5}
-              suffix="%"
-              onChange={(v) => patchDownside({ twinWinPct: v })}
-              solved={fieldSolved('twinWin')}
-              hint="Positive participation in the downside while not knocked in. 0 = off."
+              solveChip
+              solveActive={fieldSolved('kiBarrier')}
+              onSolveClick={() => toggleSolve('kiBarrier')}
             />
           </>
         )}
-        <Toggle
-          label="Put spread floor"
-          checked={!!spec.downside.putSpread}
-          onChange={(on) => {
-            if (on) {
-              patchDownside({ putSpread: { lowerStrikePct: lastLowerStrike } });
-            } else {
-              if (spec.downside.putSpread) setLastLowerStrike(spec.downside.putSpread.lowerStrikePct);
-              patchDownside({ putSpread: undefined });
-            }
-          }}
-        />
-        {spec.downside.putSpread && (
+        {psOn && spec.downside.putSpread && (
           <NumericField
             label="Lower strike"
             value={spec.downside.putSpread.lowerStrikePct}
@@ -309,35 +450,40 @@ export function ParticipationPage() {
             error={validation.errors.lowerStrikePct}
           />
         )}
-      </Card>
-
-      <Card title="Bonus & Protection">
-        <div className="field-row">
+        {twOn && (
           <NumericField
-            label="Bonus"
-            value={spec.bonusPct}
-            step={1}
+            label="Twin-win participation"
+            value={spec.downside.twinWinPct}
+            step={5}
             suffix="%"
-            onChange={(v) => patchSpec({ bonusPct: v })}
-            solved={fieldSolved('bonusLevel')}
-            hint="Amount above par, e.g. 15 = 115% if not knocked in. 0 = none."
+            onChange={(v) => patchDownside({ twinWinPct: v })}
+            solved={fieldSolved('twinWin')}
+            solveChip
+            solveActive={fieldSolved('twinWin')}
+            onSolveClick={() => toggleSolve('twinWin')}
           />
+        )}
+        {kgOn && (
           <NumericField
             label="Protection"
             value={spec.protectionPct}
             step={1}
             suffix="%"
             onChange={(v) => patchSpec({ protectionPct: v })}
-            hint="Capital protection floor, % of notional. 0 = none."
           />
-        </div>
+        )}
+        {kgKiNeverBites && (
+          <span className="text-muted" style={{ fontSize: 11 }}>
+            With 100% protection the KI downside never bites — combine with twin-win (TWKG) or drop one.
+          </span>
+        )}
       </Card>
 
       <div style={{ gridColumn: '1 / -1' }}>
         <ActionRow
           label={priceLabel}
           disabled={priceDisabled}
-          tooltip={currentSolveOpt?.tooltip ?? 'Fix validation errors above.'}
+          tooltip="Fix validation errors above."
           onRun={handleRun}
           greeks={greeks}
           onGreeksChange={setGreeks}

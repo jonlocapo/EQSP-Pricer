@@ -19,7 +19,6 @@ export type SolveTarget =
   // participation page
   | { kind: 'gearing' }
   | { kind: 'upsideStrike' }
-  | { kind: 'downsideLeverage' }
   | { kind: 'bonusLevel' }
   | { kind: 'twinWin' }
   | { kind: 'upperStrike' }

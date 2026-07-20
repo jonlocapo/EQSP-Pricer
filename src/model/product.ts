@@ -158,7 +158,7 @@ export interface AccumulatorSpec {
   /** Upfront value target, % of estimated notional (0 = zero-cost). */
   upfrontPct: number;
   tenorYears: number;
-  settlementFrequency: 'weekly' | 'monthly';
+  settlementFrequency: 'weekly' | 'biweekly' | 'monthly';
   dailyShares: number;
   koTriggerPct: number;
   koSettlement: KoSettlement;
