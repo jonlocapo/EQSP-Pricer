@@ -14,6 +14,8 @@ const CURRENCIES = ['EUR', 'USD', 'CHF', 'GBP', 'JPY'];
 interface FetchLine {
   kind: 'ok' | 'err' | 'info';
   msg: string;
+  /** Compact form used when rolling successful fetches into one summary line. */
+  short?: string;
 }
 
 /**
@@ -45,7 +47,7 @@ async function fetchLiveData(
   if (spotR.status === 'fulfilled') {
     underlyingCcy = spotR.value.currency;
     store.applyFetchedSpot(spotR.value.spot, spotR.value.source, spotR.value.asOf, spotR.value.currency);
-    lines.push({ kind: 'ok', msg: `Spot ${spotR.value.spot} · ${spotR.value.source}` });
+    lines.push({ kind: 'ok', msg: `Spot ${spotR.value.spot} · ${spotR.value.source}`, short: `spot ${spotR.value.spot}` });
   } else {
     lines.push({ kind: 'err', msg: `Spot: ${spotR.reason instanceof Error ? spotR.reason.message : 'failed'}` });
   }
@@ -55,6 +57,7 @@ async function fetchLiveData(
     lines.push({
       kind: 'ok',
       msg: `Rate ${(rateR.value.rate * 100).toFixed(3)}% · ${rateR.value.source} ${rateR.value.asOf}`,
+      short: `rate ${(rateR.value.rate * 100).toFixed(3)}%`,
     });
   } else {
     lines.push({ kind: 'err', msg: `Rate: ${rateR.reason instanceof Error ? rateR.reason.message : 'failed'}` });
@@ -68,6 +71,7 @@ async function fetchLiveData(
       msg:
         `Vol ${(r.atmVol * 100).toFixed(1)}%, div ${(r.divYield * 100).toFixed(2)}% · options ${r.expiry} K=${r.strike}` +
         (r.approximate ? ' (approx, American-style)' : ''),
+      short: `vol ${(r.atmVol * 100).toFixed(1)}%`,
     });
   } else {
     const impliedMsg = impliedR.reason instanceof Error ? impliedR.reason.message : 'failed';
@@ -75,7 +79,11 @@ async function fetchLiveData(
     try {
       const hv = await fetchHistVol(ticker);
       useMarketStore.setState((s) => ({ market: { ...s.market, vol: hv.vol } }));
-      lines.push({ kind: 'ok', msg: `Vol ${(hv.vol * 100).toFixed(2)}% · ${hv.source} (realized fallback)` });
+      lines.push({
+        kind: 'ok',
+        msg: `Vol ${(hv.vol * 100).toFixed(2)}% · ${hv.source} (realized fallback)`,
+        short: `vol ${(hv.vol * 100).toFixed(2)}%`,
+      });
       lines.push({ kind: 'info', msg: `Options unavailable (${impliedMsg}) — div yield left as entered` });
     } catch (hvErr) {
       lines.push({ kind: 'err', msg: `Vol: options (${impliedMsg}); hist (${hvErr instanceof Error ? hvErr.message : 'failed'})` });
@@ -98,7 +106,11 @@ async function fetchLiveData(
           fxVol: latest?.fxVol ?? cur?.fxVol ?? 0.1,
           corrEqFx: latest?.corrEqFx ?? cur?.corrEqFx ?? 0,
         });
-        lines.push({ kind: 'ok', msg: `Underlying rate ${(ur.rate * 100).toFixed(3)}% · ${ur.source}` });
+        lines.push({
+          kind: 'ok',
+          msg: `Underlying rate ${(ur.rate * 100).toFixed(3)}% · ${ur.source}`,
+          short: `ul rate ${(ur.rate * 100).toFixed(3)}%`,
+        });
       } catch (urErr) {
         lines.push({ kind: 'info', msg: `Underlying rate: ${urErr instanceof Error ? urErr.message : 'failed'} — enter manually` });
       }
@@ -117,6 +129,7 @@ async function fetchLiveData(
       lines.push({
         kind: 'ok',
         msg: `FX vol ${(fx.fxVol * 100).toFixed(1)}%, eq-FX corr ${fx.corrEqFx.toFixed(2)} · ${fx.source}`,
+        short: `fx ${(fx.fxVol * 100).toFixed(1)}%/${fx.corrEqFx.toFixed(2)}`,
       });
     } catch (fxErr) {
       lines.push({
@@ -217,11 +230,24 @@ export function MarketPanel() {
         >
           {fetching ? 'Fetching…' : 'Fetch live data'}
         </button>
-        {fetchLines.map((l, i) => (
-          <div key={i} className={`status-line ${l.kind === 'ok' ? 'ok' : l.kind === 'err' ? 'error' : ''}`}>
-            {l.msg}
-          </div>
-        ))}
+        {(() => {
+          const okLines = fetchLines.filter((l) => l.kind === 'ok');
+          const otherLines = fetchLines.filter((l) => l.kind !== 'ok');
+          return (
+            <>
+              {okLines.length > 0 && (
+                <div className="status-line ok" title={okLines.map((l) => l.msg).join(' · ')}>
+                  ✓ {okLines.map((l) => l.short ?? l.msg).join(' · ')}
+                </div>
+              )}
+              {otherLines.map((l, i) => (
+                <div key={i} className={`status-line ${l.kind === 'err' ? 'error' : ''}`}>
+                  {l.msg}
+                </div>
+              ))}
+            </>
+          );
+        })()}
         {quantoMismatch && (
           <div className="status-line warn">
             {market.quanto
@@ -280,26 +306,23 @@ export function MarketPanel() {
               suffix="%"
               onChange={(v) => setQuanto({ ...market.quanto!, rateUnderlying: v / 100 })}
             />
-            <NumericField
-              label="FX vol"
-              value={Number((market.quanto.fxVol * 100).toFixed(4))}
-              step={0.5}
-              suffix="%"
-              onChange={(v) => setQuanto({ ...market.quanto!, fxVol: v / 100 })}
-            />
-            <NumericField
-              label="Eq-FX correlation"
-              value={Number(market.quanto.corrEqFx.toFixed(2))}
-              step={0.05}
-              min={-1}
-              max={1}
-              onChange={(v) => setQuanto({ ...market.quanto!, corrEqFx: Math.min(1, Math.max(-1, v)) })}
-            />
-            <span className="text-muted" style={{ fontSize: 11 }}>
-              FX quoted as {market.currency} per {underlyingCurrency}. Underlying rate, FX vol, and
-              Eq-FX correlation are fetched with live data (1Y realized) — overridable estimates,
-              not implied.
-            </span>
+            <div className="field-row">
+              <NumericField
+                label="FX vol"
+                value={Number((market.quanto.fxVol * 100).toFixed(4))}
+                step={0.5}
+                suffix="%"
+                onChange={(v) => setQuanto({ ...market.quanto!, fxVol: v / 100 })}
+              />
+              <NumericField
+                label="Eq-FX correlation"
+                value={Number(market.quanto.corrEqFx.toFixed(2))}
+                step={0.05}
+                min={-1}
+                max={1}
+                onChange={(v) => setQuanto({ ...market.quanto!, corrEqFx: Math.min(1, Math.max(-1, v)) })}
+              />
+            </div>
           </div>
         )}
       </div>
