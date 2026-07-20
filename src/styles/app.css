@@ -131,6 +131,11 @@
   border-color: var(--text-faint);
 }
 
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .btn-primary {
   background: var(--accent);
   border-color: var(--accent);

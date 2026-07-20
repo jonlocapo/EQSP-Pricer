@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTradeStore, PARTICIPATION_PRESET_LABELS, type ParticipationPreset } from '../state/tradeStore';
 import { useMarketStore } from '../state/marketStore';
 import { useResultsStore } from '../state/resultsStore';
@@ -6,7 +6,6 @@ import { Card } from '../components/Card';
 import { Segmented } from '../components/Segmented';
 import { NumericField } from '../components/NumericField';
 import { TenorField } from '../components/TenorField';
-import { Toggle } from '../components/Toggle';
 import { ActionRow } from '../components/ActionRow';
 import { validateParticipation } from '../services/validation';
 import { runPricing } from '../services/runPricing';
@@ -47,8 +46,35 @@ export function ParticipationPage() {
   const running = useResultsStore((s) => s.running);
 
   const [greeks, setGreeks] = useState(false);
-  const [lastLowerStrike, setLastLowerStrike] = useState(90);
   const [leverageAuto, setLeverageAuto] = useState(true);
+
+  // Downside feature toggles (KI Barrier / Put Spread / Twin Win / KG) are
+  // DERIVED from the spec, not duplicated state — a toggle is "on" iff its
+  // underlying field is in its non-default state. Refs remember the last
+  // non-default value for each feature purely so re-enabling restores what
+  // the user had before (reset on page reload is fine; nothing here is
+  // persisted).
+  const lastBarrierType = useRef<'european' | 'american'>('american');
+  const lastKiLevel = useRef(65);
+  const lastLowerStrike = useRef(50);
+  const lastTwinWinPct = useRef(100);
+  const lastProtectionPct = useRef(100);
+
+  useEffect(() => {
+    if (spec.downside.barrierType !== 'none') lastBarrierType.current = spec.downside.barrierType;
+  }, [spec.downside.barrierType]);
+  useEffect(() => {
+    if (spec.downside.barrierType !== 'none') lastKiLevel.current = spec.downside.kiBarrierPct;
+  }, [spec.downside.barrierType, spec.downside.kiBarrierPct]);
+  useEffect(() => {
+    if (spec.downside.putSpread) lastLowerStrike.current = spec.downside.putSpread.lowerStrikePct;
+  }, [spec.downside.putSpread]);
+  useEffect(() => {
+    if (spec.downside.twinWinPct > 0) lastTwinWinPct.current = spec.downside.twinWinPct;
+  }, [spec.downside.twinWinPct]);
+  useEffect(() => {
+    if (spec.protectionPct > 0) lastProtectionPct.current = spec.protectionPct;
+  }, [spec.protectionPct]);
 
   // When AUTO is on, downside leverage is locked to 1/downsideStrike and
   // recomputed whenever the downside strike changes or AUTO is toggled on
@@ -117,6 +143,47 @@ export function ParticipationPage() {
 
   function patchDownside(patch: Partial<typeof spec.downside>) {
     patchSpec({ downside: { ...spec.downside, ...patch } });
+  }
+
+  const kiOn = spec.downside.barrierType !== 'none';
+  const psOn = !!spec.downside.putSpread;
+  const twOn = spec.downside.twinWinPct > 0;
+  const kgOn = spec.protectionPct > 0;
+
+  function toggleKI() {
+    if (kiOn) {
+      const patch: Partial<typeof spec.downside> = { barrierType: 'none' };
+      // Twin-win only makes sense while knocked-in monitoring is live.
+      if (spec.downside.twinWinPct > 0) patch.twinWinPct = 0;
+      patchDownside(patch);
+    } else {
+      patchDownside({ barrierType: lastBarrierType.current, kiBarrierPct: lastKiLevel.current });
+    }
+  }
+
+  function togglePutSpread() {
+    if (psOn) {
+      patchDownside({ putSpread: undefined });
+    } else {
+      patchDownside({ putSpread: { lowerStrikePct: lastLowerStrike.current } });
+    }
+  }
+
+  function toggleTwinWin() {
+    if (!kiOn) return; // disabled control; no-op defensively
+    if (twOn) {
+      patchDownside({ twinWinPct: 0 });
+    } else {
+      patchDownside({ twinWinPct: lastTwinWinPct.current });
+    }
+  }
+
+  function toggleKG() {
+    if (kgOn) {
+      patchSpec({ protectionPct: 0 });
+    } else {
+      patchSpec({ protectionPct: lastProtectionPct.current });
+    }
   }
 
   function handleRun() {
@@ -319,47 +386,61 @@ export function ParticipationPage() {
             onBadgeClick={() => setLeverageAuto((on) => !on)}
           />
         </div>
-        <div className="field">
+        <div className="field" style={{ gridColumn: '1 / -1' }}>
           <div className="field-label">
-            <span>KI Barrier</span>
+            <span>Features</span>
           </div>
-          <Segmented<BarrierMonitoring>
-            value={spec.downside.barrierType}
-            options={[
-              { value: 'none', label: 'None' },
-              { value: 'european', label: 'European' },
-              { value: 'american', label: 'American' },
-            ]}
-            onChange={(v) => patchDownside({ barrierType: v })}
-          />
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button type="button" className={`btn btn-sm ${kiOn ? 'btn-active' : ''}`} onClick={toggleKI}>
+              KI Barrier
+            </button>
+            <button type="button" className={`btn btn-sm ${psOn ? 'btn-active' : ''}`} onClick={togglePutSpread}>
+              Put Spread
+            </button>
+            <button
+              type="button"
+              className={`btn btn-sm ${twOn ? 'btn-active' : ''}`}
+              onClick={toggleTwinWin}
+              disabled={!kiOn}
+              title={!kiOn ? 'Requires KI barrier' : undefined}
+            >
+              Twin Win
+            </button>
+            <button type="button" className={`btn btn-sm ${kgOn ? 'btn-active' : ''}`} onClick={toggleKG}>
+              KG
+            </button>
+          </div>
         </div>
-        {spec.downside.barrierType !== 'none' && (
-          <NumericField
-            label="KI level"
-            value={spec.downside.kiBarrierPct}
-            step={1}
-            suffix="%"
-            onChange={(v) => patchDownside({ kiBarrierPct: v })}
-            error={validation.errors.kiBarrierPct}
-            solved={fieldSolved('kiBarrier')}
-            solveChip
-            solveActive={fieldSolved('kiBarrier')}
-            onSolveClick={() => toggleSolve('kiBarrier')}
-          />
+        {kiOn && (
+          <>
+            <div className="field">
+              <div className="field-label">
+                <span>Monitoring</span>
+              </div>
+              <Segmented<BarrierMonitoring>
+                value={spec.downside.barrierType}
+                options={[
+                  { value: 'european', label: 'European' },
+                  { value: 'american', label: 'American' },
+                ]}
+                onChange={(v) => patchDownside({ barrierType: v })}
+              />
+            </div>
+            <NumericField
+              label="KI level"
+              value={spec.downside.kiBarrierPct}
+              step={1}
+              suffix="%"
+              onChange={(v) => patchDownside({ kiBarrierPct: v })}
+              error={validation.errors.kiBarrierPct}
+              solved={fieldSolved('kiBarrier')}
+              solveChip
+              solveActive={fieldSolved('kiBarrier')}
+              onSolveClick={() => toggleSolve('kiBarrier')}
+            />
+          </>
         )}
-        <Toggle
-          label="Put spread floor"
-          checked={!!spec.downside.putSpread}
-          onChange={(on) => {
-            if (on) {
-              patchDownside({ putSpread: { lowerStrikePct: lastLowerStrike } });
-            } else {
-              if (spec.downside.putSpread) setLastLowerStrike(spec.downside.putSpread.lowerStrikePct);
-              patchDownside({ putSpread: undefined });
-            }
-          }}
-        />
-        {spec.downside.putSpread && (
+        {psOn && spec.downside.putSpread && (
           <NumericField
             label="Lower strike"
             value={spec.downside.putSpread.lowerStrikePct}
@@ -369,7 +450,7 @@ export function ParticipationPage() {
             error={validation.errors.lowerStrikePct}
           />
         )}
-        {spec.downside.barrierType !== 'none' && (
+        {twOn && (
           <NumericField
             label="Twin-win participation"
             value={spec.downside.twinWinPct}
@@ -382,13 +463,15 @@ export function ParticipationPage() {
             onSolveClick={() => toggleSolve('twinWin')}
           />
         )}
-        <NumericField
-          label="Protection"
-          value={spec.protectionPct}
-          step={1}
-          suffix="%"
-          onChange={(v) => patchSpec({ protectionPct: v })}
-        />
+        {kgOn && (
+          <NumericField
+            label="Protection"
+            value={spec.protectionPct}
+            step={1}
+            suffix="%"
+            onChange={(v) => patchSpec({ protectionPct: v })}
+          />
+        )}
         {kgKiNeverBites && (
           <span className="text-muted" style={{ fontSize: 11 }}>
             With 100% protection the KI downside never bites — combine with twin-win (TWKG) or drop one.

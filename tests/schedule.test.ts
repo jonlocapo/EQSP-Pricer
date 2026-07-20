@@ -94,4 +94,13 @@ describe('buildGrid — accumulator', () => {
     expect(grid.settlementObs[0]).toBe(21);
     expect(grid.settlementObs[grid.settlementObs.length - 1]).toBe(grid.nSteps);
   });
+
+  it('biweekly settlement uses 10-step spacing', () => {
+    // STEPS_PER_YEAR = 252, so 3M (0.25y) -> nSteps = round(0.25*252) = 63.
+    // settlementSchedule steps by 10 while idx < nSteps: 10,20,30,40,50,60,
+    // then the final entry is forced to nSteps (63) regardless of spacing.
+    const grid = buildGrid(baseAccumulator({ tenorYears: 0.25, settlementFrequency: 'biweekly' }));
+    expect(grid.nSteps).toBe(63);
+    expect(grid.settlementObs).toEqual([10, 20, 30, 40, 50, 60, 63]);
+  });
 });

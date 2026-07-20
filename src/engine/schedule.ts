@@ -60,7 +60,8 @@ export function buildGrid(spec: ProductSpec): PricingGrid {
   } else if (spec.kind === 'participation') {
     couponObs = [nSteps];
   } else if (spec.kind === 'accumulator') {
-    const stepInterval = spec.settlementFrequency === 'weekly' ? 5 : 21;
+    const stepInterval =
+      spec.settlementFrequency === 'weekly' ? 5 : spec.settlementFrequency === 'biweekly' ? 10 : 21;
     settlementObs = settlementSchedule(nSteps, stepInterval);
   }
 

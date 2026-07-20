@@ -134,6 +134,22 @@ describe('accumulator', () => {
     expect(out.lifeYears).toBeCloseTo(20 / 252, 10);
   });
 
+  it('biweekly settlement: flat path below strike, gearing 2, settlementObs every 10 steps', () => {
+    // Same 20-day grid but re-declared with biweekly spacing (nSteps=20 -> [10,20]).
+    const biweeklyGrid: PricingGrid = { ...grid, settlementObs: [10, 20] };
+    const spec = baseSpec({ strikePct: 100, gearing: 2, dailyShares: 1000, settlementFrequency: 'biweekly' });
+    const ev = makeAccumulatorEvaluator(spec, { ...ctx(), grid: biweeklyGrid });
+    const spots = new Float64Array([100, ...flatDays(90, 20)]);
+    const out = ev(spots);
+    // strike=100, spot=90<100 -> gearing 2x every day -> 2000 shares/day.
+    // Each period: 10 days * 2000 = 20000 accumulated shares; cashflow = 20000*(90-100) = -200000.
+    // 2 periods -> pv = -400000. estimatedNotional = 1000*20*100 = 2,000,000.
+    // pvPct = 100*(-400000)/2,000,000 = -20.
+    expect(out.pvPct).toBeCloseTo(-20, 10);
+    expect(out.koEvent).toBe(false);
+    expect(out.lifeYears).toBeCloseTo(20 / 252, 10);
+  });
+
   it('rate > 0: each period cashflow discounted at its own settlement date', () => {
     const spec = baseSpec({ strikePct: 100, gearing: 2, dailyShares: 1000, koTriggerPct: 500 });
     const rate = 0.05;

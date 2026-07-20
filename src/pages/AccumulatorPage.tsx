@@ -164,10 +164,11 @@ export function AccumulatorPage() {
           <div className="field-label">
             <span>Settlement frequency</span>
           </div>
-          <Segmented<'weekly' | 'monthly'>
+          <Segmented<'weekly' | 'biweekly' | 'monthly'>
             value={spec.settlementFrequency}
             options={[
               { value: 'weekly', label: 'Weekly' },
+              { value: 'biweekly', label: 'Biweekly' },
               { value: 'monthly', label: 'Monthly' },
             ]}
             onChange={(v) => setSpec({ settlementFrequency: v })}
