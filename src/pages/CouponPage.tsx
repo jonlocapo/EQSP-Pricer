@@ -8,7 +8,6 @@ import { NumericField } from '../components/NumericField';
 import { TenorField } from '../components/TenorField';
 import { ActionRow } from '../components/ActionRow';
 import { validateCoupon } from '../services/validation';
-import { couponSolveOptions } from '../services/solveOptions';
 import { runPricing } from '../services/runPricing';
 import type { AcCouponType, BarrierMonitoring, CallType, CouponType, Frequency } from '../model/product';
 import type { SolveTarget } from '../model/request';
@@ -67,13 +66,42 @@ export function CouponPage() {
   }, [leverageAuto, spec.putStrikePct]);
 
   const validation = validateCoupon(spec, market);
-  const solveOptions = couponSolveOptions(spec);
-  const currentSolveOpt = solveOptions.find((o) => o.value === solve.kind);
-  const priceDisabled = !validation.valid || (currentSolveOpt?.disabled ?? false);
+
+  // Per-field solve availability, mirroring the old solveOptions.ts helper.
+  // Under issuerCallable (LSMC pricing, v1 supports Price only) nothing else
+  // is solvable.
+  const issuerCallable = spec.callType === 'issuerCallable';
+  const canCouponPa = !issuerCallable;
+  const canAcCoupon = !issuerCallable && spec.acCouponType !== 'none';
+  const canCouponBarrier = !issuerCallable && spec.couponType !== 'fixed';
+  const canCallBarrier = !issuerCallable && (spec.callType === 'constant' || spec.callType === 'stepdown');
+  const canKiBarrier = !issuerCallable && spec.barrierType !== 'none';
+
+  // Whenever a spec change makes the current solve target unavailable, fall
+  // back to Price ('none') so no stale solve target reaches the worker.
+  useEffect(() => {
+    const kind = solve.kind;
+    if (kind === 'none') return;
+    const available =
+      (kind === 'couponPa' && canCouponPa) ||
+      (kind === 'acCouponPa' && canAcCoupon) ||
+      (kind === 'couponBarrier' && canCouponBarrier) ||
+      (kind === 'callBarrier' && canCallBarrier) ||
+      (kind === 'kiBarrier' && canKiBarrier);
+    if (!available) setSolve({ kind: 'none' });
+  }, [solve.kind, canCouponPa, canAcCoupon, canCouponBarrier, canCallBarrier, canKiBarrier, setSolve]);
+
+  const priceDisabled = !validation.valid;
   const priceLabel = solve.kind === 'none' ? 'Price' : 'Solve';
 
   function fieldSolved(kind: SolveTarget['kind']): boolean {
     return solve.kind === kind;
+  }
+
+  // Radio semantics: clicking a chip activates that target and deactivates
+  // all others; clicking the already-active chip falls back to Price.
+  function toggleSolve(kind: Exclude<SolveTarget['kind'], 'none'>) {
+    setSolve(solve.kind === kind ? { kind: 'none' } : ({ kind } as SolveTarget));
   }
 
   // "Price (reoffer)" is solve kind 'none' — its output is the price shown in
@@ -116,23 +144,6 @@ export function CouponPage() {
           onChange={(v) => setSpec({ tenorYears: v })}
           error={validation.errors.tenorYears}
         />
-        <div className="field">
-          <div className="field-label">
-            <span>Solve for</span>
-          </div>
-          <select
-            className="input"
-            value={solve.kind}
-            onChange={(e) => setSolve({ kind: e.target.value } as SolveTarget)}
-          >
-            {solveOptions.map((o) => (
-              <option key={o.value} value={o.value} disabled={o.disabled} title={o.tooltip}>
-                {o.label}
-                {o.disabled ? ` — ${o.tooltip ?? 'unavailable'}` : ''}
-              </option>
-            ))}
-          </select>
-        </div>
         <div className="field-row">
           <NumericField
             label="Reoffer"
@@ -142,6 +153,9 @@ export function CouponPage() {
             onChange={(v) => setSpec({ reofferPct: v })}
             error={validation.errors.reofferPct}
             solved={priceIsSolveTarget}
+            solveChip
+            solveActive={priceIsSolveTarget}
+            onSolveClick={() => setSolve({ kind: 'none' })}
           />
           <NumericField
             label="Issue price"
@@ -178,6 +192,9 @@ export function CouponPage() {
             onChange={(v) => setSpec({ kiBarrierPct: v })}
             error={validation.errors.kiBarrierPct}
             solved={fieldSolved('kiBarrier')}
+            solveChip={canKiBarrier}
+            solveActive={fieldSolved('kiBarrier')}
+            onSolveClick={() => toggleSolve('kiBarrier')}
           />
         )}
         <div className="field-row">
@@ -252,6 +269,9 @@ export function CouponPage() {
                   suffix="%"
                   onChange={(v) => setSpec({ callBarrierPct: v })}
                   solved={fieldSolved('callBarrier')}
+                  solveChip={canCallBarrier}
+                  solveActive={fieldSolved('callBarrier')}
+                  onSolveClick={() => toggleSolve('callBarrier')}
                 />
                 {spec.callType === 'stepdown' && (
                   <NumericField
@@ -343,6 +363,9 @@ export function CouponPage() {
             suffix="%"
             onChange={(v) => setSpec({ couponBarrierPct: v })}
             solved={fieldSolved('couponBarrier')}
+            solveChip={canCouponBarrier}
+            solveActive={fieldSolved('couponBarrier')}
+            onSolveClick={() => toggleSolve('couponBarrier')}
           />
         )}
         <NumericField
@@ -352,6 +375,9 @@ export function CouponPage() {
           suffix="%"
           onChange={(v) => setSpec({ couponPaPct: v })}
           solved={fieldSolved('couponPa')}
+          solveChip={canCouponPa}
+          solveActive={fieldSolved('couponPa')}
+          onSolveClick={() => toggleSolve('couponPa')}
         />
       </Card>
 
@@ -381,6 +407,9 @@ export function CouponPage() {
               suffix="%"
               onChange={(v) => setSpec({ acCouponPct: v })}
               solved={fieldSolved('acCouponPa')}
+              solveChip={canAcCoupon}
+              solveActive={fieldSolved('acCouponPa')}
+              onSolveClick={() => toggleSolve('acCouponPa')}
             />
           )}
         </Card>
@@ -390,7 +419,7 @@ export function CouponPage() {
         <ActionRow
           label={priceLabel}
           disabled={priceDisabled}
-          tooltip={currentSolveOpt?.tooltip ?? 'Fix validation errors above.'}
+          tooltip="Fix validation errors above."
           onRun={handleRun}
           greeks={greeks}
           onGreeksChange={setGreeks}

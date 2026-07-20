@@ -45,6 +45,13 @@ export function AccumulatorPage() {
     return solve.kind === kind;
   }
 
+  // Accumulator has no 'none' solve state — exactly one of strike/upfront is
+  // always the active target. Clicking the inactive chip switches to it;
+  // clicking the already-active one is a no-op.
+  function selectSolve(kind: 'strike' | 'upfront') {
+    setSolve({ kind });
+  }
+
   function setDirection(direction: 'accumulate' | 'decumulate') {
     if (direction === spec.direction) return;
     // Only swap the trigger default if the user hasn't touched it away from
@@ -78,7 +85,8 @@ export function AccumulatorPage() {
           accumulated. Set Asset type to Share in the Market Data panel.
         </div>
       )}
-      <Card title={spec.direction === 'decumulate' ? 'Decumulator Terms' : 'Accumulator Terms'}>
+
+      <Card title="Product">
         <div className="field">
           <div className="field-label">
             <span>Product type</span>
@@ -93,20 +101,6 @@ export function AccumulatorPage() {
           />
         </div>
 
-        <div className="field">
-          <div className="field-label">
-            <span>Solve for</span>
-          </div>
-          <Segmented<'strike' | 'upfront'>
-            value={solve.kind === 'upfront' ? 'upfront' : 'strike'}
-            options={[
-              { value: 'strike', label: 'Strike' },
-              { value: 'upfront', label: 'Upfront' },
-            ]}
-            onChange={(v) => setSolve({ kind: v })}
-          />
-        </div>
-
         <div className="field-row">
           <NumericField
             label="Strike"
@@ -115,6 +109,9 @@ export function AccumulatorPage() {
             suffix="%"
             onChange={(v) => setSpec({ strikePct: v })}
             solved={fieldSolved('strike')}
+            solveChip
+            solveActive={fieldSolved('strike')}
+            onSolveClick={() => selectSolve('strike')}
           />
           <NumericField
             label="Upfront"
@@ -123,6 +120,9 @@ export function AccumulatorPage() {
             suffix="%"
             onChange={(v) => setSpec({ upfrontPct: v })}
             solved={fieldSolved('upfront')}
+            solveChip
+            solveActive={fieldSolved('upfront')}
+            onSolveClick={() => selectSolve('upfront')}
           />
         </div>
 
@@ -151,6 +151,15 @@ export function AccumulatorPage() {
           {validation.errors.tenorYears && <span className="field-hint">{validation.errors.tenorYears}</span>}
         </div>
 
+        <div className="computed-readout">
+          <span>Estimated notional</span>
+          <b>
+            {estimatedNotional.toLocaleString(undefined, { maximumFractionDigits: 0 })} {spec.currency}
+          </b>
+        </div>
+      </Card>
+
+      <Card title="Schedule">
         <div className="field">
           <div className="field-label">
             <span>Settlement frequency</span>
@@ -173,6 +182,29 @@ export function AccumulatorPage() {
           error={validation.errors.dailyShares}
         />
 
+        <div className="field">
+          <div className="field-label">
+            <span>Guarantee periods</span>
+          </div>
+          <div className="stepper">
+            <button type="button" onClick={() => setSpec({ guaranteePeriods: Math.max(0, spec.guaranteePeriods - 1) })}>
+              −
+            </button>
+            <input
+              className="input"
+              type="number"
+              value={spec.guaranteePeriods}
+              onChange={(e) => setSpec({ guaranteePeriods: Math.max(0, e.target.valueAsNumber || 0) })}
+            />
+            <button type="button" onClick={() => setSpec({ guaranteePeriods: spec.guaranteePeriods + 1 })}>
+              +
+            </button>
+            <span className="text-muted">settlement periods</span>
+          </div>
+        </div>
+      </Card>
+
+      <Card title="Knock-out">
         <NumericField
           label="KO trigger"
           value={spec.koTriggerPct}
@@ -201,34 +233,6 @@ export function AccumulatorPage() {
             ]}
             onChange={(v) => setSpec({ gearing: Number(v) as 1 | 2 })}
           />
-        </div>
-
-        <div className="field">
-          <div className="field-label">
-            <span>Guarantee periods</span>
-          </div>
-          <div className="stepper">
-            <button type="button" onClick={() => setSpec({ guaranteePeriods: Math.max(0, spec.guaranteePeriods - 1) })}>
-              −
-            </button>
-            <input
-              className="input"
-              type="number"
-              value={spec.guaranteePeriods}
-              onChange={(e) => setSpec({ guaranteePeriods: Math.max(0, e.target.valueAsNumber || 0) })}
-            />
-            <button type="button" onClick={() => setSpec({ guaranteePeriods: spec.guaranteePeriods + 1 })}>
-              +
-            </button>
-            <span className="text-muted">settlement periods</span>
-          </div>
-        </div>
-
-        <div className="computed-readout">
-          <span>Estimated notional</span>
-          <b>
-            {estimatedNotional.toLocaleString(undefined, { maximumFractionDigits: 0 })} {spec.currency}
-          </b>
         </div>
       </Card>
 

@@ -99,7 +99,7 @@
 .page-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: 16px;
+  gap: 20px 28px;
   max-width: 1200px;
 }
 
@@ -156,6 +156,22 @@
 
 .btn-icon {
   padding: 6px 8px;
+}
+
+.btn-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.btn-active:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.pill-active {
+  background: var(--accent);
+  color: white;
 }
 
 .has-tooltip {

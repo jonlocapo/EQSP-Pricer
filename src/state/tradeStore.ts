@@ -68,13 +68,14 @@ function autoDownsideLeverage(downsideStrikePct: number): number {
   return Math.round((10000 / downsideStrikePct) * 100) / 100;
 }
 
-export type ParticipationPreset = 'booster' | 'bonus' | 'capitalGuaranteed' | 'twinWin';
+export type ParticipationPreset = 'booster' | 'bonus' | 'capitalGuaranteed' | 'twinWin' | 'twkg';
 
 export const PARTICIPATION_PRESET_LABELS: Record<ParticipationPreset, string> = {
   booster: 'Booster',
   bonus: 'Bonus',
   capitalGuaranteed: 'Capital Guaranteed',
   twinWin: 'Twin Win',
+  twkg: 'TWKG',
 };
 
 /**
@@ -143,6 +144,20 @@ export function participationPreset(
         },
         bonusPct: 0,
         protectionPct: 0,
+      };
+    case 'twkg':
+      return {
+        ...base,
+        upside: { strikePct: 100, participationPct: 100, variant: { variant: 'vanilla' } },
+        downside: {
+          strikePct: 100,
+          leveragePct: autoDownsideLeverage(100),
+          barrierType: 'american',
+          kiBarrierPct: 65,
+          twinWinPct: 100,
+        },
+        bonusPct: 0,
+        protectionPct: 90,
       };
   }
 }
