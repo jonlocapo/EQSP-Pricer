@@ -266,7 +266,7 @@
 .input,
 select.input {
   border: 1px solid var(--border-strong);
-  background: var(--bg);
+  background: var(--bg-elevated);
   color: var(--text);
   border-radius: var(--radius-sm);
   padding: 6px 9px;
@@ -378,7 +378,7 @@ select.input:focus {
   flex: 1;
   min-width: 0;
   border: none;
-  background: var(--bg);
+  background: var(--bg-elevated);
   padding: 6px 8px;
   font-size: 12.5px;
   color: var(--text-muted);
@@ -659,7 +659,7 @@ select.input:focus {
 
 .chevron-btn {
   border: 1px solid var(--border-strong);
-  background: var(--bg);
+  background: var(--bg-elevated);
   border-radius: 50%;
   width: 28px;
   height: 28px;
@@ -813,7 +813,7 @@ select.input:focus {
   height: 26px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-strong);
-  background: var(--bg);
+  background: var(--bg-elevated);
 }
 
 .stepper input {
