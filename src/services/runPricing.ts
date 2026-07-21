@@ -180,6 +180,22 @@ export async function runPricing({
   addToHistory = true,
   live = false,
 }: RunPricingParams): Promise<void> {
+  // A background live-reprice pass must never preempt an explicit Price/
+  // Solve press that's still in flight — the explicit press is the one the
+  // user asked for and the one that gets recorded to history, so it has to
+  // win regardless of which one's worker response happens to land first.
+  // (An explicit press, conversely, always supersedes whatever's running —
+  // live or explicit — so it isn't gated here at all.) This matters far
+  // more than it would look: the issuerCallable/LSMC branch prices in one
+  // synchronous, non-yielding pass (no mid-run cancellation), so an
+  // in-flight run there routinely outlives a 120-300ms live-reprice
+  // debounce, making this race easy to hit in practice rather than a
+  // theoretical corner case.
+  if (live) {
+    const current = useResultsStore.getState();
+    if (current.running && current.runKind === 'explicit') return;
+  }
+
   const id = crypto.randomUUID();
   const req: PriceRequest = {
     id,
@@ -192,14 +208,22 @@ export async function runPricing({
     warmStartValue,
   };
 
+  // Any other run still in flight at this point (a previous live pass, or —
+  // for an explicit press — even a previous explicit one) is superseded by
+  // this one: cancel it before this run claims `runId`, so its own eventual
+  // (possibly late) settlement can never be mistaken for this run's — see
+  // finishRun/failRun/cancelRun's id guard in resultsStore for the
+  // belt-and-braces half of this fix.
+  cancelPricing();
+
   const results = useResultsStore.getState();
-  results.startRun(id);
+  results.startRun(id, live ? 'live' : 'explicit');
 
   try {
     const result = await pricerClient.price(req, (p) => {
       useResultsStore.getState().setProgress(p);
     });
-    useResultsStore.getState().finishRun(result);
+    useResultsStore.getState().finishRun(id, result);
     writeBackSolvedValue(product, solve, result.solvedValue);
 
     if (addToHistory) {
@@ -222,15 +246,15 @@ export async function runPricing({
     const message = err instanceof Error ? err.message : 'Pricing failed.';
     if (err instanceof Error && message === 'cancelled') {
       // Cancelled — a newer run superseded this one; not a failure at all.
-      useResultsStore.getState().cancelRun();
+      useResultsStore.getState().cancelRun(id);
     } else if (live && NO_SOLUTION_RE.test(message)) {
       // Expected, calm outcome while editing live into an unreachable
       // bracket — keep the last good result on screen, just flag it stale.
-      useResultsStore.getState().failLiveRun('No solution at current terms.');
+      useResultsStore.getState().failLiveRun(id, 'No solution at current terms.');
     } else {
       // Explicit failure (button press) or an unexpected error even on a
       // live pass — the normal, clearly-flagged error state.
-      useResultsStore.getState().failRun(message);
+      useResultsStore.getState().failRun(id, message);
     }
   }
 }

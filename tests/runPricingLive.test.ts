@@ -75,10 +75,33 @@ class ThrowingClient implements PricerClient {
   }
 }
 
+/** A client whose price() doesn't resolve until the test explicitly releases
+ * it — models the issuerCallable/LSMC branch's long, non-yielding pass, so a
+ * test can deterministically land a live-reprice debounce squarely inside an
+ * explicit run's window instead of racing real timers. */
+class DeferredClient implements PricerClient {
+  public cancelledIds: string[] = [];
+  private releasers = new Map<string, () => void>();
+  async price(req: PriceRequest): Promise<PriceResult> {
+    await new Promise<void>((resolve) => this.releasers.set(req.id, resolve));
+    return makePriceResult(req);
+  }
+  release(id: string): void {
+    this.releasers.get(id)?.();
+  }
+  cancel(id: string): void {
+    this.cancelledIds.push(id);
+  }
+  async profile(req: ProfileRequest): Promise<ProfileResult> {
+    return { id: req.id, nodes: [], spotLo: 0, spotHi: 0, N: 0 };
+  }
+}
+
 describe('runPricing live vs explicit failure handling', () => {
   beforeEach(() => {
     useResultsStore.setState({
       runId: null,
+      runKind: null,
       running: false,
       progress: null,
       result: null,
@@ -117,7 +140,7 @@ describe('runPricing live vs explicit failure handling', () => {
       )
     );
     // Seed a prior good result so we can assert it survives untouched.
-    useResultsStore.getState().finishRun({
+    const priorResult: PriceResult = {
       id: 'prev',
       pvPct: 98.5,
       pvCcy: 985_000,
@@ -126,8 +149,8 @@ describe('runPricing live vs explicit failure handling', () => {
       solvedValue: 8,
       diagnostics: {},
       elapsedMs: 10,
-    });
-    const priorResult = useResultsStore.getState().result;
+    };
+    useResultsStore.setState({ result: priorResult });
 
     await runPricing({
       page: 'coupon',
@@ -206,5 +229,61 @@ describe('runPricing live vs explicit failure handling', () => {
     expect(state.error).toBeNull();
     expect(state.liveUnsolvable).toBeNull();
     expect(state.running).toBe(false);
+  });
+
+  it('a live-reprice pass never preempts an explicit Price/Solve press still in flight (the issuerCallable race)', async () => {
+    const client = new DeferredClient();
+    setPricerClient(client);
+
+    // Explicit press starts and is still "in flight" (its price() promise
+    // hasn't resolved) — this models the issuerCallable/LSMC branch, whose
+    // single synchronous pass routinely outlives a live-reprice debounce.
+    const explicitDone = runPricing({
+      page: 'coupon',
+      product,
+      market,
+      underlyingName: 'TEST',
+      solve: { kind: 'none' },
+      greeks: false,
+      live: false,
+    });
+    await Promise.resolve(); // let runPricing's synchronous prefix (startRun) run
+
+    const afterExplicitStart = useResultsStore.getState();
+    expect(afterExplicitStart.running).toBe(true);
+    expect(afterExplicitStart.runKind).toBe('explicit');
+    const explicitRunId = afterExplicitStart.runId;
+
+    // A live-reprice debounce fires while the explicit press is still
+    // running (e.g. the same edit that triggered live-reprice was also
+    // what the user pressed Price for). It must be a complete no-op: no
+    // cancel sent, no runId/runKind change, no run started.
+    await runPricing({
+      page: 'coupon',
+      product,
+      market,
+      underlyingName: 'TEST',
+      solve: { kind: 'none' },
+      greeks: false,
+      live: true,
+      addToHistory: false,
+    });
+
+    expect(client.cancelledIds).toEqual([]);
+    const afterLiveAttempt = useResultsStore.getState();
+    expect(afterLiveAttempt.runId).toBe(explicitRunId);
+    expect(afterLiveAttempt.runKind).toBe('explicit');
+    expect(afterLiveAttempt.running).toBe(true);
+
+    // Now let the explicit press resolve — it must be the one that lands,
+    // and (by extension, per runPricing's addToHistory default) it's the
+    // one that would be recorded to history.
+    client.release(explicitRunId!);
+    await explicitDone;
+
+    const final = useResultsStore.getState();
+    expect(final.running).toBe(false);
+    expect(final.result).not.toBeNull();
+    expect(final.result!.id).toBe(explicitRunId);
   });
 });

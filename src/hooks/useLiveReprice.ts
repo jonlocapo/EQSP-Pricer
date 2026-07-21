@@ -3,7 +3,7 @@ import type { MarketData } from '../model/market';
 import type { ProductSpec } from '../model/product';
 import type { SolveTarget } from '../model/request';
 import { applySolveValue } from '../worker/pricing';
-import { runPricing, cancelPricing } from '../services/runPricing';
+import { runPricing } from '../services/runPricing';
 import { useResultsStore } from '../state/resultsStore';
 import type { PageId } from '../state/tradeStore';
 
@@ -48,9 +48,15 @@ export interface UseLiveRepriceParams {
  *   sees *something* move almost immediately.
  * - A longer trailing-edge debounce fires the FULL-precision pass once edits
  *   stop — this is the authoritative, settled value.
- * - Each pass cancels whatever run is still in flight first (via the
- *   existing worker cancel protocol) so superseded runs never race the
- *   latest one or leak a stale result.
+ * - Each pass hands off to runPricing, which cancels whatever run is still
+ *   in flight first (via the worker cancel protocol) so superseded runs
+ *   never race the latest one or leak a stale result — UNLESS what's in
+ *   flight is an explicit Price/Solve button press, which a live pass must
+ *   never preempt (see runPricing/resultsStore: the explicit press is what
+ *   the user asked for and what gets recorded to history, so it has to win
+ *   even if it's still computing when a live debounce fires — the
+ *   issuerCallable/LSMC branch's long synchronous pass makes this easy to
+ *   hit in practice).
  * - Solve passes are warm-started from the last known solved value, so they
  *   land in a couple of solver iterations instead of cold-starting.
  * - Both passes skip greeks (expensive, not needed for live feedback) and
@@ -94,7 +100,6 @@ export function useLiveReprice({ page, product, market, underlyingName, solve, d
     }
 
     previewTimer.current = setTimeout(() => {
-      cancelPricing();
       const warmStartValue = useResultsStore.getState().result?.solvedValue;
       void runPricing({
         page,
@@ -111,7 +116,6 @@ export function useLiveReprice({ page, product, market, underlyingName, solve, d
     }, PREVIEW_DEBOUNCE_MS);
 
     settleTimer.current = setTimeout(() => {
-      cancelPricing();
       const warmStartValue = useResultsStore.getState().result?.solvedValue;
       void runPricing({
         page,
