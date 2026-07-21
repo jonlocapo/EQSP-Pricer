@@ -117,10 +117,17 @@ export class Aggregator {
  * generated paths — either way `evaluatePathSource` below does the exact
  * same aggregation, so results are identical regardless of where the paths
  * came from.
+ *
+ * Generic over the item type `T` so the same replay/aggregation machinery
+ * works both for raw paths (`T = Float64Array`, the classic case) and for
+ * cached per-path observables (`T = PathObservables`, see pathCache.ts) —
+ * the aggregation logic (pairing, batching, addSample/addPathDiagnostics
+ * order) is identical either way, which is exactly what keeps an
+ * observables-cache hit byte-identical to evaluating straight from spots.
  */
-export interface PathSource {
-  nextPair(): { plus: Float64Array; minus: Float64Array };
-  nextSingle(): Float64Array;
+export interface PathSource<T = Float64Array> {
+  nextPair(): { plus: T; minus: T };
+  nextSingle(): T;
 }
 
 /**
@@ -131,11 +138,11 @@ export interface PathSource {
  * funnel through it so a cache hit is numerically identical to a fresh run.
  * Returns true if `onBatch` requested cancellation.
  */
-export function evaluatePathSource(
-  source: PathSource,
+export function evaluatePathSource<T = Float64Array>(
+  source: PathSource<T>,
   numPaths: number,
   antithetic: boolean,
-  evaluator: PayoffEvaluator,
+  evaluator: (item: T) => PathOutcome,
   agg: Aggregator,
   batchSize: number = DEFAULT_BATCH_PAIRS,
   onBatch?: (pathsDone: number) => boolean,

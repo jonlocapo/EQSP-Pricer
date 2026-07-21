@@ -2,7 +2,10 @@ import { PERIODS_PER_YEAR, type CouponProductSpec } from '../../model/product';
 import type {
   CashflowExtractor,
   EvaluatorContext,
+  ObservablesEvaluator,
+  OutcomeEvaluator,
   PathCashflows,
+  PathObservables,
   PathOutcome,
   PayoffEvaluator,
   PricingGrid,
@@ -163,6 +166,131 @@ export function makeCouponEvaluator(spec: CouponProductSpec, ctx: EvaluatorConte
     return {
       pvPct,
       kiEvent: kiEventFor(spec, spots),
+      lifeYears: spec.tenorYears,
+    };
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Observables split (Phase A / Phase B). Mirrors makeCouponEvaluator's
+// arithmetic and iteration order exactly — see tests/observables.test.ts for
+// the per-path equivalence proof. Phase A (`makeCouponObservables`) depends
+// only on `ctx.grid` (the merged coupon+call observation schedule), never on
+// `spec`, so it can be cached and reused across solve iterations that vary
+// spec numeric parameters (barriers, coupon rates) while the schedule stays
+// fixed. Phase B (`makeCouponOutcome`) is the cheap per-iteration part.
+// ---------------------------------------------------------------------------
+
+/** Phase A: precompute terminal/running perf + perf at each merged
+ * coupon/call observation, once per path. */
+export function makeCouponObservables(ctx: EvaluatorContext): ObservablesEvaluator {
+  const { grid } = ctx;
+  const events = mergeEvents(grid);
+  const eventIndices = events.map((e) => e.gridIndex);
+  const nEvents = eventIndices.length;
+
+  return (spots: Float64Array): PathObservables => {
+    const S0 = spots[0];
+    const nSteps = spots.length - 1;
+    const eventPerf = new Float64Array(nEvents);
+    let ei = 0;
+    let minPerf = Infinity;
+    let maxPerf = -Infinity;
+
+    for (let i = 1; i <= nSteps; i++) {
+      const p = spots[i] / S0;
+      if (p < minPerf) minPerf = p;
+      if (p > maxPerf) maxPerf = p;
+      if (ei < nEvents && eventIndices[ei] === i) {
+        eventPerf[ei] = p;
+        ei++;
+      }
+    }
+
+    return { perfT: spots[nSteps] / S0, minPerf, maxPerf, eventPerf };
+  };
+}
+
+/** Observables-based equivalent of kiEventFor: same branches, same operand
+ * (obs.perfT / obs.minPerf are bit-identical to the spots-based computation
+ * since they're the same division/loop, just computed once and cached). */
+function kiEventFromObs(spec: CouponProductSpec, obs: PathObservables): boolean | undefined {
+  switch (spec.barrierType) {
+    case 'none':
+      return undefined;
+    case 'european':
+      return obs.perfT < spec.kiBarrierPct / 100;
+    case 'american':
+      return obs.minPerf < spec.kiBarrierPct / 100;
+  }
+}
+
+function isKnockedInFromObs(spec: CouponProductSpec, obs: PathObservables): boolean {
+  if (spec.barrierType === 'none') return true;
+  return kiEventFromObs(spec, obs) === true;
+}
+
+function maturityRedemptionPctFromObs(spec: CouponProductSpec, obs: PathObservables): number {
+  const ki = isKnockedInFromObs(spec, obs);
+  if (!ki) return 100;
+  const shortfall = Math.max(0, spec.putStrikePct - 100 * obs.perfT);
+  return Math.max(0, 100 - (spec.downsideLeveragePct / 100) * shortfall);
+}
+
+/** Phase B: apply spec terms to precomputed observables. Identical
+ * arithmetic/iteration order to makeCouponEvaluator's per-path closure. */
+export function makeCouponOutcome(spec: CouponProductSpec, ctx: EvaluatorContext): OutcomeEvaluator {
+  const { grid } = ctx;
+  const events = mergeEvents(grid);
+  const coupon = couponAmountPct(spec);
+
+  return (obs: PathObservables): PathOutcome => {
+    let pvPct = 0;
+    let missed = 0;
+
+    for (let idx = 0; idx < events.length; idx++) {
+      const ev = events[idx];
+      const perf = obs.eventPerf[idx];
+
+      if (ev.couponPeriod !== undefined) {
+        if (spec.couponType === 'fixed') {
+          pvPct += ctx.df(timeOf(ev.gridIndex, grid)) * coupon;
+        } else {
+          const barrier = spec.couponBarrierPct / 100;
+          if (perf >= barrier) {
+            if (spec.couponType === 'memory') {
+              pvPct += ctx.df(timeOf(ev.gridIndex, grid)) * coupon * (1 + missed);
+              missed = 0;
+            } else {
+              pvPct += ctx.df(timeOf(ev.gridIndex, grid)) * coupon;
+            }
+          } else if (spec.couponType === 'memory') {
+            missed++;
+          }
+        }
+      }
+
+      if (ev.callPeriod !== undefined && isCallable(spec, ev.callPeriod)) {
+        const barrier = callBarrierDecimal(spec, ev.callPeriod);
+        if (perf >= barrier) {
+          pvPct += ctx.df(timeOf(ev.gridIndex, grid)) * redemptionCostPctAt(spec, ev.callPeriod);
+          return {
+            pvPct,
+            calledAtPeriod: ev.callPeriod,
+            kiEvent: undefined,
+            lifeYears: timeOf(ev.gridIndex, grid),
+          };
+        }
+      }
+    }
+
+    const nSteps = grid.nSteps;
+    const redemption = maturityRedemptionPctFromObs(spec, obs);
+    pvPct += ctx.df(timeOf(nSteps, grid)) * redemption;
+
+    return {
+      pvPct,
+      kiEvent: kiEventFromObs(spec, obs),
       lifeYears: spec.tenorYears,
     };
   };

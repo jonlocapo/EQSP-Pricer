@@ -47,6 +47,52 @@ export interface PathOutcome {
  */
 export type PayoffEvaluator = (spots: Float64Array) => PathOutcome;
 
+/**
+ * The per-path functionals a solve-loop payoff decomposes into: the pieces
+ * that depend only on the raw path + the observation index sets (couponObs/
+ * callObs), NOT on any numeric spec parameter (barriers, coupon rates,
+ * strikes, gearing). Computing these once per path and caching them lets a
+ * Ridders solve iteration skip re-walking 253 steps × 100k paths on every
+ * evaluation — see pathCache.ts.
+ *
+ * - `perfT`: terminal performance, spots[nSteps] / spots[0].
+ * - `minPerf`: running minimum of spots[i] / spots[0] over i = 1..nSteps
+ *   (American knock-in monitoring).
+ * - `maxPerf`: running maximum of spots[i] / spots[0] over i = 1..nSteps
+ *   (American knock-out / upside monitoring, e.g. koRebate).
+ * - `eventPerf`: perf = spots[i] / spots[0] at each grid index of the coupon
+ *   family's merged observation schedule (couponObs ∪ callObs), in the same
+ *   ascending order as that schedule. Empty for participation, which only
+ *   ever observes at nSteps (already covered by `perfT`).
+ *
+ * Only coupon and participation evaluators decompose this way (see
+ * couponProducts.ts / participation.ts). The accumulator's daily walk
+ * inherently depends on the strike (a solve target) at every step, so it is
+ * left as a single monolithic evaluator — see accumulator.ts.
+ */
+export interface PathObservables {
+  perfT: number;
+  minPerf: number;
+  maxPerf: number;
+  eventPerf: Float64Array;
+}
+
+/** Phase A: path -> observables. Depends only on the grid (observation
+ * index sets), never on spec numeric parameters. */
+export type ObservablesEvaluator = (spots: Float64Array) => PathObservables;
+
+/** Phase B: observables + spec (closed over) -> outcome. This is the cheap
+ * part that varies per solve iteration. */
+export type OutcomeEvaluator = (obs: PathObservables) => PathOutcome;
+
+/** A payoff family that supports the observables split. `phaseB(phaseA(path))`
+ * must be exactly reproducible as the family's monolithic PayoffEvaluator —
+ * see tests/observables.test.ts. */
+export interface SplitEvaluator {
+  observables: ObservablesEvaluator;
+  outcome: OutcomeEvaluator;
+}
+
 export interface EvaluatorContext {
   market: MarketData;
   grid: PricingGrid;

@@ -24,7 +24,7 @@ import type { MarketData } from '../model/market';
 import { PathBatchGenerator } from './gbm';
 import { Aggregator, evaluatePathSource } from './mc';
 import type { McRunResult, PathSource } from './mc';
-import type { PayoffEvaluator } from './payoffs/types';
+import type { ObservablesEvaluator, OutcomeEvaluator, PathObservables, PayoffEvaluator, PricingGrid } from './payoffs/types';
 
 interface StoredSlice {
   antithetic: boolean;
@@ -32,9 +32,22 @@ interface StoredSlice {
   singles?: Float64Array[];
 }
 
+/** Same shape as StoredSlice but holding cached per-path observables instead
+ * of raw spots — the "handful of floats each" that Phase A produces. */
+interface StoredObservablesSlice {
+  antithetic: boolean;
+  pairs?: { plus: PathObservables; minus: PathObservables }[];
+  singles?: PathObservables[];
+}
+
 interface CacheEntry {
   key: string;
   slices: (StoredSlice | undefined)[];
+  /** Signature of the observation index sets (couponObs/callObs) the cached
+   * observables were computed against. A schedule change (e.g. coupon
+   * frequency) invalidates only this, not the raw path slices. */
+  obsKey?: string;
+  obsSlices?: (StoredObservablesSlice | undefined)[];
 }
 
 let entry: CacheEntry | null = null;
@@ -81,6 +94,19 @@ export function computeCacheKey(p: CacheKeyParams): string {
     nSteps: p.nSteps,
     dtYears: p.dtYears,
   });
+}
+
+/**
+ * Observables depend on the raw paths (already covered by `computeCacheKey`)
+ * plus the observation index sets (grid.couponObs / grid.callObs) — NOT on
+ * any numeric spec parameter. During a typical solve the schedule is fixed
+ * (only barrier/coupon levels change) so this key stays constant and
+ * observables hit on every iteration after the first; if the schedule itself
+ * changes (e.g. couponFrequency changes mid live-solve), this key changes,
+ * the raw paths still hit (unaffected), and observables recompute from them.
+ */
+export function computeObservablesKey(pathKey: string, grid: PricingGrid): string {
+  return `${pathKey}|obs:${stableStringify({ couponObs: grid.couponObs, callObs: grid.callObs })}`;
 }
 
 /** Replays a previously-stored slice in the exact order it was recorded. */
@@ -163,6 +189,106 @@ export function evaluateCachedSlice(
   const recorder = new RecordingPathSource(gen);
   evaluatePathSource(recorder, slicePaths, antithetic, evaluator, agg);
   entry.slices[sliceIndex] = recorder.toStoredSlice(antithetic);
+  return agg.finalize(false, referenceLevelPct);
+}
+
+/** Replays a previously-stored observables slice in the exact order it was
+ * computed (which mirrors the raw slice's generation order). */
+class ObservablesReplaySource implements PathSource<PathObservables> {
+  private pairIdx = 0;
+  private singleIdx = 0;
+  constructor(private readonly slice: StoredObservablesSlice) {}
+
+  nextPair(): { plus: PathObservables; minus: PathObservables } {
+    return this.slice.pairs![this.pairIdx++];
+  }
+
+  nextSingle(): PathObservables {
+    return this.slice.singles![this.singleIdx++];
+  }
+}
+
+/** Maps Phase A over an already-stored raw slice, preserving pair/single
+ * structure and order exactly (no GBM cost — the paths already exist). */
+function computeObservablesSlice(stored: StoredSlice, observables: ObservablesEvaluator): StoredObservablesSlice {
+  if (stored.antithetic) {
+    return {
+      antithetic: true,
+      pairs: stored.pairs!.map(({ plus, minus }) => ({ plus: observables(plus), minus: observables(minus) })),
+    };
+  }
+  return { antithetic: false, singles: stored.singles!.map((s) => observables(s)) };
+}
+
+/**
+ * Split-evaluator counterpart to `evaluateCachedSlice`: reuses the same
+ * single-entry raw-path cache, plus a second single-entry cache of per-path
+ * observables (Phase A output) keyed by `observablesKey`.
+ *
+ * On a raw-path hit + observables hit: replays cached observables straight
+ * into Phase B (`outcome`) — no path walk at all.
+ * On a raw-path hit + observables miss (schedule changed): recomputes
+ * observables from the already-cached raw paths (cheap — no GBM), then
+ * evaluates.
+ * On a raw-path miss: generates + stores raw paths (as `evaluateCachedSlice`
+ * does), evaluating via `outcome(observables(spots))` — which is exactly the
+ * monolithic evaluator's composition (see tests/observables.test.ts) — then
+ * separately computes and stores observables for future hits.
+ *
+ * Either way, aggregation goes through `evaluatePathSource` with the same
+ * pair/single ordering as the raw-path case, so results are byte-identical
+ * to `evaluateCachedSlice`/`runMc` with an equivalent monolithic evaluator.
+ */
+export function evaluateCachedSliceSplit(
+  key: string,
+  sliceIndex: number,
+  sliceSeed: number,
+  slicePaths: number,
+  antithetic: boolean,
+  nSteps: number,
+  dtYears: number,
+  s0: number,
+  market: MarketData,
+  observablesKey: string,
+  observables: ObservablesEvaluator,
+  outcome: OutcomeEvaluator,
+  referenceLevelPct?: number,
+): McRunResult {
+  if (!entry || entry.key !== key) {
+    entry = { key, slices: [] };
+  }
+  if (entry.obsKey !== observablesKey) {
+    entry.obsKey = observablesKey;
+    entry.obsSlices = [];
+  }
+
+  const agg = new Aggregator();
+
+  const existingObs = entry.obsSlices![sliceIndex];
+  if (existingObs) {
+    evaluatePathSource(new ObservablesReplaySource(existingObs), slicePaths, antithetic, outcome, agg);
+    return agg.finalize(false, referenceLevelPct);
+  }
+
+  const existingPaths = entry.slices[sliceIndex];
+  if (existingPaths) {
+    const obsSlice = computeObservablesSlice(existingPaths, observables);
+    entry.obsSlices![sliceIndex] = obsSlice;
+    evaluatePathSource(new ObservablesReplaySource(obsSlice), slicePaths, antithetic, outcome, agg);
+    return agg.finalize(false, referenceLevelPct);
+  }
+
+  // Full miss: generate + store raw paths, evaluating via the exact same
+  // composition (outcome ∘ observables) proven equivalent to the monolithic
+  // evaluator, so this branch is byte-identical to evaluateCachedSlice's
+  // miss path with the monolithic evaluator.
+  const gen = new PathBatchGenerator(sliceSeed, nSteps, s0, market, dtYears);
+  const recorder = new RecordingPathSource(gen);
+  const evaluator: PayoffEvaluator = (spots: Float64Array) => outcome(observables(spots));
+  evaluatePathSource(recorder, slicePaths, antithetic, evaluator, agg);
+  const storedSlice = recorder.toStoredSlice(antithetic);
+  entry.slices[sliceIndex] = storedSlice;
+  entry.obsSlices![sliceIndex] = computeObservablesSlice(storedSlice, observables);
   return agg.finalize(false, referenceLevelPct);
 }
 

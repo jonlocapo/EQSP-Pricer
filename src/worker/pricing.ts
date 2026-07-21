@@ -15,10 +15,10 @@ import type { Diagnostics, PriceRequest, PriceResult, SolveTarget } from '../mod
 import { buildGrid } from '../engine/schedule';
 import { makeDf } from '../engine/discount';
 import { priceIssuerCallable } from '../engine/lsmc';
-import { makeEvaluator } from '../engine/payoffs';
+import { makeEvaluator, makeSplitEvaluator } from '../engine/payoffs';
 import { makeCouponCashflowExtractor } from '../engine/payoffs/couponProducts';
 import type { EvaluatorContext } from '../engine/payoffs/types';
-import { computeCacheKey, evaluateCachedSlice } from '../engine/pathCache';
+import { computeCacheKey, computeObservablesKey, evaluateCachedSlice, evaluateCachedSliceSplit } from '../engine/pathCache';
 import { computeExpectedShortfall, computeHistogram, computePLoss } from '../engine/distribution';
 import { chebyshevLobattoSpotNodes } from '../engine/chebyshev';
 import type { PricingPhase, ProfileRequest, ProfileResult } from './protocol';
@@ -100,7 +100,14 @@ async function priceOnce(
     };
   }
 
-  const evaluator = makeEvaluator(spec, ctx);
+  // Split evaluator (Phase A observables / Phase B outcome) for the families
+  // where it's a true no-op decomposition (coupon non-issuerCallable,
+  // participation — see makeSplitEvaluator's doc). Falls back to the
+  // monolithic evaluator (accumulator) when null; the monolithic evaluator
+  // is also what the split's cache-miss path uses internally (outcome ∘
+  // observables), so either path is byte-identical to a fresh runMc call.
+  const split = makeSplitEvaluator(spec, ctx);
+  const evaluator = split ? undefined : makeEvaluator(spec, ctx);
   const nSlices = Math.max(1, Math.ceil(numPaths / SLICE_PATHS));
   const per = Math.ceil(numPaths / nSlices);
 
@@ -118,6 +125,11 @@ async function priceOnce(
     nSteps: grid.nSteps,
     dtYears: grid.dtYears,
   });
+  // Observables (Phase A output) need an additional key component: a
+  // signature of the observation index sets (couponObs/callObs). The raw
+  // path cache stays valid across a schedule change (e.g. couponFrequency
+  // mid live-solve); only the cached observables must recompute.
+  const observablesKey = split ? computeObservablesKey(cacheKey, grid) : '';
   // Reference level for pLoss/ES: what the investor paid (coupon/
   // participation), or 0 for accumulator (its PV is already a P&L-style
   // value in % of estimated notional, not a price paid — see Diagnostics.pLoss doc).
@@ -140,18 +152,33 @@ async function priceOnce(
       break;
     }
     const slicePaths = Math.min(per, numPaths - s * per);
-    const res = evaluateCachedSlice(
-      cacheKey,
-      s,
-      seed + s * 7919,
-      slicePaths,
-      antithetic,
-      grid.nSteps,
-      grid.dtYears,
-      market.spot,
-      market,
-      evaluator,
-    );
+    const res = split
+      ? evaluateCachedSliceSplit(
+          cacheKey,
+          s,
+          seed + s * 7919,
+          slicePaths,
+          antithetic,
+          grid.nSteps,
+          grid.dtYears,
+          market.spot,
+          market,
+          observablesKey,
+          split.observables,
+          split.outcome,
+        )
+      : evaluateCachedSlice(
+          cacheKey,
+          s,
+          seed + s * 7919,
+          slicePaths,
+          antithetic,
+          grid.nSteps,
+          grid.dtYears,
+          market.spot,
+          market,
+          evaluator!,
+        );
     const w = slicePaths;
     wSum += w;
     pvSum += w * res.pvPct;
