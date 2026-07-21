@@ -17,7 +17,7 @@ import { timeOf } from './types';
  * obs (they may coincide, e.g. quarterly coupon + quarterly call). Precompute
  * one ascending schedule of events so the per-path walk is a single pass.
  */
-interface CouponEvent {
+export interface CouponEvent {
   gridIndex: number;
   /** 1-based coupon period index, if this is a coupon observation. */
   couponPeriod?: number;
@@ -25,7 +25,10 @@ interface CouponEvent {
   callPeriod?: number;
 }
 
-function mergeEvents(grid: PricingGrid): CouponEvent[] {
+/** Thin export: reused by src/engine/combinators (additive DSL layer) to
+ * build its own schedule-driven contract trees without duplicating the
+ * merge logic. Pure, no behavior change. */
+export function mergeEvents(grid: PricingGrid): CouponEvent[] {
   const byIndex = new Map<number, CouponEvent>();
   grid.couponObs.forEach((gi, idx) => {
     const ev = byIndex.get(gi) ?? { gridIndex: gi };
@@ -40,8 +43,10 @@ function mergeEvents(grid: PricingGrid): CouponEvent[] {
   return Array.from(byIndex.values()).sort((a, b) => a.gridIndex - b.gridIndex);
 }
 
-/** Call barrier (decimal, e.g. 1.00 = 100%) for 1-based call period j. */
-function callBarrierDecimal(spec: CouponProductSpec, j: number): number {
+/** Call barrier (decimal, e.g. 1.00 = 100%) for 1-based call period j.
+ * Thin export: reused by src/engine/combinators (pure numeric helper, no
+ * path dependence — safe to share). */
+export function callBarrierDecimal(spec: CouponProductSpec, j: number): number {
   switch (spec.callType) {
     case 'constant':
       return spec.callBarrierPct / 100;
@@ -55,15 +60,17 @@ function callBarrierDecimal(spec: CouponProductSpec, j: number): number {
   }
 }
 
-function isCallable(spec: CouponProductSpec, j: number): boolean {
+/** Thin export: reused by src/engine/combinators. */
+export function isCallable(spec: CouponProductSpec, j: number): boolean {
   return (
     j >= spec.callFromPeriod &&
     (spec.callType === 'constant' || spec.callType === 'stepdown' || spec.callType === 'custom')
   );
 }
 
-/** Autocall coupon paid on redemption (call or, in the extractor, hypothetical) at period j. */
-function redemptionCostPctAt(spec: CouponProductSpec, j: number): number {
+/** Autocall coupon paid on redemption (call or, in the extractor, hypothetical) at period j.
+ * Thin export: reused by src/engine/combinators. */
+export function redemptionCostPctAt(spec: CouponProductSpec, j: number): number {
   switch (spec.acCouponType) {
     case 'flat':
       return 100 + spec.acCouponPct;
@@ -74,7 +81,8 @@ function redemptionCostPctAt(spec: CouponProductSpec, j: number): number {
   }
 }
 
-function couponAmountPct(spec: CouponProductSpec): number {
+/** Thin export: reused by src/engine/combinators. */
+export function couponAmountPct(spec: CouponProductSpec): number {
   return spec.couponPaPct / PERIODS_PER_YEAR[spec.couponFrequency];
 }
 
