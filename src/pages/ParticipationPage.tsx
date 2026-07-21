@@ -9,8 +9,8 @@ import { TenorField } from '../components/TenorField';
 import { ActionRow } from '../components/ActionRow';
 import { validateParticipation } from '../services/validation';
 import { runPricing } from '../services/runPricing';
-import { useLiveSolve } from '../hooks/useLiveSolve';
-import type { BarrierMonitoring, ParticipationSpec, UpsideVariant } from '../model/product';
+import { useLiveReprice } from '../hooks/useLiveReprice';
+import type { BarrierMonitoring, UpsideVariant } from '../model/product';
 import type { SolveTarget } from '../model/request';
 
 /** Standard downside leverage: 1/downsideStrike so a 100% stock decline exhausts the leg. */
@@ -22,19 +22,6 @@ function autoDownsideLeverage(downsideStrikePct: number): number {
 const AUTO_LEVERAGE_EPS = 0.01;
 
 const PRESET_OPTIONS: ParticipationPreset[] = ['booster', 'bonus', 'capitalGuaranteed', 'twinWin', 'twkg'];
-
-// Structural detection of "which product type does the current spec look
-// like" — ignores exact numeric values, only cares about the shape (barrier
-// on/off, twin-win/bonus/protection present or not). Order matters: the
-// first structural match wins (the definitions are mutually exclusive by
-// construction, so in practice only one ever matches).
-const PRESET_DETECT: Record<ParticipationPreset, (s: ParticipationSpec) => boolean> = {
-  booster: (s) => s.downside.barrierType === 'none' && s.downside.twinWinPct === 0 && s.protectionPct === 0 && s.bonusPct === 0,
-  bonus: (s) => s.downside.barrierType !== 'none' && s.bonusPct > 0 && s.downside.twinWinPct === 0 && s.protectionPct === 0,
-  capitalGuaranteed: (s) => s.protectionPct > 0 && s.downside.barrierType === 'none' && s.downside.twinWinPct === 0 && s.bonusPct === 0,
-  twinWin: (s) => s.downside.barrierType !== 'none' && s.downside.twinWinPct > 0 && s.protectionPct === 0,
-  twkg: (s) => s.downside.barrierType !== 'none' && s.downside.twinWinPct > 0 && s.protectionPct > 0,
-};
 
 export function ParticipationPage() {
   const spec = useTradeStore((s) => s.participationSpec);
@@ -104,7 +91,7 @@ export function ParticipationPage() {
     const available =
       kind === 'gearing' ||
       kind === 'upsideStrike' ||
-      kind === 'bonusLevel' ||
+      (kind === 'bonusLevel' && hasBarrier) ||
       (kind === 'kiBarrier' && hasBarrier) ||
       (kind === 'twinWin' && hasBarrier) ||
       (kind === 'upperStrike' && isCallSpread) ||
@@ -116,13 +103,12 @@ export function ParticipationPage() {
   const priceDisabled = !validation.valid;
   const priceLabel = solve.kind === 'none' ? 'Price' : 'Solve';
 
-  useLiveSolve({
+  useLiveReprice({
     page: 'participation',
     product: spec,
     market,
     underlyingName,
     solve,
-    greeks,
     disabled: priceDisabled,
   });
 
@@ -142,8 +128,6 @@ export function ParticipationPage() {
   // dim it the same way the other solve targets dim their own field.
   const priceIsSolveTarget = solve.kind === 'none';
 
-  const detectedPreset = PRESET_OPTIONS.find((p) => PRESET_DETECT[p](spec));
-
   function patchUpside(patch: Partial<{ strikePct: number; participationPct: number }>) {
     patchSpec({ upside: { ...spec.upside, ...patch } });
   }
@@ -161,14 +145,24 @@ export function ParticipationPage() {
   const twOn = spec.downside.twinWinPct > 0;
   const kgOn = spec.protectionPct > 0;
 
+  // KI Barrier and KG (capital protection) are mutually exclusive UNLESS
+  // Twin Win is active (TWKG = twin-win + KG + KI can coexist) — a plain KI
+  // barrier and a capital-guarantee floor describe contradictory downside
+  // shapes, but twin-win's "not knocked-in" branch never touches the KG
+  // floor at all (it's always >= 100), so once twin-win is live there's no
+  // actual conflict between the three.
   function toggleKI() {
     if (kiOn) {
       const patch: Partial<typeof spec.downside> = { barrierType: 'none' };
-      // Twin-win only makes sense while knocked-in monitoring is live.
+      // Twin-win and bonus only make sense while knocked-in monitoring is live.
       if (spec.downside.twinWinPct > 0) patch.twinWinPct = 0;
       patchDownside(patch);
+      if (spec.bonusPct > 0) patchSpec({ bonusPct: 0 });
     } else {
+      // Enabling KI while off implies twin-win was already off (it requires
+      // KI), so the only conflict to resolve is a bare KG floor.
       patchDownside({ barrierType: lastBarrierType.current, kiBarrierPct: lastKiLevel.current });
+      if (kgOn) patchSpec({ protectionPct: 0 });
     }
   }
 
@@ -181,9 +175,21 @@ export function ParticipationPage() {
   }
 
   function toggleTwinWin() {
-    if (!kiOn) return; // disabled control; no-op defensively
     if (twOn) {
       patchDownside({ twinWinPct: 0 });
+      // The KI+KG exception only holds while twin-win is live — once it
+      // drops, resolve the now-reinstated conflict by clearing KG (the KI
+      // barrier is the more structural of the two).
+      if (kgOn) patchSpec({ protectionPct: 0 });
+    } else if (!kiOn) {
+      // Twin Win requires a KI barrier. Most user-friendly behavior:
+      // auto-enable KI with a sensible default rather than leaving the
+      // control inert or blocking the click with an error.
+      patchDownside({
+        barrierType: lastBarrierType.current,
+        kiBarrierPct: lastKiLevel.current,
+        twinWinPct: lastTwinWinPct.current,
+      });
     } else {
       patchDownside({ twinWinPct: lastTwinWinPct.current });
     }
@@ -194,6 +200,13 @@ export function ParticipationPage() {
       patchSpec({ protectionPct: 0 });
     } else {
       patchSpec({ protectionPct: lastProtectionPct.current });
+      // Enabling KG while a bare KI barrier (no twin-win) is live: the two
+      // are mutually exclusive outside of TWKG, so drop the KI barrier.
+      if (kiOn && !twOn) {
+        const patch: Partial<typeof spec.downside> = { barrierType: 'none' };
+        if (spec.downside.twinWinPct > 0) patch.twinWinPct = 0;
+        patchDownside(patch);
+      }
     }
   }
 
@@ -211,16 +224,14 @@ export function ParticipationPage() {
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {PRESET_OPTIONS.map((p) => (
-            <button
-              key={p}
-              type="button"
-              className={`btn btn-sm ${detectedPreset === p ? 'btn-active' : ''}`}
-              onClick={() => applyPreset(p)}
-            >
+            // Templates are one-shot ACTIONS, not persistent states: clicking
+            // applies the preset config immediately, but the button never
+            // shows a "selected" state afterwards — the user is free to edit
+            // any field post-apply without the button lying about it.
+            <button key={p} type="button" className="btn btn-sm" onClick={() => applyPreset(p)}>
               {PARTICIPATION_PRESET_LABELS[p]}
             </button>
           ))}
-          <span className={`pill ${detectedPreset ? '' : 'pill-active'}`}>Custom</span>
         </div>
       </div>
 
@@ -369,8 +380,10 @@ export function ParticipationPage() {
           step={1}
           suffix="%"
           onChange={(v) => patchSpec({ bonusPct: v })}
+          disabled={!kiOn}
+          title={!kiOn ? 'Bonus needs a KI barrier to apply — enable KI Barrier below to activate it.' : undefined}
           solved={fieldSolved('bonusLevel')}
-          solveChip
+          solveChip={kiOn}
           solveActive={fieldSolved('bonusLevel')}
           onSolveClick={() => toggleSolve('bonusLevel')}
         />
@@ -412,8 +425,7 @@ export function ParticipationPage() {
               type="button"
               className={`btn btn-sm ${twOn ? 'btn-active' : ''}`}
               onClick={toggleTwinWin}
-              disabled={!kiOn}
-              title={!kiOn ? 'Requires KI barrier' : undefined}
+              title={!kiOn ? 'Enabling Twin Win will auto-enable a KI barrier' : undefined}
             >
               Twin Win
             </button>

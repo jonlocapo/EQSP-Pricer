@@ -45,7 +45,7 @@ function HistogramChart({ histogram }: { histogram: { binEdges: number[]; counts
 }
 
 export function ResultsBar() {
-  const { running, progress, result, error, expanded, toggleExpanded } = useResultsStore();
+  const { running, progress, result, error, liveUnsolvable, expanded, toggleExpanded } = useResultsStore();
 
   if (!running && !result && !error) return null;
 
@@ -54,15 +54,16 @@ export function ResultsBar() {
   const headlineLabel = result?.solvedValue !== undefined ? 'Solved value' : 'PV %';
 
   // Latency readout: makes the path-cache warm-start speedup visible instead
-  // of implicit. Only meaningful for solves (solveIterations is only set
-  // when solve.kind !== 'none'); plain pricing just shows elapsed time via
-  // results-meta below.
+  // of implicit. Solves show iteration count + warm/cold; a plain live price
+  // (no solve target) has neither, so it just reads the elapsed time.
   const solveSpeedLabel =
     result?.solveIterations !== undefined
       ? `solved in ${result.elapsedMs} ms · ${result.solveIterations} iter${result.solveIterations === 1 ? '' : 's'} (${
           result.solveWarmStart ? 'warm' : 'cold'
         })`
-      : undefined;
+      : result
+        ? `priced in ${result.elapsedMs} ms`
+        : undefined;
 
   return (
     <div className="results-bar">
@@ -94,12 +95,17 @@ export function ResultsBar() {
 
         {!running && result && (
           <>
-            <div className="results-headline">
+            <div className={`results-headline ${liveUnsolvable ? 'stale' : ''}`}>
               <span className="value">{headlineValue}</span>
               <span className="label">{headlineLabel}</span>
-              {result.preview && (
+              {result.preview && !liveUnsolvable && (
                 <span className="live-badge" title="Reduced-path preview — settling to full precision">
                   live
+                </span>
+              )}
+              {liveUnsolvable && (
+                <span className="no-solution-hint" title={liveUnsolvable}>
+                  no solution at current terms
                 </span>
               )}
             </div>
