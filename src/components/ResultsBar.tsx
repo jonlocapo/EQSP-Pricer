@@ -45,9 +45,21 @@ function HistogramChart({ histogram }: { histogram: { binEdges: number[]; counts
 }
 
 export function ResultsBar() {
-  const { running, progress, result, error, liveUnsolvable, expanded, toggleExpanded } = useResultsStore();
+  const { running, runScope, pending, pendingScope, progress, result, error, liveUnsolvable, expanded, toggleExpanded } =
+    useResultsStore();
 
-  if (!running && !result && !error) return null;
+  const isLoading = running || pending;
+  if (!isLoading && !result && !error) return null;
+
+  // A 'cached' reprice (only product terms changed, the underlying/market/
+  // tenor didn't) reuses the MC path cache and is quick — show a small
+  // spinner next to the last value instead of hiding it behind the full
+  // bottom progress bar. Only applies while a previous value is on screen to
+  // keep showing; the very first price ever always falls through to the bar
+  // (there's no runScope yet, so it starts out 'full').
+  const scopeNow = running ? runScope : pendingScope;
+  const showCachedSpinner = isLoading && scopeNow === 'cached' && !!result;
+  const showBar = isLoading && !showCachedSpinner;
 
   const headlineValue =
     result?.solvedValue !== undefined ? result.solvedValue.toFixed(2) : result?.pvPct.toFixed(3);
@@ -68,7 +80,7 @@ export function ResultsBar() {
   return (
     <div className="results-bar">
       <div className="results-bar-row">
-        {running && (
+        {showBar && (
           <div className="progress-wrap">
             <div className="progress-track">
               <div
@@ -85,25 +97,30 @@ export function ResultsBar() {
                 ? `${phaseLabel(progress.phase, progress.solveIteration)} · ${progress.pathsDone.toLocaleString()}/${progress.pathsTotal.toLocaleString()} paths`
                 : 'Starting…'}
             </span>
-            <button className="btn btn-danger btn-sm" type="button" onClick={cancelPricing}>
-              Cancel
-            </button>
+            {running && (
+              <button className="btn btn-danger btn-sm" type="button" onClick={cancelPricing}>
+                Cancel
+              </button>
+            )}
           </div>
         )}
 
-        {!running && error && <div className="status-line error">{error}</div>}
+        {!isLoading && error && <div className="status-line error">{error}</div>}
 
-        {!running && result && (
+        {!showBar && result && (
           <>
             <div className={`results-headline ${liveUnsolvable ? 'stale' : ''}`}>
               <span className="value">{headlineValue}</span>
               <span className="label">{headlineLabel}</span>
-              {result.preview && !liveUnsolvable && (
+              {showCachedSpinner && (
+                <span className="repricing-spinner" role="status" aria-label="Repricing" title="Repricing from cached paths" />
+              )}
+              {!showCachedSpinner && result.preview && !liveUnsolvable && (
                 <span className="live-badge" title="Reduced-path preview — settling to full precision">
                   live
                 </span>
               )}
-              {liveUnsolvable && (
+              {!showCachedSpinner && liveUnsolvable && (
                 <span className="no-solution-hint" title={liveUnsolvable}>
                   no solution at current terms
                 </span>
@@ -134,7 +151,7 @@ export function ResultsBar() {
         )}
       </div>
 
-      {!running && result && expanded && (
+      {!showBar && result && expanded && (
         <div className="results-detail">
           <div>
             <h4 className="detail-block-title">Present Value</h4>

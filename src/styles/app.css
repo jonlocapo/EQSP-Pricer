@@ -586,6 +586,35 @@ select.input:focus {
   letter-spacing: 0.03em;
 }
 
+/* A cached reprice (only product terms changed — the MC path cache is being
+ * reused, not regenerated) is quick, so it gets a small inline spinner next
+ * to the last value instead of the full bottom progress bar, which is
+ * reserved for a genuine fresh Monte Carlo run (the underlying/market/tenor
+ * changed). Keeps the previous value visible the whole time. */
+.repricing-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  animation: repricing-spin 0.7s linear infinite;
+  vertical-align: middle;
+}
+
+@keyframes repricing-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .repricing-spinner {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
 .results-spacer {
   flex: 1;
 }
@@ -703,83 +732,6 @@ select.input:focus {
   padding: 2px 5px;
   border-radius: 4px;
   white-space: nowrap;
-}
-
-/* ---------- Profile page (Chebyshev surrogate charts) ---------- */
-
-.profile-charts-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-  gap: 20px 28px;
-}
-
-.profile-chart-block {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.profile-chart-title-row {
-  display: flex;
-  justify-content: space-between;
-  font-size: 11.5px;
-  color: var(--text-muted);
-}
-
-.profile-chart-ylabel {
-  font-weight: 600;
-  color: var(--text);
-}
-
-.profile-chart-range {
-  font-variant-numeric: tabular-nums;
-}
-
-.profile-chart {
-  width: 100%;
-  height: 160px;
-  display: block;
-  background: var(--bg-sunken);
-  border-radius: var(--radius-sm);
-}
-
-.profile-chart-line {
-  stroke: var(--accent);
-  stroke-width: 2.5;
-  vector-effect: non-scaling-stroke;
-}
-
-.profile-chart-zero {
-  stroke: var(--border-strong);
-  stroke-width: 1;
-  vector-effect: non-scaling-stroke;
-}
-
-.profile-chart-spot-line {
-  stroke: var(--text-faint);
-  stroke-width: 1;
-  stroke-dasharray: 4 3;
-  vector-effect: non-scaling-stroke;
-}
-
-.profile-chart-node {
-  fill: var(--bg-elevated);
-  stroke: var(--accent);
-  stroke-width: 1.5;
-  cursor: default;
-}
-
-.profile-chart-xaxis {
-  display: flex;
-  justify-content: space-between;
-  font-size: 10.5px;
-  color: var(--text-faint);
-  font-variant-numeric: tabular-nums;
-}
-
-.profile-chart-spot-label {
-  color: var(--accent);
-  font-weight: 600;
 }
 
 .chevron-btn {

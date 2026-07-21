@@ -3,7 +3,7 @@ import type { MarketData } from '../model/market';
 import type { ProductSpec } from '../model/product';
 import type { SolveTarget } from '../model/request';
 import { applySolveValue } from '../worker/pricing';
-import { runPricing } from '../services/runPricing';
+import { runPricing, peekRepriceScope } from '../services/runPricing';
 import { useResultsStore } from '../state/resultsStore';
 import type { PageId } from '../state/tradeStore';
 
@@ -98,6 +98,11 @@ export function useLiveReprice({ page, product, market, underlyingName, solve, d
       mounted.current = true;
       return;
     }
+
+    // Show loading feedback the instant this edit is detected — before
+    // either debounce elapses — so the previous value never sits looking
+    // frozen while waiting for a pass to actually start.
+    useResultsStore.getState().beginPending(peekRepriceScope(market, product));
 
     previewTimer.current = setTimeout(() => {
       const warmStartValue = useResultsStore.getState().result?.solvedValue;

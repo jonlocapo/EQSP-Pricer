@@ -19,7 +19,22 @@ interface ResultsState {
    * asked for and is the one that gets recorded to history, so it has to
    * win regardless of which one's worker response happens to land first. */
   runKind: 'live' | 'explicit' | null;
+  /** Whether the current/most recent run reused the cached MC paths ('cached'
+   * — only product terms changed, the underlying/market/tenor stayed put) or
+   * had to generate a fresh Monte Carlo ('full' — the pricing environment
+   * itself changed). Drives which loading chrome ResultsBar shows: a small
+   * spinner next to the last value for 'cached', the full bottom progress
+   * bar for 'full'. See runPricing's commitRepriceScope. */
+  runScope: 'full' | 'cached' | null;
   running: boolean;
+  /** True from the instant an edit is detected until the (debounced) pass it
+   * triggers actually starts. Lets the UI show loading feedback immediately
+   * instead of leaving the previous value looking frozen during the
+   * 120-300ms debounce window — see useLiveReprice.beginPending. */
+  pending: boolean;
+  /** Best-guess scope for the pending edit, computed the same way as
+   * runScope but before the debounced pass has actually started. */
+  pendingScope: 'full' | 'cached' | null;
   progress: ProgressState | null;
   result: PriceResult | null;
   error: string | null;
@@ -31,7 +46,13 @@ interface ResultsState {
    * error state. Cleared automatically the moment a later run succeeds. */
   liveUnsolvable: string | null;
   expanded: boolean;
-  startRun: (id: string, kind: 'live' | 'explicit') => void;
+  /** Marks an edit as queued for repricing, immediately (before either
+   * debounce elapses). Cleared the moment the pass it anticipates actually
+   * starts (startRun) — never touched by finishRun/failRun/cancelRun, so a
+   * newer edit's pending state can't be clobbered by an older, superseded
+   * run settling late. */
+  beginPending: (scope: 'full' | 'cached') => void;
+  startRun: (id: string, kind: 'live' | 'explicit', scope: 'full' | 'cached') => void;
   setProgress: (p: ProgressState) => void;
   /** All four terminal transitions below take the `id` of the run they
    * belong to and are no-ops if it no longer matches the store's `runId`.
@@ -56,13 +77,28 @@ interface ResultsState {
 export const useResultsStore = create<ResultsState>((set) => ({
   runId: null,
   runKind: null,
+  runScope: null,
   running: false,
+  pending: false,
+  pendingScope: null,
   progress: null,
   result: null,
   error: null,
   liveUnsolvable: null,
   expanded: false,
-  startRun: (id, kind) => set({ runId: id, runKind: kind, running: true, progress: null, error: null, expanded: false }),
+  beginPending: (scope) => set({ pending: true, pendingScope: scope }),
+  startRun: (id, kind, scope) =>
+    set({
+      runId: id,
+      runKind: kind,
+      runScope: scope,
+      running: true,
+      pending: false,
+      pendingScope: null,
+      progress: null,
+      error: null,
+      expanded: false,
+    }),
   setProgress: (progress) => set({ progress }),
   finishRun: (id, result) =>
     set((s) => (s.runId === id ? { running: false, result, progress: null, liveUnsolvable: null } : {})),

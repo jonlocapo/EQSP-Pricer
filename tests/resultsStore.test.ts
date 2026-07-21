@@ -20,7 +20,10 @@ describe('resultsStore soft live-unsolvable state', () => {
     useResultsStore.setState({
       runId: null,
       runKind: null,
+      runScope: null,
       running: false,
+      pending: false,
+      pendingScope: null,
       progress: null,
       result: null,
       error: null,
@@ -32,10 +35,10 @@ describe('resultsStore soft live-unsolvable state', () => {
   it('failLiveRun sets liveUnsolvable but keeps the last good result and does not touch error', () => {
     const store = useResultsStore.getState();
     const result = makeResult();
-    store.startRun('r1', 'explicit');
+    store.startRun('r1', 'explicit', 'full');
     store.finishRun('r1', result);
 
-    store.startRun('r2', 'live');
+    store.startRun('r2', 'live', 'full');
     store.failLiveRun('r2', 'No solution at current terms.');
 
     const state = useResultsStore.getState();
@@ -48,7 +51,7 @@ describe('resultsStore soft live-unsolvable state', () => {
 
   it('liveUnsolvable is distinct from failRun — an explicit failure uses error, not liveUnsolvable', () => {
     const store = useResultsStore.getState();
-    store.startRun('r1', 'explicit');
+    store.startRun('r1', 'explicit', 'full');
     store.failRun('r1', 'Pricing failed: boom');
 
     const state = useResultsStore.getState();
@@ -58,14 +61,14 @@ describe('resultsStore soft live-unsolvable state', () => {
 
   it('a subsequent successful run auto-clears liveUnsolvable', () => {
     const store = useResultsStore.getState();
-    store.startRun('r1', 'explicit');
+    store.startRun('r1', 'explicit', 'full');
     store.finishRun('r1', makeResult());
-    store.startRun('r2', 'live');
+    store.startRun('r2', 'live', 'full');
     store.failLiveRun('r2', 'No solution at current terms.');
     expect(useResultsStore.getState().liveUnsolvable).not.toBeNull();
 
     const nextResult = makeResult({ id: 'r3', pvPct: 99.1 });
-    store.startRun('r3', 'live');
+    store.startRun('r3', 'live', 'full');
     store.finishRun('r3', nextResult);
 
     const state = useResultsStore.getState();
@@ -75,12 +78,12 @@ describe('resultsStore soft live-unsolvable state', () => {
 
   it('an explicit failRun also clears any stale liveUnsolvable hint', () => {
     const store = useResultsStore.getState();
-    store.startRun('r1', 'explicit');
+    store.startRun('r1', 'explicit', 'full');
     store.finishRun('r1', makeResult());
-    store.startRun('r2', 'live');
+    store.startRun('r2', 'live', 'full');
     store.failLiveRun('r2', 'No solution at current terms.');
 
-    store.startRun('r3', 'explicit');
+    store.startRun('r3', 'explicit', 'full');
     store.failRun('r3', 'Unexpected engine error');
 
     const state = useResultsStore.getState();
@@ -96,8 +99,8 @@ describe('resultsStore soft live-unsolvable state', () => {
     // Simulate: a live pass (stale) is in flight, then a newer run (fresh)
     // supersedes it (as runPricing's cancelPricing()/startRun sequencing
     // does) before the stale run's worker response finally arrives.
-    store.startRun('stale', 'live');
-    store.startRun('fresh', 'explicit');
+    store.startRun('stale', 'live', 'full');
+    store.startRun('fresh', 'explicit', 'full');
 
     store.finishRun('stale', staleResult);
     expect(useResultsStore.getState().result).not.toBe(staleResult);
