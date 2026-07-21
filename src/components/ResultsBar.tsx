@@ -23,6 +23,27 @@ function BarChart({ values, labelPrefix }: { values: number[]; labelPrefix: stri
   );
 }
 
+function HistogramChart({ histogram }: { histogram: { binEdges: number[]; counts: number[] } }) {
+  const max = Math.max(...histogram.counts, 1);
+  return (
+    <div className="bar-chart">
+      {histogram.counts.map((c, i) => {
+        const lo = histogram.binEdges[i];
+        const hi = histogram.binEdges[i + 1];
+        return (
+          <div
+            key={i}
+            className="bar-cell"
+            data-label={`${lo.toFixed(1)}–${hi.toFixed(1)}%: ${c.toLocaleString()} paths`}
+          >
+            <div className="bar" style={{ height: c > 0 ? `${Math.max(2, (c / max) * 100)}%` : '0%' }} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export function ResultsBar() {
   const { running, progress, result, error, expanded, toggleExpanded } = useResultsStore();
 
@@ -162,6 +183,34 @@ export function ResultsBar() {
             <div>
               <h4 className="detail-block-title">Call probability by period</h4>
               <BarChart values={result.diagnostics.callProb} labelPrefix="Period" />
+            </div>
+          )}
+
+          {result.diagnostics.histogram && result.diagnostics.histogram.counts.length > 0 && (
+            <div>
+              <h4 className="detail-block-title">PV distribution</h4>
+              <HistogramChart histogram={result.diagnostics.histogram} />
+              <div className="detail-stat-row">
+                <span>P(loss)</span>
+                <span>
+                  {result.diagnostics.pLoss !== undefined ? `${(result.diagnostics.pLoss * 100).toFixed(1)}%` : '—'}
+                </span>
+              </div>
+              <div
+                className="detail-stat-row"
+                title={
+                  result.diagnostics.expectedShortfall1 !== undefined
+                    ? `ES(1%): ${result.diagnostics.expectedShortfall1.toFixed(2)}%`
+                    : undefined
+                }
+              >
+                <span>Expected Shortfall (5%)</span>
+                <span>
+                  {result.diagnostics.expectedShortfall5 !== undefined
+                    ? `${result.diagnostics.expectedShortfall5.toFixed(2)}%`
+                    : '—'}
+                </span>
+              </div>
             </div>
           )}
         </div>

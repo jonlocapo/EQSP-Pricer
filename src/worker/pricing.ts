@@ -14,11 +14,12 @@ import type {
 import type { Diagnostics, PriceRequest, PriceResult, SolveTarget } from '../model/request';
 import { buildGrid } from '../engine/schedule';
 import { makeDf } from '../engine/discount';
-import { runMc } from '../engine/mc';
 import { priceIssuerCallable } from '../engine/lsmc';
 import { makeEvaluator } from '../engine/payoffs';
 import { makeCouponCashflowExtractor } from '../engine/payoffs/couponProducts';
 import type { EvaluatorContext } from '../engine/payoffs/types';
+import { computeCacheKey, evaluateCachedSlice } from '../engine/pathCache';
+import { computeExpectedShortfall, computeHistogram, computePLoss } from '../engine/distribution';
 import type { PricingPhase } from './protocol';
 
 export interface PricingHooks {
@@ -88,6 +89,25 @@ async function priceOnce(
   const nSlices = Math.max(1, Math.ceil(numPaths / SLICE_PATHS));
   const per = Math.ceil(numPaths / nSlices);
 
+  // Path generation depends only on market/mc/grid — not on the product
+  // spec's strikes/barriers/coupons — so slices are cached under a key that
+  // excludes spec fields entirely. A solve-for (same market+mc+tenor, only
+  // the spec changing across iterations) hits this cache on every iteration
+  // after the first.
+  const cacheKey = computeCacheKey({
+    s0: market.spot,
+    market,
+    numPaths,
+    seed,
+    antithetic,
+    nSteps: grid.nSteps,
+    dtYears: grid.dtYears,
+  });
+  // Reference level for pLoss/ES: what the investor paid (coupon/
+  // participation), or 0 for accumulator (its PV is already a P&L-style
+  // value in % of estimated notional, not a price paid — see Diagnostics.pLoss doc).
+  const referenceLevelPct = spec.kind === 'accumulator' ? 0 : spec.issuePricePct;
+
   let wSum = 0;
   let pvSum = 0;
   let varSum = 0; // Σ w² · stderr²
@@ -96,6 +116,7 @@ async function priceOnce(
   let koSum = 0;
   let lifeSum = 0;
   const callCounts: number[] = [];
+  const allSamples: number[] = [];
   let cancelled = false;
 
   for (let s = 0; s < nSlices; s++) {
@@ -104,17 +125,18 @@ async function priceOnce(
       break;
     }
     const slicePaths = Math.min(per, numPaths - s * per);
-    const res = runMc({
-      numPaths: slicePaths,
-      seed: seed + s * 7919,
+    const res = evaluateCachedSlice(
+      cacheKey,
+      s,
+      seed + s * 7919,
+      slicePaths,
       antithetic,
-      nSteps: grid.nSteps,
-      dtYears: grid.dtYears,
-      s0: market.spot,
+      grid.nSteps,
+      grid.dtYears,
+      market.spot,
       market,
       evaluator,
-      onBatch: () => !hooks.isCancelled(),
-    });
+    );
     const w = slicePaths;
     wSum += w;
     pvSum += w * res.pvPct;
@@ -128,6 +150,7 @@ async function priceOnce(
       while (callCounts.length <= i) callCounts.push(0);
       callCounts[i] += w * p;
     });
+    for (const sample of res.samples) allSamples.push(sample);
     if (res.cancelled) {
       cancelled = true;
       break;
@@ -137,6 +160,20 @@ async function priceOnce(
   }
 
   const W = wSum > 0 ? wSum : 1;
+  // Computed once over the full concatenated sample set (not per-slice —
+  // ES/histogram don't combine linearly across slices the way weighted
+  // means do, so per-slice values would be wrong for the global picture).
+  let histogram: { binEdges: number[]; counts: number[] } | undefined;
+  let pLoss: number | undefined;
+  let expectedShortfall5: number | undefined;
+  let expectedShortfall1: number | undefined;
+  if (allSamples.length > 0) {
+    histogram = computeHistogram(allSamples);
+    pLoss = computePLoss(allSamples, referenceLevelPct);
+    expectedShortfall5 = computeExpectedShortfall(allSamples, 0.05);
+    expectedShortfall1 = computeExpectedShortfall(allSamples, 0.01);
+  }
+
   return {
     pvPct: pvSum / W,
     stderrPct: Math.sqrt(varSum) / W,
@@ -147,6 +184,10 @@ async function priceOnce(
       upsideKoProb: upKoSum / W,
       koProb: koSum / W,
       expectedLifeYears: lifeSum / W,
+      histogram,
+      pLoss,
+      expectedShortfall5,
+      expectedShortfall1,
     },
   };
 }

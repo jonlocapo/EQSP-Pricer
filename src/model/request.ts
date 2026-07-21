@@ -64,6 +64,18 @@ export interface Diagnostics {
   /** P(accumulator knocked out before maturity). */
   koProb?: number;
   expectedLifeYears?: number;
+  /** Distribution of per-path (or per-antithetic-pair) PV% outcomes, ~24
+   * evenly-spaced bins. Absent for the issuerCallable/LSMC branch (out of
+   * scope — see engine/lsmc.ts). */
+  histogram?: { binEdges: number[]; counts: number[] };
+  /** P(sample < reference level). Coupon/participation: reference is
+   * issuePricePct. Accumulator: reference is 0 (P&L is already expressed in
+   * % of notional, so "loss" means negative P&L rather than a price paid). */
+  pLoss?: number;
+  /** Mean of the worst 5% of samples, pvPct units. */
+  expectedShortfall5?: number;
+  /** Mean of the worst 1% of samples, pvPct units. */
+  expectedShortfall1?: number;
 }
 
 export interface PriceResult {
