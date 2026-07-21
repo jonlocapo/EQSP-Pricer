@@ -9,7 +9,7 @@ import { TenorField } from '../components/TenorField';
 import { ActionRow } from '../components/ActionRow';
 import { validateParticipation } from '../services/validation';
 import { runPricing } from '../services/runPricing';
-import { useLiveSolve } from '../hooks/useLiveSolve';
+import { useLiveReprice } from '../hooks/useLiveReprice';
 import type { BarrierMonitoring, UpsideVariant } from '../model/product';
 import type { SolveTarget } from '../model/request';
 
@@ -103,13 +103,12 @@ export function ParticipationPage() {
   const priceDisabled = !validation.valid;
   const priceLabel = solve.kind === 'none' ? 'Price' : 'Solve';
 
-  useLiveSolve({
+  useLiveReprice({
     page: 'participation',
     product: spec,
     market,
     underlyingName,
     solve,
-    greeks,
     disabled: priceDisabled,
   });
 

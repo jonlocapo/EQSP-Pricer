@@ -566,6 +566,26 @@ select.input:focus {
   50% { opacity: 0.55; }
 }
 
+/* A live pass failed because the solve bracket has no reachable root while
+ * the user is mid-edit — dim the last good (now-stale) value rather than
+ * flipping to the alarming red error state, which is reserved for explicit
+ * Price/Solve button failures. Auto-clears the moment a later run succeeds. */
+.results-headline.stale .value,
+.results-headline.stale .label {
+  opacity: 0.5;
+}
+
+.no-solution-hint {
+  font-size: 10px;
+  color: var(--warn);
+  background: var(--warn-soft);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
 .results-spacer {
   flex: 1;
 }

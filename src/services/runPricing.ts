@@ -152,7 +152,21 @@ export interface RunPricingParams {
    * history — only the explicit Price/Solve button records an entry.
    * Defaults to true. */
   addToHistory?: boolean;
+  /** True for a run auto-triggered by useLiveReprice (no button press).
+   * Changes only how a failure is handled: a live pass that fails because
+   * the solve bracket has no reachable root is a calm, expected outcome
+   * while the user is mid-edit — it sets the soft `liveUnsolvable` state
+   * and keeps the last good result, instead of flipping the panel into the
+   * alarming red error state reserved for explicit button presses. Any
+   * other failure (unexpected error) still surfaces as a normal error even
+   * on a live pass. Defaults to false. */
+  live?: boolean;
 }
+
+/** Matches the asyncRootFind "bracket doesn't contain a root" message
+ * (src/worker/pricing.ts) — the one failure mode that's an expected,
+ * calm outcome during live editing rather than a real error. */
+const NO_SOLUTION_RE = /no solution .* not reachable/i;
 
 export async function runPricing({
   page,
@@ -164,6 +178,7 @@ export async function runPricing({
   preview = false,
   warmStartValue,
   addToHistory = true,
+  live = false,
 }: RunPricingParams): Promise<void> {
   const id = crypto.randomUUID();
   const req: PriceRequest = {
@@ -204,10 +219,18 @@ export async function runPricing({
       });
     }
   } catch (err) {
-    if (err instanceof Error && err.message === 'cancelled') {
+    const message = err instanceof Error ? err.message : 'Pricing failed.';
+    if (err instanceof Error && message === 'cancelled') {
+      // Cancelled — a newer run superseded this one; not a failure at all.
       useResultsStore.getState().cancelRun();
+    } else if (live && NO_SOLUTION_RE.test(message)) {
+      // Expected, calm outcome while editing live into an unreachable
+      // bracket — keep the last good result on screen, just flag it stale.
+      useResultsStore.getState().failLiveRun('No solution at current terms.');
     } else {
-      useResultsStore.getState().failRun(err instanceof Error ? err.message : 'Pricing failed.');
+      // Explicit failure (button press) or an unexpected error even on a
+      // live pass — the normal, clearly-flagged error state.
+      useResultsStore.getState().failRun(message);
     }
   }
 }
