@@ -2,9 +2,8 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import { runPricing } from '../src/services/runPricing';
 import { useResultsStore } from '../src/state/resultsStore';
 import { setPricerClient } from '../src/worker/client';
-import type { PricerClient, ProgressUpdate, ProfileProgressUpdate } from '../src/worker/client';
+import type { PricerClient, ProgressUpdate } from '../src/worker/client';
 import type { PriceRequest, PriceResult } from '../src/model/request';
-import type { ProfileRequest, ProfileResult } from '../src/worker/protocol';
 import type { CouponProductSpec } from '../src/model/product';
 import type { MarketData } from '../src/model/market';
 
@@ -59,9 +58,6 @@ class ScriptedClient implements PricerClient {
     return this.behavior(req);
   }
   cancel(): void {}
-  async profile(req: ProfileRequest, _onProgress: (p: ProfileProgressUpdate) => void): Promise<ProfileResult> {
-    return { id: req.id, nodes: [], spotLo: 0, spotHi: 0, N: 0 };
-  }
 }
 
 class ThrowingClient implements PricerClient {
@@ -70,9 +66,6 @@ class ThrowingClient implements PricerClient {
     throw new Error(this.message);
   }
   cancel(): void {}
-  async profile(req: ProfileRequest): Promise<ProfileResult> {
-    return { id: req.id, nodes: [], spotLo: 0, spotHi: 0, N: 0 };
-  }
 }
 
 /** A client whose price() doesn't resolve until the test explicitly releases
@@ -91,9 +84,6 @@ class DeferredClient implements PricerClient {
   }
   cancel(id: string): void {
     this.cancelledIds.push(id);
-  }
-  async profile(req: ProfileRequest): Promise<ProfileResult> {
-    return { id: req.id, nodes: [], spotLo: 0, spotHi: 0, N: 0 };
   }
 }
 

@@ -1,7 +1,5 @@
 import type { PriceRequest, PriceResult } from '../model/request';
-import type { PricerClient, ProfileProgressUpdate, ProgressUpdate } from './client';
-import type { ProfileRequest, ProfileResult } from './protocol';
-import { chebyshevLobattoSpotNodes } from '../engine/chebyshev';
+import type { PricerClient, ProgressUpdate } from './client';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -168,33 +166,5 @@ export class MockPricerClient implements PricerClient {
 
   cancel(id: string): void {
     this.cancelled.add(id);
-  }
-
-  /** Fake profile run: emits a node-level progress tick per node, then
-   * resolves a plausible (smooth, since it's a simple analytic curve in
-   * spot with only mild noise) set of node samples. Dev-only fake — the
-   * real behavior lives in WorkerPricerClient/executeProfileRequest. */
-  async profile(req: ProfileRequest, onProgress: (p: ProfileProgressUpdate) => void): Promise<ProfileResult> {
-    this.cancelled.delete(req.id);
-    const N = req.N ?? 32;
-    const rangeFrac = req.rangeFrac ?? 0.5;
-    const spotLo = req.market.spot * (1 - rangeFrac);
-    const spotHi = req.market.spot * (1 + rangeFrac);
-    const spotNodes = chebyshevLobattoSpotNodes(N, spotLo, spotHi);
-    const targetPct = req.product.kind === 'accumulator' ? req.product.upfrontPct * 100 : req.product.reofferPct;
-
-    const nodes: ProfileResult['nodes'] = [];
-    for (let k = 0; k <= N; k++) {
-      if (this.cancelled.has(req.id)) throw new Error('cancelled');
-      await sleep(8);
-      const spot = spotNodes[k];
-      // A smooth-ish fake PV curve: sigmoid-like in log-moneyness around par.
-      const logM = Math.log(spot / req.market.spot);
-      const pvPct = targetPct - 15 * Math.tanh(logM) + 2 * logM * logM;
-      nodes.push({ spot, pvPct, stderrPct: 0.03 });
-      onProgress({ nodesDone: k + 1, nodesTotal: N + 1 });
-    }
-    if (this.cancelled.has(req.id)) throw new Error('cancelled');
-    return { id: req.id, nodes, spotLo, spotHi, N };
   }
 }

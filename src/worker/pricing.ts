@@ -20,24 +20,13 @@ import { makeCouponCashflowExtractor } from '../engine/payoffs/couponProducts';
 import type { EvaluatorContext } from '../engine/payoffs/types';
 import { computeCacheKey, computeObservablesKey, evaluateCachedSlice, evaluateCachedSliceSplit } from '../engine/pathCache';
 import { computeExpectedShortfall, computeHistogram, computePLoss } from '../engine/distribution';
-import { chebyshevLobattoSpotNodes } from '../engine/chebyshev';
-import type { PricingPhase, ProfileRequest, ProfileResult } from './protocol';
+import type { PricingPhase } from './protocol';
 
 export interface PricingHooks {
   /** Called with cumulative progress. */
   onProgress: (pathsDone: number, pathsTotal: number, phase: PricingPhase, solveIteration?: number) => void;
   isCancelled: () => boolean;
   /** Yield to the event loop so cancel messages can arrive. */
-  yieldNow: () => Promise<void>;
-}
-
-/** Hooks for a profile run — progress is reported per Chebyshev node, not
- * per path (a single node's `priceOnce` doesn't report its own path
- * progress; node-level granularity is what the UI needs for a progress bar
- * across N+1 independent full pricings). */
-export interface ProfileHooks {
-  onProgress: (nodesDone: number, nodesTotal: number) => void;
-  isCancelled: () => boolean;
   yieldNow: () => Promise<void>;
 }
 
@@ -437,52 +426,6 @@ export async function executePriceRequest(req: PriceRequest, hooks: PricingHooks
     elapsedMs: Date.now() - start,
     preview: req.preview,
   };
-}
-
-const DEFAULT_PROFILE_N = 32;
-const DEFAULT_PROFILE_RANGE_FRAC = 0.5;
-
-/**
- * Prices `req.product` at N+1 Chebyshev-Lobatto spot nodes spanning
- * [spot*(1-rangeFrac), spot*(1+rangeFrac)] — the up-front cost of the
- * Chebyshev surrogate. Reuses `priceOnce` as a black box (no solve, no
- * bump-and-reprice greeks) once per node.
- *
- * CORRECTNESS: every node uses the exact same mc.seed/numPaths/antithetic.
- * The path cache doesn't help here (it keys on spot, and every node has a
- * different spot), but common random numbers across nodes is what makes
- * PV(spot) smooth — without it, independent MC noise per node would make
- * the curve jagged and its analytic derivatives (delta/gamma) meaningless.
- */
-export async function executeProfileRequest(req: ProfileRequest, hooks: ProfileHooks): Promise<ProfileResult | null> {
-  const { market, mc } = req;
-  const N = req.N ?? DEFAULT_PROFILE_N;
-  const rangeFrac = req.rangeFrac ?? DEFAULT_PROFILE_RANGE_FRAC;
-  const spotLo = market.spot * (1 - rangeFrac);
-  const spotHi = market.spot * (1 + rangeFrac);
-  const spotNodes = chebyshevLobattoSpotNodes(N, spotLo, spotHi);
-
-  // priceOnce reports path-level progress; the profile UI only needs
-  // node-level granularity, so its onProgress is a no-op here.
-  const innerHooks: PricingHooks = {
-    onProgress: () => {},
-    isCancelled: hooks.isCancelled,
-    yieldNow: hooks.yieldNow,
-  };
-
-  const nodes: ProfileResult['nodes'] = [];
-  for (let k = 0; k <= N; k++) {
-    if (hooks.isCancelled()) return null;
-    const spot = spotNodes[k];
-    const nodeMarket: MarketData = { ...market, spot };
-    const res = await priceOnce(req.product, nodeMarket, mc.numPaths, mc.seed, mc.antithetic, innerHooks, 'pricing');
-    if (res.cancelled || hooks.isCancelled()) return null;
-    nodes.push({ spot, pvPct: res.pvPct, stderrPct: res.stderrPct });
-    hooks.onProgress(k + 1, N + 1);
-    await hooks.yieldNow();
-  }
-
-  return { id: req.id, nodes, spotLo, spotHi, N };
 }
 
 export class CancelledError extends Error {

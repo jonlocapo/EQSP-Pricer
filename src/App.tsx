@@ -7,7 +7,6 @@ import { HistoryModal } from './components/HistoryModal';
 import { CouponPage } from './pages/CouponPage';
 import { ParticipationPage } from './pages/ParticipationPage';
 import { AccumulatorPage } from './pages/AccumulatorPage';
-import { ProfilePage } from './pages/ProfilePage';
 
 const TABS: { id: PageId; label: string }[] = [
   { id: 'coupon', label: 'Coupon (RC/AC)' },
@@ -19,11 +18,6 @@ export default function App() {
   const activePage = useTradeStore((s) => s.activePage);
   const setActivePage = useTradeStore((s) => s.setActivePage);
   const [historyOpen, setHistoryOpen] = useState(false);
-  // Profile is an analysis view layered over the three product pages, not
-  // itself one of tradeStore's PageId — keeping it as separate UI-local
-  // state avoids touching PageId (and everything keyed off it, e.g.
-  // runPricing's history entries) just to add a non-trade tab.
-  const [profileTab, setProfileTab] = useState(false);
 
   return (
     <div className="app-shell">
@@ -37,23 +31,15 @@ export default function App() {
             <button
               key={t.id}
               type="button"
-              className={`tab-btn ${!profileTab && activePage === t.id ? 'active' : ''}`}
+              className={`tab-btn ${activePage === t.id ? 'active' : ''}`}
               onClick={() => {
                 setActivePage(t.id);
-                setProfileTab(false);
                 useResultsStore.getState().setExpanded(false);
               }}
             >
               {t.label}
             </button>
           ))}
-          <button
-            type="button"
-            className={`tab-btn ${profileTab ? 'active' : ''}`}
-            onClick={() => setProfileTab(true)}
-          >
-            Profile
-          </button>
         </nav>
         <div className="header-actions">
           <button className="btn btn-sm" type="button" onClick={() => setHistoryOpen(true)}>
@@ -67,10 +53,9 @@ export default function App() {
           <MarketPanel />
         </aside>
         <main className="main-area">
-          {profileTab && <ProfilePage />}
-          {!profileTab && activePage === 'coupon' && <CouponPage />}
-          {!profileTab && activePage === 'participation' && <ParticipationPage />}
-          {!profileTab && activePage === 'accumulator' && <AccumulatorPage />}
+          {activePage === 'coupon' && <CouponPage />}
+          {activePage === 'participation' && <ParticipationPage />}
+          {activePage === 'accumulator' && <AccumulatorPage />}
         </main>
       </div>
 
