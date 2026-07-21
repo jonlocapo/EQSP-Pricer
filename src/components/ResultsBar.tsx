@@ -53,6 +53,17 @@ export function ResultsBar() {
     result?.solvedValue !== undefined ? result.solvedValue.toFixed(2) : result?.pvPct.toFixed(3);
   const headlineLabel = result?.solvedValue !== undefined ? 'Solved value' : 'PV %';
 
+  // Latency readout: makes the path-cache warm-start speedup visible instead
+  // of implicit. Only meaningful for solves (solveIterations is only set
+  // when solve.kind !== 'none'); plain pricing just shows elapsed time via
+  // results-meta below.
+  const solveSpeedLabel =
+    result?.solveIterations !== undefined
+      ? `solved in ${result.elapsedMs} ms · ${result.solveIterations} iter${result.solveIterations === 1 ? '' : 's'} (${
+          result.solveWarmStart ? 'warm' : 'cold'
+        })`
+      : undefined;
+
   return (
     <div className="results-bar">
       <div className="results-bar-row">
@@ -86,6 +97,11 @@ export function ResultsBar() {
             <div className="results-headline">
               <span className="value">{headlineValue}</span>
               <span className="label">{headlineLabel}</span>
+              {result.preview && (
+                <span className="live-badge" title="Reduced-path preview — settling to full precision">
+                  live
+                </span>
+              )}
             </div>
             <div className="results-meta">
               <span>
@@ -97,6 +113,7 @@ export function ResultsBar() {
               <span>
                 elapsed <b>{(result.elapsedMs / 1000).toFixed(1)}s</b>
               </span>
+              {solveSpeedLabel && <span className="solve-speed">{solveSpeedLabel}</span>}
             </div>
             <div className="results-spacer" />
             <button

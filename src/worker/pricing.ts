@@ -43,6 +43,10 @@ export interface ProfileHooks {
 
 const SLICE_PATHS = 20_000;
 
+/** Reduced path count for a `preview` request (fast, transient pricing
+ * during live typing) when McSettings.previewNumPaths isn't specified. */
+export const DEFAULT_PREVIEW_PATHS = 20_000;
+
 interface CoreResult {
   pvPct: number;
   stderrPct: number;
@@ -314,9 +318,16 @@ function notionalOf(spec: ProductSpec, market: MarketData): number {
 export async function executePriceRequest(req: PriceRequest, hooks: PricingHooks): Promise<PriceResult | null> {
   const start = Date.now();
   const { market, mc } = req;
+  // A `preview` request runs at a reduced path count for fast, transient
+  // pricing during live typing; the trailing-edge "settle" request uses the
+  // full mc.numPaths and is the authoritative result. Both the solve loop
+  // and the final pricing pass below use this one path count consistently
+  // (a solve's final priceOnce must match the paths it was solved against).
+  const numPaths = req.preview ? mc.previewNumPaths ?? DEFAULT_PREVIEW_PATHS : mc.numPaths;
   let spec = req.product;
   let solvedValue: number | undefined;
   let solveIterations: number | undefined;
+  let solveWarmStart: boolean | undefined;
 
   const isDirect =
     req.solve.kind === 'none' || req.solve.kind === 'upfront';
@@ -326,40 +337,49 @@ export async function executePriceRequest(req: PriceRequest, hooks: PricingHooks
     let iter = 0;
     const evalF = async (x: number): Promise<number> => {
       iter += 1;
-      hooks.onProgress(0, mc.numPaths, 'solving', iter);
+      hooks.onProgress(0, numPaths, 'solving', iter);
       const r = await priceOnce(
         applySolveValue(spec, req.solve, x),
         market,
-        mc.numPaths,
+        numPaths,
         mc.seed,
         mc.antithetic,
         hooks,
         'solving',
         0,
-        mc.numPaths,
+        numPaths,
         iter,
       );
       if (r.cancelled || hooks.isCancelled()) throw new CancelledError();
       return r.pvPct - targetPct;
     };
 
-    const { root } = await asyncRootFind(evalF, lo, hi, hardLo, hardHi, req.solve.kind);
+    const { root, warmStart } = await asyncRootFind(
+      evalF,
+      lo,
+      hi,
+      hardLo,
+      hardHi,
+      req.solve.kind,
+      req.warmStartValue,
+    );
     solvedValue = root;
     solveIterations = iter;
+    solveWarmStart = warmStart;
     spec = applySolveValue(spec, req.solve, root);
   }
 
-  hooks.onProgress(0, mc.numPaths, 'pricing');
-  const final = await priceOnce(spec, market, mc.numPaths, mc.seed, mc.antithetic, hooks, 'pricing');
+  hooks.onProgress(0, numPaths, 'pricing');
+  const final = await priceOnce(spec, market, numPaths, mc.seed, mc.antithetic, hooks, 'pricing');
   if (final.cancelled || hooks.isCancelled()) return null;
 
   if (req.solve.kind === 'upfront') solvedValue = final.pvPct;
 
   let greeks: PriceResult['greeks'];
   if (req.greeks) {
-    hooks.onProgress(0, mc.numPaths * 4, 'greeks');
+    hooks.onProgress(0, numPaths * 4, 'greeks');
     const bump = async (m: MarketData, i: number) =>
-      priceOnce(spec, m, mc.numPaths, mc.seed, mc.antithetic, hooks, 'greeks', i * mc.numPaths, mc.numPaths * 4);
+      priceOnce(spec, m, numPaths, mc.seed, mc.antithetic, hooks, 'greeks', i * numPaths, numPaths * 4);
     const up = await bump({ ...market, spot: market.spot * 1.01 }, 0);
     const dn = await bump({ ...market, spot: market.spot * 0.99 }, 1);
     // Bumping vol here also shifts the quanto drift term (−corrEqFx · vol · fxVol
@@ -384,9 +404,11 @@ export async function executePriceRequest(req: PriceRequest, hooks: PricingHooks
     ci95Pct: [final.pvPct - 1.96 * final.stderrPct, final.pvPct + 1.96 * final.stderrPct],
     solvedValue,
     solveIterations,
+    solveWarmStart,
     greeks,
     diagnostics: final.diagnostics,
     elapsedMs: Date.now() - start,
+    preview: req.preview,
   };
 }
 
@@ -444,59 +466,34 @@ export class CancelledError extends Error {
 }
 
 /**
- * Async root finder for MC objectives: bracket expansion toward hard bounds,
- * then Ridders' method (secant-accelerated bisection — robust on smooth CRN
- * objectives, ~8-12 evaluations typical). tolY is in PV percentage points.
+ * Ridders' method (secant-accelerated bisection — robust on smooth CRN
+ * objectives, ~8-12 evaluations typical) given an already-valid bracket
+ * [a, b] with opposite-signed f(a)/f(b). Shared by both the cold-start
+ * bracket-expansion path and the warm-start tight-bracket path in
+ * asyncRootFind below — the answer this converges to depends only on f and
+ * the bracket, not on how the bracket was found.
  */
-async function asyncRootFind(
+async function riddersLoop(
   f: (x: number) => Promise<number>,
-  lo: number,
-  hi: number,
-  hardLo: number,
-  hardHi: number,
+  a: number,
+  b: number,
+  fa: number,
+  fb: number,
+  tolX: number,
+  tolY: number,
+  maxIter: number,
   label: string,
-  tolX = 1e-4,
-  tolY = 0.01,
-  maxIter = 40,
-): Promise<{ root: number }> {
-  let a = lo;
-  let b = hi;
-  let fa = await f(a);
-  if (Math.abs(fa) < tolY) return { root: a };
-  let fb = await f(b);
-  if (Math.abs(fb) < tolY) return { root: b };
-
-  let guard = 0;
-  while (Math.sign(fa) === Math.sign(fb)) {
-    if ((a <= hardLo && b >= hardHi) || guard++ >= 12) {
-      throw new Error(
-        `No solution for ${label} in [${hardLo}, ${hardHi}] — the target level is not reachable with these terms`,
-      );
-    }
-    const width = Math.max(b - a, 1e-3);
-    if (a > hardLo) {
-      a = Math.max(hardLo, a - width / 2);
-      fa = await f(a);
-      if (Math.abs(fa) < tolY) return { root: a };
-    }
-    if (Math.sign(fa) !== Math.sign(fb)) break;
-    if (b < hardHi) {
-      b = Math.min(hardHi, b + width / 2);
-      fb = await f(b);
-      if (Math.abs(fb) < tolY) return { root: b };
-    }
-  }
-
+): Promise<number> {
   for (let i = 0; i < maxIter; i++) {
     const m = 0.5 * (a + b);
     const fm = await f(m);
-    if (Math.abs(fm) < tolY || b - a < tolX) return { root: m };
+    if (Math.abs(fm) < tolY || b - a < tolX) return m;
     // Ridders' exponential correction
     const s = Math.sqrt(fm * fm - fa * fb);
-    if (s === 0) return { root: m };
+    if (s === 0) return m;
     const x = m + (m - a) * ((fa >= fb ? 1 : -1) * fm) / s;
     const fx = await f(x);
-    if (Math.abs(fx) < tolY) return { root: x };
+    if (Math.abs(fx) < tolY) return x;
     // Re-bracket among {a, m, x, b}
     if (Math.sign(fm) !== Math.sign(fx)) {
       a = Math.min(m, x);
@@ -510,7 +507,85 @@ async function asyncRootFind(
       a = x;
       fa = fx;
     }
-    if (b - a < tolX) return { root: 0.5 * (a + b) };
+    if (b - a < tolX) return 0.5 * (a + b);
   }
   throw new Error(`Solver for ${label} did not converge within ${maxIter} iterations`);
+}
+
+/**
+ * Async root finder for MC objectives. Two entry paths into the same
+ * Ridders' loop:
+ *
+ * - Warm start (guess given): try a TIGHT bracket around the previously
+ *   solved value first (a few evaluations, typically 2-3 total). If that
+ *   tight bracket doesn't actually contain the root (signs match — the
+ *   guess was stale, e.g. the product changed enough that the root moved
+ *   past it), fall through to the cold-start path below rather than fail —
+ *   the guess only ever changes *how fast* the answer is found, never the
+ *   answer itself.
+ * - Cold start: bracket expansion from [lo, hi] toward [hardLo, hardHi]
+ *   until the signs of f at the two ends differ, then Ridders' loop.
+ *
+ * tolY is in PV percentage points.
+ */
+async function asyncRootFind(
+  f: (x: number) => Promise<number>,
+  lo: number,
+  hi: number,
+  hardLo: number,
+  hardHi: number,
+  label: string,
+  guess?: number,
+  tolX = 1e-4,
+  tolY = 0.01,
+  maxIter = 40,
+): Promise<{ root: number; warmStart: boolean }> {
+  if (guess !== undefined && Number.isFinite(guess)) {
+    const fullWidth = Math.max(hi - lo, 1e-3);
+    const tightFrac = 0.08;
+    const a0 = Math.max(hardLo, guess - tightFrac * fullWidth);
+    const b0 = Math.min(hardHi, guess + tightFrac * fullWidth);
+    if (b0 > a0) {
+      const fa0 = await f(a0);
+      if (Math.abs(fa0) < tolY) return { root: a0, warmStart: true };
+      const fb0 = await f(b0);
+      if (Math.abs(fb0) < tolY) return { root: b0, warmStart: true };
+      if (Math.sign(fa0) !== Math.sign(fb0)) {
+        const root = await riddersLoop(f, a0, b0, fa0, fb0, tolX, tolY, maxIter, label);
+        return { root, warmStart: true };
+      }
+      // Tight bracket didn't contain the root — fall through to cold start.
+    }
+  }
+
+  let a = lo;
+  let b = hi;
+  let fa = await f(a);
+  if (Math.abs(fa) < tolY) return { root: a, warmStart: false };
+  let fb = await f(b);
+  if (Math.abs(fb) < tolY) return { root: b, warmStart: false };
+
+  let guard = 0;
+  while (Math.sign(fa) === Math.sign(fb)) {
+    if ((a <= hardLo && b >= hardHi) || guard++ >= 12) {
+      throw new Error(
+        `No solution for ${label} in [${hardLo}, ${hardHi}] — the target level is not reachable with these terms`,
+      );
+    }
+    const width = Math.max(b - a, 1e-3);
+    if (a > hardLo) {
+      a = Math.max(hardLo, a - width / 2);
+      fa = await f(a);
+      if (Math.abs(fa) < tolY) return { root: a, warmStart: false };
+    }
+    if (Math.sign(fa) !== Math.sign(fb)) break;
+    if (b < hardHi) {
+      b = Math.min(hardHi, b + width / 2);
+      fb = await f(b);
+      if (Math.abs(fb) < tolY) return { root: b, warmStart: false };
+    }
+  }
+
+  const root = await riddersLoop(f, a, b, fa, fb, tolX, tolY, maxIter, label);
+  return { root, warmStart: false };
 }

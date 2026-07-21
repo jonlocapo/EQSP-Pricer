@@ -39,15 +39,19 @@ export class MockPricerClient implements PricerClient {
       req.mc.seed + req.id.split('').reduce((s, c) => s + c.charCodeAt(0), 0)
     );
     const start = Date.now();
-    const total = req.mc.numPaths;
-    const ticks = 12;
+    const total = req.preview ? req.mc.previewNumPaths ?? 20_000 : req.mc.numPaths;
     const willSolve = req.solve.kind !== 'none';
+    const warmStart = willSolve && req.warmStartValue !== undefined;
+    // Preview passes and warm-started solves are both meant to feel
+    // near-instant relative to a cold full solve.
+    const durationMs = req.preview ? 150 : warmStart ? 400 : 1500;
+    const ticks = req.preview ? 4 : warmStart ? 6 : 12;
 
     for (let i = 1; i <= ticks; i++) {
       if (this.cancelled.has(req.id)) {
         throw new Error('cancelled');
       }
-      await sleep(1500 / ticks);
+      await sleep(durationMs / ticks);
       const phase: ProgressUpdate['phase'] = willSolve && i > ticks * 0.6 ? 'solving' : 'pricing';
       onProgress({
         pathsDone: Math.round((total * i) / ticks),
@@ -143,7 +147,9 @@ export class MockPricerClient implements PricerClient {
       stderrPct,
       ci95Pct: [pvPct - 1.96 * stderrPct, pvPct + 1.96 * stderrPct],
       solvedValue,
-      solveIterations: willSolve ? 5 : undefined,
+      solveIterations: willSolve ? (warmStart ? 3 : 8) : undefined,
+      solveWarmStart: willSolve ? warmStart : undefined,
+      preview: req.preview,
       greeks: req.greeks ? { deltaPct: (rand() - 0.5) * 0.8, vegaPct: (rand() - 0.3) * 0.4 } : undefined,
       diagnostics: {
         callProb,

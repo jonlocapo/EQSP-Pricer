@@ -538,6 +538,34 @@ select.input:focus {
   font-variant-numeric: tabular-nums;
 }
 
+/* Live-solve latency readout — surfaces the warm-start/preview speedup that
+ * would otherwise be invisible (fast solving looks identical to slow
+ * solving unless we say so). Tabular nums keep it from jittering as digits
+ * change on every live update. */
+.solve-speed {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Marks a headline value as a transient reduced-path preview, not yet the
+ * settled full-precision result — pulses subtly so it reads as "still
+ * moving" without being gaudy. */
+.live-badge {
+  font-size: 10px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  animation: live-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
 .results-spacer {
   flex: 1;
 }
