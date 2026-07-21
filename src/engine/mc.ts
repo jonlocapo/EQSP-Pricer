@@ -2,6 +2,7 @@ import type { MarketData } from '../model/market';
 import type { Diagnostics } from '../model/request';
 import { PathBatchGenerator } from './gbm';
 import type { PayoffEvaluator, PathOutcome } from './payoffs/types';
+import { computeExpectedShortfall, computeHistogram, computePLoss } from './distribution';
 
 export interface McOptions {
   numPaths: number;
@@ -20,6 +21,12 @@ export interface McOptions {
   /** Called between batches with the number of individual paths simulated
    * so far. Return false to cancel the run. */
   onBatch?: (pathsDone: number) => boolean;
+  /**
+   * When provided, enables distribution diagnostics (histogram/pLoss/ES) in
+   * the returned result, computed against this PV% reference level (e.g.
+   * issuePricePct). Omit to skip the (small but non-zero) extra work.
+   */
+  referenceLevelPct?: number;
 }
 
 export interface McRunResult {
@@ -27,14 +34,20 @@ export interface McRunResult {
   stderrPct: number;
   cancelled: boolean;
   diagnostics: Diagnostics;
+  /** One float per recorded sample (per path, or per antithetic pair —
+   * matches Aggregator.addSample's unit). Callers that combine multiple
+   * runs (e.g. sliced pricing) can concatenate these for a global
+   * distribution view rather than trusting any single run's histogram. */
+  samples: number[];
 }
 
 const DEFAULT_BATCH_PAIRS = 5000;
 
-class Aggregator {
+export class Aggregator {
   sampleSum = 0;
   sampleSumSq = 0;
   nSamples = 0;
+  samples: number[] = [];
 
   totalPaths = 0;
   callCounts: number[] = [];
@@ -49,6 +62,7 @@ class Aggregator {
     this.sampleSum += pvPct;
     this.sampleSumSq += pvPct * pvPct;
     this.nSamples += 1;
+    this.samples.push(pvPct);
   }
 
   /** Records diagnostics for one individual simulated path. */
@@ -65,7 +79,7 @@ class Aggregator {
     this.lifeYearsSum += outcome.lifeYears;
   }
 
-  finalize(cancelled: boolean): McRunResult {
+  finalize(cancelled: boolean, referenceLevelPct?: number): McRunResult {
     const mean = this.nSamples > 0 ? this.sampleSum / this.nSamples : 0;
     let stderrPct = 0;
     if (this.nSamples > 1) {
@@ -85,27 +99,54 @@ class Aggregator {
       expectedLifeYears: this.lifeYearsSum / denom,
     };
 
-    return { pvPct: mean, stderrPct, cancelled, diagnostics };
+    if (referenceLevelPct !== undefined && this.samples.length > 0) {
+      diagnostics.histogram = computeHistogram(this.samples);
+      diagnostics.pLoss = computePLoss(this.samples, referenceLevelPct);
+      diagnostics.expectedShortfall5 = computeExpectedShortfall(this.samples, 0.05);
+      diagnostics.expectedShortfall1 = computeExpectedShortfall(this.samples, 0.01);
+    }
+
+    return { pvPct: mean, stderrPct, cancelled, diagnostics, samples: this.samples };
   }
 }
 
-export function runMc(opts: McOptions): McRunResult {
-  const {
-    numPaths,
-    seed,
-    antithetic,
-    nSteps,
-    dtYears = 1 / 252,
-    s0,
-    market,
-    evaluator,
-    batchSize = DEFAULT_BATCH_PAIRS,
-    onBatch,
-  } = opts;
+/**
+ * Anything that can hand out the next path (or antithetic pair) on demand.
+ * `PathBatchGenerator` satisfies this structurally (streaming, fresh RNG
+ * draws); a cache-backed source can satisfy it too by replaying previously
+ * generated paths — either way `evaluatePathSource` below does the exact
+ * same aggregation, so results are identical regardless of where the paths
+ * came from.
+ *
+ * Generic over the item type `T` so the same replay/aggregation machinery
+ * works both for raw paths (`T = Float64Array`, the classic case) and for
+ * cached per-path observables (`T = PathObservables`, see pathCache.ts) —
+ * the aggregation logic (pairing, batching, addSample/addPathDiagnostics
+ * order) is identical either way, which is exactly what keeps an
+ * observables-cache hit byte-identical to evaluating straight from spots.
+ */
+export interface PathSource<T = Float64Array> {
+  nextPair(): { plus: T; minus: T };
+  nextSingle(): T;
+}
 
-  const agg = new Aggregator();
-  const gen = new PathBatchGenerator(seed, nSteps, s0, market, dtYears);
-
+/**
+ * Pulls `numPaths` paths (or antithetic pairs) from `source`, evaluates each
+ * with `evaluator`, and folds the outcomes into `agg`. This is the one
+ * place path-evaluation + aggregation happens — `runMc` (streaming
+ * generation) and the worker's path cache (generate-once-and-replay) both
+ * funnel through it so a cache hit is numerically identical to a fresh run.
+ * Returns true if `onBatch` requested cancellation.
+ */
+export function evaluatePathSource<T = Float64Array>(
+  source: PathSource<T>,
+  numPaths: number,
+  antithetic: boolean,
+  evaluator: (item: T) => PathOutcome,
+  agg: Aggregator,
+  batchSize: number = DEFAULT_BATCH_PAIRS,
+  onBatch?: (pathsDone: number) => boolean,
+): boolean {
   let cancelled = false;
 
   if (antithetic) {
@@ -114,7 +155,7 @@ export function runMc(opts: McOptions): McRunResult {
     while (pairsDone < nPairs) {
       const batchPairs = Math.min(batchSize, nPairs - pairsDone);
       for (let i = 0; i < batchPairs; i++) {
-        const { plus, minus } = gen.nextPair();
+        const { plus, minus } = source.nextPair();
         const outPlus = evaluator(plus);
         const outMinus = evaluator(minus);
         agg.addSample((outPlus.pvPct + outMinus.pvPct) / 2);
@@ -132,7 +173,7 @@ export function runMc(opts: McOptions): McRunResult {
     while (pathsDone < numPaths) {
       const batchN = Math.min(batchSize, numPaths - pathsDone);
       for (let i = 0; i < batchN; i++) {
-        const path = gen.nextSingle();
+        const path = source.nextSingle();
         const out = evaluator(path);
         agg.addSample(out.pvPct);
         agg.addPathDiagnostics(out);
@@ -145,5 +186,27 @@ export function runMc(opts: McOptions): McRunResult {
     }
   }
 
-  return agg.finalize(cancelled);
+  return cancelled;
+}
+
+export function runMc(opts: McOptions): McRunResult {
+  const {
+    numPaths,
+    seed,
+    antithetic,
+    nSteps,
+    dtYears = 1 / 252,
+    s0,
+    market,
+    evaluator,
+    batchSize = DEFAULT_BATCH_PAIRS,
+    onBatch,
+    referenceLevelPct,
+  } = opts;
+
+  const agg = new Aggregator();
+  const gen = new PathBatchGenerator(seed, nSteps, s0, market, dtYears);
+  const cancelled = evaluatePathSource(gen, numPaths, antithetic, evaluator, agg, batchSize, onBatch);
+
+  return agg.finalize(cancelled, referenceLevelPct);
 }

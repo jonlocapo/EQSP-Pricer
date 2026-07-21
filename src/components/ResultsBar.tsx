@@ -23,6 +23,27 @@ function BarChart({ values, labelPrefix }: { values: number[]; labelPrefix: stri
   );
 }
 
+function HistogramChart({ histogram }: { histogram: { binEdges: number[]; counts: number[] } }) {
+  const max = Math.max(...histogram.counts, 1);
+  return (
+    <div className="bar-chart">
+      {histogram.counts.map((c, i) => {
+        const lo = histogram.binEdges[i];
+        const hi = histogram.binEdges[i + 1];
+        return (
+          <div
+            key={i}
+            className="bar-cell"
+            data-label={`${lo.toFixed(1)}–${hi.toFixed(1)}%: ${c.toLocaleString()} paths`}
+          >
+            <div className="bar" style={{ height: c > 0 ? `${Math.max(2, (c / max) * 100)}%` : '0%' }} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export function ResultsBar() {
   const { running, progress, result, error, expanded, toggleExpanded } = useResultsStore();
 
@@ -31,6 +52,17 @@ export function ResultsBar() {
   const headlineValue =
     result?.solvedValue !== undefined ? result.solvedValue.toFixed(2) : result?.pvPct.toFixed(3);
   const headlineLabel = result?.solvedValue !== undefined ? 'Solved value' : 'PV %';
+
+  // Latency readout: makes the path-cache warm-start speedup visible instead
+  // of implicit. Only meaningful for solves (solveIterations is only set
+  // when solve.kind !== 'none'); plain pricing just shows elapsed time via
+  // results-meta below.
+  const solveSpeedLabel =
+    result?.solveIterations !== undefined
+      ? `solved in ${result.elapsedMs} ms · ${result.solveIterations} iter${result.solveIterations === 1 ? '' : 's'} (${
+          result.solveWarmStart ? 'warm' : 'cold'
+        })`
+      : undefined;
 
   return (
     <div className="results-bar">
@@ -65,6 +97,11 @@ export function ResultsBar() {
             <div className="results-headline">
               <span className="value">{headlineValue}</span>
               <span className="label">{headlineLabel}</span>
+              {result.preview && (
+                <span className="live-badge" title="Reduced-path preview — settling to full precision">
+                  live
+                </span>
+              )}
             </div>
             <div className="results-meta">
               <span>
@@ -76,6 +113,7 @@ export function ResultsBar() {
               <span>
                 elapsed <b>{(result.elapsedMs / 1000).toFixed(1)}s</b>
               </span>
+              {solveSpeedLabel && <span className="solve-speed">{solveSpeedLabel}</span>}
             </div>
             <div className="results-spacer" />
             <button
@@ -162,6 +200,34 @@ export function ResultsBar() {
             <div>
               <h4 className="detail-block-title">Call probability by period</h4>
               <BarChart values={result.diagnostics.callProb} labelPrefix="Period" />
+            </div>
+          )}
+
+          {result.diagnostics.histogram && result.diagnostics.histogram.counts.length > 0 && (
+            <div>
+              <h4 className="detail-block-title">PV distribution</h4>
+              <HistogramChart histogram={result.diagnostics.histogram} />
+              <div className="detail-stat-row">
+                <span>P(loss)</span>
+                <span>
+                  {result.diagnostics.pLoss !== undefined ? `${(result.diagnostics.pLoss * 100).toFixed(1)}%` : '—'}
+                </span>
+              </div>
+              <div
+                className="detail-stat-row"
+                title={
+                  result.diagnostics.expectedShortfall1 !== undefined
+                    ? `ES(1%): ${result.diagnostics.expectedShortfall1.toFixed(2)}%`
+                    : undefined
+                }
+              >
+                <span>Expected Shortfall (5%)</span>
+                <span>
+                  {result.diagnostics.expectedShortfall5 !== undefined
+                    ? `${result.diagnostics.expectedShortfall5.toFixed(2)}%`
+                    : '—'}
+                </span>
+              </div>
             </div>
           )}
         </div>

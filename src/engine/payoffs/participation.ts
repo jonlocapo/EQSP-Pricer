@@ -1,5 +1,12 @@
 import type { BarrierMonitoring, ParticipationSpec, UpsideVariant } from '../../model/product';
-import type { EvaluatorContext, PathOutcome, PayoffEvaluator } from './types';
+import type {
+  EvaluatorContext,
+  ObservablesEvaluator,
+  OutcomeEvaluator,
+  PathObservables,
+  PathOutcome,
+  PayoffEvaluator,
+} from './types';
 import { timeOf } from './types';
 
 /**
@@ -97,6 +104,85 @@ export function makeParticipationEvaluator(
     let redemptionPct: number;
     if (!isKi) {
       // Only reachable when barrierType !== 'none'.
+      const dnStrike = spec.downside.strikePct / 100;
+      const twinWinAmt = (spec.downside.twinWinPct / 100) * Math.max(0, dnStrike - perfT) * 100;
+      redemptionPct = Math.max(100 + spec.bonusPct, 100 + upsideAmt + twinWinAmt);
+    } else {
+      const flooredPerf = effDownsidePerf(spec.downside.putSpread?.lowerStrikePct, perfT);
+      const loss = (spec.downside.leveragePct / 100) * Math.max(0, spec.downside.strikePct - 100 * flooredPerf);
+      redemptionPct = 100 + upsideAmt - loss;
+    }
+
+    redemptionPct = Math.max(redemptionPct, spec.protectionPct, 0);
+
+    const T = timeOf(grid.nSteps, grid);
+    return {
+      pvPct: ctx.df(T) * redemptionPct,
+      kiEvent,
+      upsideKoEvent: spec.upside.variant.variant === 'koRebate' ? koEvent : undefined,
+      lifeYears: spec.tenorYears,
+    };
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Observables split (Phase A / Phase B). Participation only ever observes at
+// nSteps (couponObs = [nSteps], no call schedule), so Phase A is just the
+// terminal/running perf functionals — no per-event array is needed (eventPerf
+// stays empty). Mirrors makeParticipationEvaluator's arithmetic exactly; see
+// tests/observables.test.ts for the per-path equivalence proof.
+// ---------------------------------------------------------------------------
+
+/** Phase A: terminal perf + running min/max perf, once per path. Does not
+ * depend on `spec` — only on the path itself. */
+export function makeParticipationObservables(): ObservablesEvaluator {
+  return (spots: Float64Array): PathObservables => {
+    const S0 = spots[0];
+    const nSteps = spots.length - 1;
+    let minPerf = Infinity;
+    let maxPerf = -Infinity;
+    for (let i = 1; i <= nSteps; i++) {
+      const p = spots[i] / S0;
+      if (p < minPerf) minPerf = p;
+      if (p > maxPerf) maxPerf = p;
+    }
+    return { perfT: spots[nSteps] / S0, minPerf, maxPerf, eventPerf: new Float64Array(0) };
+  };
+}
+
+function evalKoFromObs(upside: UpsideVariant, obs: PathObservables): boolean {
+  if (upside.variant !== 'koRebate') return false;
+  const barrier = upside.koBarrierPct / 100;
+  return upside.koMonitoring === 'european' ? obs.perfT >= barrier : obs.maxPerf >= barrier;
+}
+
+function evalKiFromObs(barrierType: BarrierMonitoring, kiBarrierPct: number, obs: PathObservables): boolean {
+  if (barrierType === 'none') return true; // always exposed
+  if (barrierType === 'european') return obs.perfT < kiBarrierPct / 100;
+  return obs.minPerf < kiBarrierPct / 100;
+}
+
+/** Phase B: apply spec terms to precomputed observables. Identical
+ * arithmetic/order to makeParticipationEvaluator's per-path closure. */
+export function makeParticipationOutcome(spec: ParticipationSpec, ctx: EvaluatorContext): OutcomeEvaluator {
+  const { grid } = ctx;
+
+  return (obs: PathObservables): PathOutcome => {
+    const perfT = obs.perfT;
+
+    const koEvent = evalKoFromObs(spec.upside.variant, obs);
+    const upStrike = spec.upside.strikePct / 100;
+    const effPerf = effUpsidePerf(spec.upside.variant, perfT);
+    let upsideAmt = (spec.upside.participationPct / 100) * Math.max(0, effPerf - upStrike) * 100;
+    if (koEvent) {
+      upsideAmt = spec.upside.variant.variant === 'koRebate' ? spec.upside.variant.rebatePct : 0;
+    }
+
+    const isKi = evalKiFromObs(spec.downside.barrierType, spec.downside.kiBarrierPct, obs);
+    const kiEvent = spec.downside.barrierType === 'none' ? undefined : isKi;
+
+    let redemptionPct: number;
+    if (!isKi) {
       const dnStrike = spec.downside.strikePct / 100;
       const twinWinAmt = (spec.downside.twinWinPct / 100) * Math.max(0, dnStrike - perfT) * 100;
       redemptionPct = Math.max(100 + spec.bonusPct, 100 + upsideAmt + twinWinAmt);

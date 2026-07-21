@@ -140,6 +140,18 @@ export interface RunPricingParams {
   underlyingName: string;
   solve: SolveTarget;
   greeks: boolean;
+  /** Fast, transient pass at reduced path count (see PriceRequest.preview).
+   * Defaults to false (full-precision). */
+  preview?: boolean;
+  /** Seeds the solver's warm-start bracket with a previously solved value —
+   * typically the last committed solvedValue, so a live re-solve converges
+   * in a couple of iterations instead of cold-starting. */
+  warmStartValue?: number;
+  /** Whether this run gets recorded to the trade history log. Live-solve
+   * (preview and debounced-settle) passes false so rapid edits don't flood
+   * history — only the explicit Price/Solve button records an entry.
+   * Defaults to true. */
+  addToHistory?: boolean;
 }
 
 export async function runPricing({
@@ -149,6 +161,9 @@ export async function runPricing({
   underlyingName,
   solve,
   greeks,
+  preview = false,
+  warmStartValue,
+  addToHistory = true,
 }: RunPricingParams): Promise<void> {
   const id = crypto.randomUUID();
   const req: PriceRequest = {
@@ -158,6 +173,8 @@ export async function runPricing({
     mc: DEFAULT_MC,
     solve,
     greeks,
+    preview,
+    warmStartValue,
   };
 
   const results = useResultsStore.getState();
@@ -170,20 +187,22 @@ export async function runPricing({
     useResultsStore.getState().finishRun(result);
     writeBackSolvedValue(product, solve, result.solvedValue);
 
-    useHistoryStore.getState().addEntry({
-      id,
-      timestamp: Date.now(),
-      page,
-      termsSummary: termsSummaryFor(product),
-      marketSummary: marketSummary(market, underlyingName),
-      pvPct: result.pvPct,
-      solvedValue: result.solvedValue,
-      solveLabel: solve.kind !== 'none' ? SOLVE_LABELS[solve.kind] : undefined,
-      product,
-      market,
-      underlyingName,
-      solve,
-    });
+    if (addToHistory) {
+      useHistoryStore.getState().addEntry({
+        id,
+        timestamp: Date.now(),
+        page,
+        termsSummary: termsSummaryFor(product),
+        marketSummary: marketSummary(market, underlyingName),
+        pvPct: result.pvPct,
+        solvedValue: result.solvedValue,
+        solveLabel: solve.kind !== 'none' ? SOLVE_LABELS[solve.kind] : undefined,
+        product,
+        market,
+        underlyingName,
+        solve,
+      });
+    }
   } catch (err) {
     if (err instanceof Error && err.message === 'cancelled') {
       useResultsStore.getState().cancelRun();

@@ -219,7 +219,7 @@
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--text-muted);
+  color: var(--text);
   margin: 0 0 12px;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border);
@@ -461,7 +461,7 @@ select.input:focus {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--text-muted);
+  color: var(--text);
   margin: 0 0 12px;
 }
 
@@ -536,6 +536,34 @@ select.input:focus {
 .results-meta b {
   color: var(--text);
   font-variant-numeric: tabular-nums;
+}
+
+/* Live-solve latency readout — surfaces the warm-start/preview speedup that
+ * would otherwise be invisible (fast solving looks identical to slow
+ * solving unless we say so). Tabular nums keep it from jittering as digits
+ * change on every live update. */
+.solve-speed {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Marks a headline value as a transient reduced-path preview, not yet the
+ * settled full-precision result — pulses subtly so it reads as "still
+ * moving" without being gaudy. */
+.live-badge {
+  font-size: 10px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  animation: live-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
 }
 
 .results-spacer {
@@ -655,6 +683,83 @@ select.input:focus {
   padding: 2px 5px;
   border-radius: 4px;
   white-space: nowrap;
+}
+
+/* ---------- Profile page (Chebyshev surrogate charts) ---------- */
+
+.profile-charts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 20px 28px;
+}
+
+.profile-chart-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.profile-chart-title-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.profile-chart-ylabel {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.profile-chart-range {
+  font-variant-numeric: tabular-nums;
+}
+
+.profile-chart {
+  width: 100%;
+  height: 160px;
+  display: block;
+  background: var(--bg-sunken);
+  border-radius: var(--radius-sm);
+}
+
+.profile-chart-line {
+  stroke: var(--accent);
+  stroke-width: 2.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.profile-chart-zero {
+  stroke: var(--border-strong);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.profile-chart-spot-line {
+  stroke: var(--text-faint);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.profile-chart-node {
+  fill: var(--bg-elevated);
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  cursor: default;
+}
+
+.profile-chart-xaxis {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10.5px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.profile-chart-spot-label {
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .chevron-btn {

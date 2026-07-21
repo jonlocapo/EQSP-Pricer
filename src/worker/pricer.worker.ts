@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 import type { WorkerRequest, WorkerResponse } from './protocol';
-import { CancelledError, executePriceRequest } from './pricing';
+import { CancelledError, executePriceRequest, executeProfileRequest } from './pricing';
 
 const cancelledIds = new Set<string>();
 
@@ -12,6 +12,34 @@ self.onmessage = (ev: MessageEvent<WorkerRequest>) => {
     cancelledIds.add(msg.id);
     return;
   }
+
+  if (msg.type === 'profile') {
+    const req = msg.payload;
+    void (async () => {
+      try {
+        const result = await executeProfileRequest(req, {
+          onProgress: (nodesDone, nodesTotal) => post({ type: 'profileProgress', id: req.id, nodesDone, nodesTotal }),
+          isCancelled: () => cancelledIds.has(req.id),
+          yieldNow: () => new Promise((r) => setTimeout(r, 0)),
+        });
+        if (result === null || cancelledIds.has(req.id)) {
+          post({ type: 'cancelled', id: req.id });
+        } else {
+          post({ type: 'profileResult', id: req.id, result });
+        }
+      } catch (e) {
+        if (e instanceof CancelledError || cancelledIds.has(req.id)) {
+          post({ type: 'cancelled', id: req.id });
+        } else {
+          post({ type: 'error', id: req.id, message: e instanceof Error ? e.message : String(e) });
+        }
+      } finally {
+        cancelledIds.delete(req.id);
+      }
+    })();
+    return;
+  }
+
   const req = msg.payload;
   void (async () => {
     try {

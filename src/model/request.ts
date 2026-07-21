@@ -32,6 +32,10 @@ export interface McSettings {
   numPaths: number;
   seed: number;
   antithetic: boolean;
+  /** Reduced path count used when `PriceRequest.preview` is set — fast,
+   * slightly noisier pricing for live-typing feedback. Defaults to
+   * DEFAULT_PREVIEW_PATHS (src/worker/pricing.ts) when omitted. */
+  previewNumPaths?: number;
 }
 
 export const DEFAULT_MC: McSettings = { numPaths: 100_000, seed: 42, antithetic: true };
@@ -45,6 +49,17 @@ export interface PriceRequest {
   solve: SolveTarget;
   /** Compute delta/vega by bump-and-reprice (3x cost). */
   greeks: boolean;
+  /** When true, price/solve at `mc.previewNumPaths` instead of
+   * `mc.numPaths` — a fast, transient/advisory pass used while the user is
+   * actively editing. The path cache keys on numPaths, so preview and full
+   * runs naturally live in separate cache entries. */
+  preview?: boolean;
+  /** Previously-solved value (in the solve target's natural unit) to seed a
+   * tight bracket around, instead of cold-starting the root find from
+   * [lo, hi]. Ignored when solve.kind is 'none'/'upfront'. Falls back to a
+   * full cold-start bracket expansion if the tight bracket doesn't actually
+   * contain the root. */
+  warmStartValue?: number;
 }
 
 export interface Greeks {
@@ -64,6 +79,18 @@ export interface Diagnostics {
   /** P(accumulator knocked out before maturity). */
   koProb?: number;
   expectedLifeYears?: number;
+  /** Distribution of per-path (or per-antithetic-pair) PV% outcomes, ~24
+   * evenly-spaced bins. Absent for the issuerCallable/LSMC branch (out of
+   * scope — see engine/lsmc.ts). */
+  histogram?: { binEdges: number[]; counts: number[] };
+  /** P(sample < reference level). Coupon/participation: reference is
+   * issuePricePct. Accumulator: reference is 0 (P&L is already expressed in
+   * % of notional, so "loss" means negative P&L rather than a price paid). */
+  pLoss?: number;
+  /** Mean of the worst 5% of samples, pvPct units. */
+  expectedShortfall5?: number;
+  /** Mean of the worst 1% of samples, pvPct units. */
+  expectedShortfall1?: number;
 }
 
 export interface PriceResult {
@@ -76,7 +103,14 @@ export interface PriceResult {
   /** Present when solve.kind !== 'none'; in the target's natural unit. */
   solvedValue?: number;
   solveIterations?: number;
+  /** True if the solver's warm-start tight bracket actually contained the
+   * root (converged in the fast path); false/undefined if it cold-started
+   * (no warmStartValue given, or the warm guess was bad and it fell back). */
+  solveWarmStart?: boolean;
   greeks?: Greeks;
   diagnostics: Diagnostics;
   elapsedMs: number;
+  /** Echoes PriceRequest.preview — a transient/advisory result at reduced
+   * path count, not yet the settled full-precision price. */
+  preview?: boolean;
 }

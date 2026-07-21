@@ -9,6 +9,7 @@ import { SelectField } from '../components/SelectField';
 import { ActionRow } from '../components/ActionRow';
 import { validateAccumulator } from '../services/validation';
 import { runPricing } from '../services/runPricing';
+import { useLiveSolve } from '../hooks/useLiveSolve';
 import type { KoSettlement } from '../model/product';
 import type { SolveTarget } from '../model/request';
 
@@ -40,6 +41,16 @@ export function AccumulatorPage() {
   const indexBlocked = assetType === 'index';
   const priceDisabled = !validation.valid || indexBlocked;
   const priceLabel = solve.kind === 'strike' ? 'Solve' : solve.kind === 'upfront' ? 'Solve' : 'Price';
+
+  useLiveSolve({
+    page: 'accumulator',
+    product: spec,
+    market,
+    underlyingName,
+    solve,
+    greeks,
+    disabled: priceDisabled,
+  });
 
   function fieldSolved(kind: SolveTarget['kind']): boolean {
     return solve.kind === kind;
