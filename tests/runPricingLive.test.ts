@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { runPricing } from '../src/services/runPricing';
+import { runPricing, __resetRepriceScopeForTests } from '../src/services/runPricing';
 import { useResultsStore } from '../src/state/resultsStore';
 import { setPricerClient } from '../src/worker/client';
 import type { PricerClient, ProgressUpdate } from '../src/worker/client';
@@ -92,13 +92,17 @@ describe('runPricing live vs explicit failure handling', () => {
     useResultsStore.setState({
       runId: null,
       runKind: null,
+      runScope: null,
       running: false,
+      pending: false,
+      pendingScope: null,
       progress: null,
       result: null,
       error: null,
       liveUnsolvable: null,
       expanded: false,
     });
+    __resetRepriceScopeForTests();
   });
 
   it('a no-solve-target (solve.kind === "none") live pass runs a plain price and lands in finishRun', async () => {

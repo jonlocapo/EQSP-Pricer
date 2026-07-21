@@ -586,6 +586,35 @@ select.input:focus {
   letter-spacing: 0.03em;
 }
 
+/* A cached reprice (only product terms changed — the MC path cache is being
+ * reused, not regenerated) is quick, so it gets a small inline spinner next
+ * to the last value instead of the full bottom progress bar, which is
+ * reserved for a genuine fresh Monte Carlo run (the underlying/market/tenor
+ * changed). Keeps the previous value visible the whole time. */
+.repricing-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  animation: repricing-spin 0.7s linear infinite;
+  vertical-align: middle;
+}
+
+@keyframes repricing-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .repricing-spinner {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
 .results-spacer {
   flex: 1;
 }

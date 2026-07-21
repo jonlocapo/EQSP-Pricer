@@ -168,6 +168,63 @@ export interface RunPricingParams {
  * calm outcome during live editing rather than a real error. */
 const NO_SOLUTION_RE = /no solution .* not reachable/i;
 
+/**
+ * The pricing "environment": everything that determines whether the MC
+ * engine can reuse its cached raw paths (src/engine/pathCache.ts) rather
+ * than generate a fresh set. Deliberately excludes product terms that don't
+ * touch path generation (barriers, coupons, strikes, ...) and excludes
+ * numPaths (preview vs full-precision passes always regenerate against each
+ * other under the current single-entry cache — that's still "the same
+ * environment" from the user's point of view, just a different precision).
+ */
+function envFingerprint(market: MarketData, product: ProductSpec): string {
+  return JSON.stringify({
+    spot: market.spot,
+    vol: market.vol,
+    rate: market.rate,
+    divYield: market.divYield,
+    quanto: market.quanto ?? null,
+    tenorYears: product.tenorYears,
+  });
+}
+
+let lastEnvFingerprint: string | null = null;
+
+/**
+ * Predicts whether a run for this market/product would reuse the last
+ * pricing environment ('cached') or start a fresh one ('full') — WITHOUT
+ * committing it. Lets the UI show loading feedback the instant an edit
+ * happens (see useLiveReprice.beginPending), before the debounced pass that
+ * will actually issue the request commits the real answer.
+ */
+export function peekRepriceScope(market: MarketData, product: ProductSpec): 'full' | 'cached' {
+  const fp = envFingerprint(market, product);
+  return lastEnvFingerprint !== null && lastEnvFingerprint === fp ? 'cached' : 'full';
+}
+
+/** Test-only: resets the tracked environment fingerprint so tests don't leak
+ * scope state into each other via this module-level singleton. */
+export function __resetRepriceScopeForTests(): void {
+  lastEnvFingerprint = null;
+}
+
+/**
+ * Same comparison as peekRepriceScope, but for a request actually being
+ * issued. Only a FULL-precision pass commits the new fingerprint — a
+ * preview pass must not, or the settle pass for the SAME edit (which does
+ * the real, possibly-expensive work) would compare against the preview's
+ * own just-committed fingerprint and see no change, wrongly reporting
+ * 'cached' for a genuine environment change (e.g. a spot edit) and showing
+ * the small spinner instead of the bar for the pass that actually deserves
+ * it.
+ */
+function resolveRepriceScope(market: MarketData, product: ProductSpec, preview: boolean): 'full' | 'cached' {
+  const fp = envFingerprint(market, product);
+  const scope = lastEnvFingerprint !== null && lastEnvFingerprint === fp ? 'cached' : 'full';
+  if (!preview) lastEnvFingerprint = fp;
+  return scope;
+}
+
 export async function runPricing({
   page,
   product,
@@ -216,8 +273,9 @@ export async function runPricing({
   // belt-and-braces half of this fix.
   cancelPricing();
 
+  const scope = resolveRepriceScope(market, product, preview);
   const results = useResultsStore.getState();
-  results.startRun(id, live ? 'live' : 'explicit');
+  results.startRun(id, live ? 'live' : 'explicit', scope);
 
   try {
     const result = await pricerClient.price(req, (p) => {
