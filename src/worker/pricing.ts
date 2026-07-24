@@ -227,8 +227,16 @@ async function priceOnce(
 export function applySolveValue(spec: ProductSpec, target: SolveTarget, x: number): ProductSpec {
   switch (target.kind) {
     case 'none':
-    case 'upfront':
       return spec;
+    case 'upfront':
+      // 'upfront' isn't an input the solver roots on — executePriceRequest's
+      // isDirect check means this branch is only ever reached with x=0, from
+      // useLiveReprice's watched-signature exclusion (see that file). Fold
+      // upfrontPct out of the watched signature the same way every other
+      // solve target folds out its own field, or writing the solved upfront
+      // value back into the spec keeps changing the signature and retriggers
+      // another live reprice forever (jitters, never settles).
+      return spec.kind === 'accumulator' ? { ...spec, upfrontPct: x } : spec;
     case 'couponPa':
       return { ...(spec as CouponProductSpec), couponPaPct: x };
     case 'acCouponPa':
