@@ -22,6 +22,8 @@
  */
 import type { MarketData } from '../model/market';
 import { PathBatchGenerator } from './gbm';
+import type { ZSlice } from './gbm';
+import { normals } from './rng';
 import { Aggregator, evaluatePathSource } from './mc';
 import type { McRunResult, PathSource } from './mc';
 import type {
@@ -140,6 +142,94 @@ export function computeObservablesKey(pathKey: string, grid: PricingGrid, requir
   })}`;
 }
 
+/**
+ * Single-entry cache of the driving normals (Box-Muller output), separate
+ * from the raw-path cache above and keyed WITHOUT market data — normals
+ * depend only on (seed, numPaths, antithetic, nSteps): the mulberry32 stream
+ * is seeded per-slice (`seed + s*7919`, same derivation as the raw cache) and
+ * `nSteps` values are drawn per pair/single in sequence, exactly as
+ * `PathBatchGenerator` draws them live (see gbm.ts). A spot/vol/rate/div edit
+ * or a greeks bump changes `computeCacheKey` (which embeds market) but NOT
+ * this key, so those cases hit here even on a raw-path miss: path generation
+ * then skips Box-Muller entirely and only re-runs `fillPath`'s cheap `exp`
+ * stepping loop.
+ *
+ * Bounded the same way as the raw-path cache (single logical key,
+ * evict-and-replace on mismatch): at 100k paths / 252 steps (antithetic,
+ * 50k pairs) this is ~50,000 × 252 × 8 bytes ≈ 100MB, on top of the raw-path
+ * cache's own ~200MB when both are populated for the same run.
+ */
+interface NormalsCacheEntry {
+  key: string;
+  slices: (ZSlice | undefined)[];
+}
+
+let normalsEntry: NormalsCacheEntry | null = null;
+
+export interface NormalsKeyParams {
+  numPaths: number;
+  seed: number;
+  antithetic: boolean;
+  nSteps: number;
+}
+
+/** Cache key for the normals cache: deliberately excludes market data (spot/
+ * vol/rate/div/quanto) and the grid's actual step-time values — normals
+ * don't depend on either, only on how many are drawn and in what shape (see
+ * module doc above). */
+export function computeNormalsKey(p: NormalsKeyParams): string {
+  return stableStringify({ numPaths: p.numPaths, seed: p.seed, antithetic: p.antithetic, nSteps: p.nSteps });
+}
+
+/** Draws a fresh `ZSlice` via Box-Muller, in exactly the order
+ * `PathBatchGenerator` would draw it live: one `normals(sliceSeed)` stream,
+ * consumed `nSteps` values at a time, once per pair (antithetic) or once per
+ * single path, in ascending index order — matching `evaluatePathSource`'s
+ * `nPairs = Math.max(1, Math.ceil(numPaths / 2))` / `numPaths` consumption
+ * counts exactly, so this is bit-identical to the live draw it replaces. */
+function generateZSlice(sliceSeed: number, nSteps: number, antithetic: boolean, slicePaths: number): ZSlice {
+  const draw = normals(sliceSeed);
+  if (antithetic) {
+    const nPairs = Math.max(1, Math.ceil(slicePaths / 2));
+    const pairs: Float64Array[] = new Array(nPairs);
+    for (let p = 0; p < nPairs; p++) {
+      const z = new Float64Array(nSteps);
+      for (let i = 0; i < nSteps; i++) z[i] = draw();
+      pairs[p] = z;
+    }
+    return { antithetic: true, pairs };
+  }
+  const singles: Float64Array[] = new Array(slicePaths);
+  for (let p = 0; p < slicePaths; p++) {
+    const z = new Float64Array(nSteps);
+    for (let i = 0; i < nSteps; i++) z[i] = draw();
+    singles[p] = z;
+  }
+  return { antithetic: false, singles };
+}
+
+/** Fetches (generating + storing on first access) the `ZSlice` for
+ * (key, sliceIndex). A key mismatch against the currently-cached entry
+ * evicts it entirely (single-entry cache, same discipline as the raw-path
+ * cache above). */
+function getOrCreateZSlice(
+  key: string,
+  sliceIndex: number,
+  sliceSeed: number,
+  slicePaths: number,
+  antithetic: boolean,
+  nSteps: number,
+): ZSlice {
+  if (!normalsEntry || normalsEntry.key !== key) {
+    normalsEntry = { key, slices: [] };
+  }
+  const existing = normalsEntry.slices[sliceIndex];
+  if (existing) return existing;
+  const z = generateZSlice(sliceSeed, nSteps, antithetic, slicePaths);
+  normalsEntry.slices[sliceIndex] = z;
+  return z;
+}
+
 /** Replays a previously-stored slice in the exact order it was recorded. */
 class ReplayPathSource implements PathSource {
   private pairIdx = 0;
@@ -204,6 +294,7 @@ export function evaluateCachedSlice(
   market: MarketData,
   evaluator: PayoffEvaluator,
   referenceLevelPct?: number,
+  normalsKey?: string,
 ): McRunResult {
   if (!entry || entry.key !== key) {
     entry = { key, slices: [] };
@@ -216,7 +307,16 @@ export function evaluateCachedSlice(
     return agg.finalize(false, referenceLevelPct);
   }
 
-  const gen = new PathBatchGenerator(sliceSeed, nSteps, s0, market, stepDt);
+  // Raw-path miss: still try the normals cache first (keyed without market —
+  // see computeNormalsKey) so a market-only change (spot/vol/rate/div edit,
+  // greeks bump) replays already-drawn normals instead of paying Box-Muller
+  // again. `normalsKey` is optional only so this function keeps working for
+  // any caller that doesn't have one handy; omitting it just means every
+  // call draws fresh (the pre-normals-cache behavior).
+  const zSlice = normalsKey
+    ? getOrCreateZSlice(normalsKey, sliceIndex, sliceSeed, slicePaths, antithetic, nSteps)
+    : undefined;
+  const gen = new PathBatchGenerator(sliceSeed, nSteps, s0, market, stepDt, zSlice);
   const recorder = new RecordingPathSource(gen);
   evaluatePathSource(recorder, slicePaths, antithetic, evaluator, agg);
   entry.slices[sliceIndex] = recorder.toStoredSlice(antithetic);
@@ -284,6 +384,7 @@ export function evaluateCachedSliceSplit(
   observables: ObservablesEvaluator,
   outcome: OutcomeEvaluator,
   referenceLevelPct?: number,
+  normalsKey?: string,
 ): McRunResult {
   if (!entry || entry.key !== key) {
     entry = { key, slices: [] };
@@ -312,8 +413,12 @@ export function evaluateCachedSliceSplit(
   // Full miss: generate + store raw paths, evaluating via the exact same
   // composition (outcome ∘ observables) proven equivalent to the monolithic
   // evaluator, so this branch is byte-identical to evaluateCachedSlice's
-  // miss path with the monolithic evaluator.
-  const gen = new PathBatchGenerator(sliceSeed, nSteps, s0, market, stepDt);
+  // miss path with the monolithic evaluator. Same normals-cache reuse as
+  // evaluateCachedSlice — see its comment.
+  const zSlice = normalsKey
+    ? getOrCreateZSlice(normalsKey, sliceIndex, sliceSeed, slicePaths, antithetic, nSteps)
+    : undefined;
+  const gen = new PathBatchGenerator(sliceSeed, nSteps, s0, market, stepDt, zSlice);
   const recorder = new RecordingPathSource(gen);
   const evaluator: PayoffEvaluator = (spots: Float64Array) => outcome(observables(spots));
   evaluatePathSource(recorder, slicePaths, antithetic, evaluator, agg);
@@ -323,7 +428,9 @@ export function evaluateCachedSliceSplit(
   return agg.finalize(false, referenceLevelPct);
 }
 
-/** Test-only: reset the module-level singleton cache between test cases. */
+/** Test-only: reset the module-level singleton caches (raw paths + normals)
+ * between test cases. */
 export function __clearPathCacheForTests(): void {
   entry = null;
+  normalsEntry = null;
 }

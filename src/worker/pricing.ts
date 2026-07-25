@@ -20,13 +20,41 @@ import { makeCouponCashflowExtractor } from '../engine/payoffs/couponProducts';
 import type { EvaluatorContext } from '../engine/payoffs/types';
 import {
   computeCacheKey,
+  computeNormalsKey,
   computeObservablesKey,
   evaluateCachedSlice,
   evaluateCachedSliceSplit,
   gridTimesDigest,
 } from '../engine/pathCache';
+import type { McRunResult } from '../engine/mc';
 import { computeExpectedShortfall, computeHistogram, computePLoss } from '../engine/distribution';
 import type { PricingPhase } from './protocol';
+
+/**
+ * Farms the slices of ONE priceOnce pass out to a pool of Workers (see
+ * src/worker/pool.ts) instead of evaluating them in-process/sequentially.
+ * Implementations may run `sliceIndices` concurrently and in any completion
+ * order internally, but MUST resolve with results in the same order as
+ * `sliceIndices` (priceOnce always passes them as [0..nSlices-1]) — the
+ * pooling reduction in priceOnce sums over the returned array in that order,
+ * which is what keeps pooled pv/stderr bit-identical to the sequential,
+ * single-worker path regardless of which slice happens to finish first.
+ */
+export interface SliceRunner {
+  runSlices(
+    spec: ProductSpec,
+    market: MarketData,
+    numPaths: number,
+    seed: number,
+    antithetic: boolean,
+    sliceIndices: number[],
+    /** Invoked once per slice, as soon as that slice's result is available
+     * (any order) — `slicePaths` is the number of paths that slice covered.
+     * Used to aggregate a monotonically-advancing progress bar across
+     * workers. */
+    onSliceDone: (slicePaths: number) => void,
+  ): Promise<McRunResult[]>;
+}
 
 export interface PricingHooks {
   /** Called with cumulative progress. */
@@ -34,9 +62,25 @@ export interface PricingHooks {
   isCancelled: () => boolean;
   /** Yield to the event loop so cancel messages can arrive. */
   yieldNow: () => Promise<void>;
+  /** Optional: farm priceOnce's slices out to a Worker pool instead of
+   * evaluating them in-process. Omitted (the default) preserves the exact
+   * prior sequential, single-process behavior — every existing caller
+   * (tests, bench, the classic single-worker path) leaves this unset. */
+  sliceRunner?: SliceRunner;
 }
 
-const SLICE_PATHS = 20_000;
+export const SLICE_PATHS = 20_000;
+
+/** Size (path count) of slice `sliceIndex` of a priceOnce pass over
+ * `numPaths` — the exact `nSlices`/`per`/`slicePaths` formula priceOnce uses
+ * internally, exported as a single source of truth for callers that need a
+ * slice's size without re-deriving it (e.g. src/worker/pricer.worker.ts's
+ * pool progress aggregation). */
+export function sliceSizeOf(numPaths: number, sliceIndex: number): number {
+  const nSlices = Math.max(1, Math.ceil(numPaths / SLICE_PATHS));
+  const per = Math.ceil(numPaths / nSlices);
+  return Math.min(per, numPaths - sliceIndex * per);
+}
 
 /** Reduced path count for a `preview` request (fast, transient pricing
  * during live typing) when McSettings.previewNumPaths isn't specified. */
@@ -139,6 +183,11 @@ async function priceOnce(
   // european->american, mid live-solve); only the cached observables must
   // recompute.
   const observablesKey = split ? computeObservablesKey(cacheKey, grid, observablesRequirementsOf(spec)) : '';
+  // Keyed WITHOUT market data (see computeNormalsKey) so a spot/vol/rate/div
+  // edit or a greeks bump — which changes `cacheKey` above and evicts the
+  // raw-path cache — still hits here, skipping Box-Muller entirely on
+  // regeneration (see pathCache.ts's normals cache doc).
+  const normalsKey = computeNormalsKey({ numPaths, seed, antithetic, nSteps: grid.nSteps });
   // Reference level for pLoss/ES: what the investor paid (coupon/
   // participation), or 0 for accumulator (its PV is already a P&L-style
   // value in % of estimated notional, not a price paid — see Diagnostics.pLoss doc).
@@ -155,39 +204,90 @@ async function priceOnce(
   const allSamples: number[] = [];
   let cancelled = false;
 
-  for (let s = 0; s < nSlices; s++) {
+  // `slices[s]` results, gathered either sequentially in-process (default —
+  // every existing caller: tests, bench, the no-pool worker) or, when
+  // `hooks.sliceRunner` is supplied (browser real client, farming slices
+  // across a Worker pool — see src/worker/pool.ts), concurrently across
+  // workers. EITHER WAY the reduction below walks `slices` in index order
+  // 0..nSlices-1 and performs the exact same weighted-sum arithmetic in the
+  // same order, so pv/stderr/diagnostics are bit-identical regardless of how
+  // (or how fast, or in what completion order) the slices were computed —
+  // see tests/pool.test.ts.
+  const slices: (McRunResult | undefined)[] = new Array(nSlices);
+
+  if (hooks.sliceRunner) {
     if (hooks.isCancelled()) {
       cancelled = true;
-      break;
+    } else {
+      const indices = Array.from({ length: nSlices }, (_, s) => s);
+      let pathsDone = 0;
+      const results = await hooks.sliceRunner.runSlices(
+        spec,
+        market,
+        numPaths,
+        seed,
+        antithetic,
+        indices,
+        (slicePaths) => {
+          pathsDone += slicePaths;
+          hooks.onProgress(progressBase + pathsDone, progressTotal ?? numPaths, phase, solveIteration);
+        },
+      );
+      for (let s = 0; s < nSlices; s++) slices[s] = results[s];
+      await hooks.yieldNow();
     }
+  } else {
+    for (let s = 0; s < nSlices; s++) {
+      if (hooks.isCancelled()) {
+        cancelled = true;
+        break;
+      }
+      const slicePaths = Math.min(per, numPaths - s * per);
+      const res = split
+        ? evaluateCachedSliceSplit(
+            cacheKey,
+            s,
+            seed + s * 7919,
+            slicePaths,
+            antithetic,
+            grid.nSteps,
+            grid.stepDt,
+            market.spot,
+            market,
+            observablesKey,
+            split.observables,
+            split.outcome,
+            undefined,
+            normalsKey,
+          )
+        : evaluateCachedSlice(
+            cacheKey,
+            s,
+            seed + s * 7919,
+            slicePaths,
+            antithetic,
+            grid.nSteps,
+            grid.stepDt,
+            market.spot,
+            market,
+            evaluator!,
+            undefined,
+            normalsKey,
+          );
+      slices[s] = res;
+      if (res.cancelled) {
+        cancelled = true;
+        break;
+      }
+      hooks.onProgress(progressBase + (s + 1) * per, progressTotal ?? numPaths, phase, solveIteration);
+      await hooks.yieldNow();
+    }
+  }
+
+  for (let s = 0; s < nSlices; s++) {
+    const res = slices[s];
+    if (!res) break; // not reached (cancelled before/at this slice)
     const slicePaths = Math.min(per, numPaths - s * per);
-    const res = split
-      ? evaluateCachedSliceSplit(
-          cacheKey,
-          s,
-          seed + s * 7919,
-          slicePaths,
-          antithetic,
-          grid.nSteps,
-          grid.stepDt,
-          market.spot,
-          market,
-          observablesKey,
-          split.observables,
-          split.outcome,
-        )
-      : evaluateCachedSlice(
-          cacheKey,
-          s,
-          seed + s * 7919,
-          slicePaths,
-          antithetic,
-          grid.nSteps,
-          grid.stepDt,
-          market.spot,
-          market,
-          evaluator!,
-        );
     const w = slicePaths;
     wSum += w;
     pvSum += w * res.pvPct;
@@ -204,12 +304,7 @@ async function priceOnce(
     if (wantDistribution) {
       for (const sample of res.samples) allSamples.push(sample);
     }
-    if (res.cancelled) {
-      cancelled = true;
-      break;
-    }
-    hooks.onProgress(progressBase + (s + 1) * per, progressTotal ?? numPaths, phase, solveIteration);
-    await hooks.yieldNow();
+    if (res.cancelled) cancelled = true;
   }
 
   const W = wSum > 0 ? wSum : 1;
@@ -243,6 +338,81 @@ async function priceOnce(
       expectedShortfall1,
     },
   };
+}
+
+/**
+ * Evaluates exactly ONE slice of a priceOnce pass, self-contained and
+ * synchronous — everything it needs (spec, market, numPaths, seed,
+ * antithetic, sliceIndex) is plain, structured-cloneable data, so this is
+ * the function a pool worker's RPC handler calls (see src/worker/pool.ts and
+ * src/worker/pricer.worker.ts): the coordinator (main thread) never ships
+ * closures across the postMessage boundary, only this call's arguments, and
+ * each pool worker rebuilds its own grid/evaluator/cache keys exactly as
+ * priceOnce's in-process loop does.
+ *
+ * NOT used by the LSMC/issuerCallable branch — that always runs as one
+ * synchronous priceOnce pass on a single worker (see executePriceRequest and
+ * pool.ts's `runIssuerCallable`).
+ */
+export function evaluatePriceSlice(
+  spec: ProductSpec,
+  market: MarketData,
+  numPaths: number,
+  seed: number,
+  antithetic: boolean,
+  sliceIndex: number,
+): McRunResult {
+  const grid = buildGrid(spec);
+  const ctx: EvaluatorContext = { market, grid, df: makeDf(market.rate) };
+  const split = makeSplitEvaluator(spec, ctx);
+  const evaluator = split ? undefined : makeEvaluator(spec, ctx);
+  const nSlices = Math.max(1, Math.ceil(numPaths / SLICE_PATHS));
+  const per = Math.ceil(numPaths / nSlices);
+  const slicePaths = Math.min(per, numPaths - sliceIndex * per);
+
+  const cacheKey = computeCacheKey({
+    s0: market.spot,
+    market,
+    numPaths,
+    seed,
+    antithetic,
+    nSteps: grid.nSteps,
+    timesKey: gridTimesDigest(grid),
+  });
+  const observablesKey = split ? computeObservablesKey(cacheKey, grid, observablesRequirementsOf(spec)) : '';
+  const normalsKey = computeNormalsKey({ numPaths, seed, antithetic, nSteps: grid.nSteps });
+
+  return split
+    ? evaluateCachedSliceSplit(
+        cacheKey,
+        sliceIndex,
+        seed + sliceIndex * 7919,
+        slicePaths,
+        antithetic,
+        grid.nSteps,
+        grid.stepDt,
+        market.spot,
+        market,
+        observablesKey,
+        split.observables,
+        split.outcome,
+        undefined,
+        normalsKey,
+      )
+    : evaluateCachedSlice(
+        cacheKey,
+        sliceIndex,
+        seed + sliceIndex * 7919,
+        slicePaths,
+        antithetic,
+        grid.nSteps,
+        grid.stepDt,
+        market.spot,
+        market,
+        evaluator!,
+        undefined,
+        normalsKey,
+      );
 }
 
 /** Immutably applies a solve variable to the spec. */
@@ -437,20 +607,35 @@ export async function executePriceRequest(req: PriceRequest, hooks: PricingHooks
 
   let greeks: PriceResult['greeks'];
   if (req.greeks) {
-    hooks.onProgress(0, numPaths * 4, 'greeks');
+    // Delta is reported as exactly 0 WITHOUT running any MC, rather than via
+    // bump-and-reprice: every payoff family here (coupon, participation,
+    // accumulator) is priced as a PERCENTAGE of notional and reads only
+    // relative performance (spots[i]/spots[0] — see the payoffs modules).
+    // `fillPath` (gbm.ts) sets `spots[0] = s0` and every subsequent spot is
+    // s0 times a multiplicative factor, so scaling s0 by (1+e) scales EVERY
+    // spot on the path by the same (1+e) and leaves every spots[i]/spots[0]
+    // ratio — hence the whole path of relative performance, hence PV% —
+    // exactly unchanged. That's not an empirical near-zero: it's a structural
+    // identity of "price at inception, spot == initial fixing", so a spot
+    // bump-and-reprice pair was always going to return ~0 (the ~1e-14 the
+    // old code observed was float noise around an exact analytic zero). This
+    // stops being true once the model separates the initial fixing from the
+    // live spot (e.g. a seasoned/live trade repriced mid-life, where
+    // performance is measured off a fixing struck in the past at a different
+    // level than today's spot) — whoever adds that needs to bring back a
+    // real spot bump here.
+    hooks.onProgress(0, numPaths * 2, 'greeks');
     const bump = async (m: MarketData, i: number) =>
-      priceOnce(spec, m, numPaths, mc.seed, mc.antithetic, hooks, 'greeks', i * numPaths, numPaths * 4);
-    const up = await bump({ ...market, spot: market.spot * 1.01 }, 0);
-    const dn = await bump({ ...market, spot: market.spot * 0.99 }, 1);
+      priceOnce(spec, m, numPaths, mc.seed, mc.antithetic, hooks, 'greeks', i * numPaths, numPaths * 2);
     // Bumping vol here also shifts the quanto drift term (−corrEqFx · vol · fxVol
     // in riskNeutralDrift), so under a quanto this vega is the *total* vega —
     // vol's effect on both the diffusion and the drift. That's intentional:
     // it's the correct sensitivity to a re-quoted equity vol, not a bug.
-    const vu = await bump({ ...market, vol: market.vol + 0.01 }, 2);
-    const vd = await bump({ ...market, vol: Math.max(0.001, market.vol - 0.01) }, 3);
-    if ([up, dn, vu, vd].some((r) => r.cancelled) || hooks.isCancelled()) return null;
+    const vu = await bump({ ...market, vol: market.vol + 0.01 }, 0);
+    const vd = await bump({ ...market, vol: Math.max(0.001, market.vol - 0.01) }, 1);
+    if ([vu, vd].some((r) => r.cancelled) || hooks.isCancelled()) return null;
     greeks = {
-      deltaPct: (up.pvPct - dn.pvPct) / 2,
+      deltaPct: 0,
       vegaPct: (vu.pvPct - vd.pvPct) / 2,
     };
   }
