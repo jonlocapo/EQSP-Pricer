@@ -873,6 +873,45 @@ select.input:focus {
   cursor: pointer;
 }
 
+/* Collapsible per-underlying group header. Runs are grouped by underlying so a
+ * long history stays navigable. */
+.history-group-row {
+  cursor: pointer;
+  user-select: none;
+}
+
+.history-group-row td {
+  background: var(--bg-sunken);
+  padding: 7px 14px;
+  font-size: 12px;
+}
+
+.history-group-row:hover td {
+  background: var(--accent-soft);
+}
+
+.history-group-arrow {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 8px;
+  padding: 0;
+  margin-right: 8px;
+  cursor: pointer;
+  transition: transform 0.15s;
+  display: inline-block;
+}
+
+.history-group-arrow.open {
+  transform: rotate(90deg);
+}
+
+.history-group-count {
+  margin-left: 8px;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
 .history-empty {
   padding: 40px 20px;
   text-align: center;
