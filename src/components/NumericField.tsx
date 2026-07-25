@@ -146,6 +146,10 @@ export function NumericField({
         <input
           className={`input ${error ? 'invalid' : ''}`}
           type="number"
+          // Reserve room for the stepper column PLUS this field's own suffix.
+          // A single fixed padding cannot serve both "%" and "EUR" — a long
+          // suffix collided with a long value (1000000EUR).
+          style={{ paddingRight: suffix ? Math.max(46, Math.ceil(30 + suffix.length * 9)) : 26 }}
           value={shown}
           step={step}
           min={min}
