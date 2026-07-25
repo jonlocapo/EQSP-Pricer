@@ -55,6 +55,15 @@ async function priceOnce(
   progressBase = 0,
   progressTotal?: number,
   solveIteration?: number,
+  /**
+   * Whether to build the distribution diagnostics (histogram / P(loss) /
+   * Expected Shortfall). Only the final displayed pass needs them, and they
+   * are not cheap: ES alone copies and comparator-sorts the whole per-path
+   * sample array twice. A solve runs priceOnce once per root-finder
+   * iteration and throws every intermediate result away, so computing them
+   * there is pure waste. Defaults to false — callers opt in.
+   */
+  wantDistribution = false,
 ): Promise<CoreResult> {
   const grid = buildGrid(spec);
   const ctx: EvaluatorContext = { market, grid, df: makeDf(market.rate) };
@@ -181,7 +190,9 @@ async function priceOnce(
       while (callCounts.length <= i) callCounts.push(0);
       callCounts[i] += w * p;
     });
-    for (const sample of res.samples) allSamples.push(sample);
+    if (wantDistribution) {
+      for (const sample of res.samples) allSamples.push(sample);
+    }
     if (res.cancelled) {
       cancelled = true;
       break;
@@ -198,7 +209,7 @@ async function priceOnce(
   let pLoss: number | undefined;
   let expectedShortfall5: number | undefined;
   let expectedShortfall1: number | undefined;
-  if (allSamples.length > 0) {
+  if (wantDistribution && allSamples.length > 0) {
     histogram = computeHistogram(allSamples);
     pLoss = computePLoss(allSamples, referenceLevelPct);
     expectedShortfall5 = computeExpectedShortfall(allSamples, 0.05);
@@ -394,7 +405,21 @@ export async function executePriceRequest(req: PriceRequest, hooks: PricingHooks
   }
 
   hooks.onProgress(0, numPaths, 'pricing');
-  const final = await priceOnce(spec, market, numPaths, mc.seed, mc.antithetic, hooks, 'pricing');
+  // Only this pass's result is displayed, so it is the only one that pays for
+  // the distribution diagnostics (solve iterations and greeks bumps skip them).
+  const final = await priceOnce(
+    spec,
+    market,
+    numPaths,
+    mc.seed,
+    mc.antithetic,
+    hooks,
+    'pricing',
+    0,
+    undefined,
+    undefined,
+    true,
+  );
   if (final.cancelled || hooks.isCancelled()) return null;
 
   if (req.solve.kind === 'upfront') solvedValue = final.pvPct;
