@@ -1,9 +1,9 @@
 /**
- * Pricing orchestration: grid + evaluator assembly, sliced Monte Carlo (so
- * the worker can yield to its event loop for cancellation), LSMC branch for
- * issuer callables, solve-for via bracketed Brent, and bump-and-reprice
- * Greeks. Pure of DOM/worker APIs so it is testable in node; the worker
- * supplies the hooks.
+ * Pricing orchestration: grid and evaluator assembly, sliced Monte Carlo (so
+ * the worker can yield to its event loop for cancellation), the LSMC branch
+ * for issuer callables, solve-for via bracketed root-finding, and
+ * bump-and-reprice Greeks. This module is pure of DOM and worker APIs, so it
+ * is testable in node. The worker supplies the hooks.
  */
 import type { MarketData } from '../model/market';
 import type {
@@ -35,13 +35,14 @@ import type { PricingPhase } from './protocol';
 
 /**
  * Farms the slices of ONE priceOnce pass out to a pool of Workers (see
- * src/worker/pool.ts) instead of evaluating them in-process/sequentially.
- * Implementations may run `sliceIndices` concurrently and in any completion
- * order internally, but MUST resolve with results in the same order as
- * `sliceIndices` (priceOnce always passes them as [0..nSlices-1]) — the
- * pooling reduction in priceOnce sums over the returned array in that order,
- * which is what keeps pooled pv/stderr bit-identical to the sequential,
- * single-worker path regardless of which slice happens to finish first.
+ * src/worker/pool.ts), instead of evaluating them in-process and
+ * sequentially. An implementation may run `sliceIndices` concurrently, and
+ * in any completion order internally. But it MUST resolve with results in
+ * the same order as `sliceIndices` (priceOnce always passes them as
+ * [0..nSlices-1]). The pooling reduction in priceOnce sums over the
+ * returned array in that order. This order is what keeps pooled pv and
+ * stderr bit-identical to the sequential, single-worker path, regardless of
+ * which slice happens to finish first.
  */
 export interface SliceRunner {
   runSlices(
@@ -51,9 +52,9 @@ export interface SliceRunner {
     seed: number,
     antithetic: boolean,
     sliceIndices: number[],
-    /** Invoked once per slice, as soon as that slice's result is available
-     * (any order) — `slicePaths` is the number of paths that slice covered.
-     * Used to aggregate a monotonically-advancing progress bar across
+    /** Invoked once per slice, as soon as that slice's result is available,
+     * in any order. `slicePaths` is the number of paths that slice covered.
+     * Used to aggregate a monotonically advancing progress bar across
      * workers. */
     onSliceDone: (slicePaths: number) => void,
   ): Promise<McRunResult[]>;
@@ -65,28 +66,29 @@ export interface PricingHooks {
   isCancelled: () => boolean;
   /** Yield to the event loop so cancel messages can arrive. */
   yieldNow: () => Promise<void>;
-  /** Optional: farm priceOnce's slices out to a Worker pool instead of
-   * evaluating them in-process. Omitted (the default) preserves the exact
-   * prior sequential, single-process behavior — every existing caller
-   * (tests, bench, the classic single-worker path) leaves this unset. */
+  /** Optional: farm priceOnce's slices out to a Worker pool, instead of
+   * evaluating them in-process. Omitting it, the default, preserves the
+   * exact prior sequential, single-process behavior. Every existing caller —
+   * tests, bench, the classic single-worker path — leaves this unset. */
   sliceRunner?: SliceRunner;
 }
 
 export const SLICE_PATHS = 20_000;
 
-/** Size (path count) of slice `sliceIndex` of a priceOnce pass over
- * `numPaths` — the exact `nSlices`/`per`/`slicePaths` formula priceOnce uses
- * internally, exported as a single source of truth for callers that need a
- * slice's size without re-deriving it (e.g. src/worker/pricer.worker.ts's
- * pool progress aggregation). */
+/** Size, path count, of slice `sliceIndex` of a priceOnce pass over
+ * `numPaths`. This is the exact `nSlices`/`per`/`slicePaths` formula
+ * priceOnce uses internally. Exported as a single source of truth for
+ * callers that need a slice's size without re-deriving it, for example
+ * src/worker/pricer.worker.ts's pool progress aggregation. */
 export function sliceSizeOf(numPaths: number, sliceIndex: number): number {
   const nSlices = Math.max(1, Math.ceil(numPaths / SLICE_PATHS));
   const per = Math.ceil(numPaths / nSlices);
   return Math.min(per, numPaths - sliceIndex * per);
 }
 
-/** Reduced path count for a `preview` request (fast, transient pricing
- * during live typing) when McSettings.previewNumPaths isn't specified. */
+/** Reduced path count for a `preview` request, fast and transient pricing
+ * during live typing, used when McSettings.previewNumPaths is not
+ * specified. */
 export const DEFAULT_PREVIEW_PATHS = 20_000;
 
 interface CoreResult {
@@ -109,12 +111,12 @@ async function priceOnce(
   progressTotal?: number,
   solveIteration?: number,
   /**
-   * Whether to build the distribution diagnostics (histogram / P(loss) /
-   * Expected Shortfall). Only the final displayed pass needs them, and they
-   * are not cheap: ES alone copies and comparator-sorts the whole per-path
+   * Whether to build the distribution diagnostics: histogram, P(loss), and
+   * Expected Shortfall. Only the final displayed pass needs them, and they
+   * are not cheap. ES alone copies and comparator-sorts the whole per-path
    * sample array twice. A solve runs priceOnce once per root-finder
-   * iteration and throws every intermediate result away, so computing them
-   * there is pure waste. Defaults to false — callers opt in.
+   * iteration and throws every intermediate result away. So computing the
+   * diagnostics there is pure waste. Defaults to false; callers opt in.
    */
   wantDistribution = false,
 ): Promise<CoreResult> {
@@ -153,22 +155,22 @@ async function priceOnce(
     };
   }
 
-  // Split evaluator (Phase A observables / Phase B outcome) for the families
-  // where it's a true no-op decomposition (coupon non-issuerCallable,
-  // participation — see makeSplitEvaluator's doc). Falls back to the
-  // monolithic evaluator (accumulator) when null; the monolithic evaluator
+  // Split evaluator (Phase A observables, Phase B outcome) for the families
+  // where it is a true no-op decomposition: coupon non-issuerCallable,
+  // participation. See makeSplitEvaluator's doc. Falls back to the
+  // monolithic evaluator (accumulator) when null. The monolithic evaluator
   // is also what the split's cache-miss path uses internally (outcome ∘
-  // observables), so either path is byte-identical to a fresh runMc call.
+  // observables). So either path is byte-identical to a fresh runMc call.
   const split = makeSplitEvaluator(spec, ctx);
   const evaluator = split ? undefined : makeEvaluator(spec, ctx);
   const nSlices = Math.max(1, Math.ceil(numPaths / SLICE_PATHS));
   const per = Math.ceil(numPaths / nSlices);
 
-  // Path generation depends only on market/mc/grid — not on the product
-  // spec's strikes/barriers/coupons — so slices are cached under a key that
-  // excludes spec fields entirely. A solve-for (same market+mc+tenor, only
-  // the spec changing across iterations) hits this cache on every iteration
-  // after the first.
+  // Path generation depends only on market, MC settings, and grid. It does
+  // not depend on the product spec's strikes, barriers, or coupons. So
+  // slices are cached under a key that excludes spec fields entirely. A
+  // solve-for — same market, MC settings, and tenor, only the spec changing
+  // across iterations — hits this cache on every iteration after the first.
   const cacheKey = computeCacheKey({
     s0: market.spot,
     market,
@@ -180,20 +182,21 @@ async function priceOnce(
   });
   // Observables (Phase A output) need an additional key component: a
   // signature of the observation index sets (couponObs/callObs) plus the
-  // monitoring-mode requirements descriptor (which of minPerf/maxPerf Phase
-  // A tracks). The raw path cache stays valid across a schedule or
-  // monitoring-mode change (e.g. couponFrequency, or barrierType
-  // european->american, mid live-solve); only the cached observables must
-  // recompute.
+  // monitoring-mode requirements descriptor, which of minPerf/maxPerf Phase
+  // A tracks. The raw path cache stays valid across a schedule or
+  // monitoring-mode change mid live-solve, for example couponFrequency
+  // changing, or barrierType flipping from european to american. Only the
+  // cached observables must recompute.
   const observablesKey = split ? computeObservablesKey(cacheKey, grid, observablesRequirementsOf(spec)) : '';
-  // Keyed WITHOUT market data (see computeNormalsKey) so a spot/vol/rate/div
-  // edit or a greeks bump — which changes `cacheKey` above and evicts the
-  // raw-path cache — still hits here, skipping Box-Muller entirely on
-  // regeneration (see pathCache.ts's normals cache doc).
+  // Keyed WITHOUT market data (see computeNormalsKey), so a spot, vol, rate,
+  // or div edit, or a greeks bump — which changes `cacheKey` above and
+  // evicts the raw-path cache — still hits here. Regeneration then skips
+  // Box-Muller entirely (see pathCache.ts's normals cache doc).
   const normalsKey = computeNormalsKey({ numPaths, seed, antithetic, nSteps: grid.nSteps });
-  // Reference level for pLoss/ES: what the investor paid (coupon/
-  // participation), or 0 for accumulator (its PV is already a P&L-style
-  // value in % of estimated notional, not a price paid — see Diagnostics.pLoss doc).
+  // Reference level for pLoss/ES: what the investor paid, for coupon or
+  // participation, or 0 for accumulator. The accumulator's PV is already a
+  // P&L-style value in % of estimated notional, not a price paid — see
+  // Diagnostics.pLoss doc.
   const referenceLevelPct = spec.kind === 'accumulator' ? 0 : spec.issuePricePct;
 
   let wSum = 0;
@@ -207,15 +210,15 @@ async function priceOnce(
   const allSamples: number[] = [];
   let cancelled = false;
 
-  // `slices[s]` results, gathered either sequentially in-process (default —
-  // every existing caller: tests, bench, the no-pool worker) or, when
-  // `hooks.sliceRunner` is supplied (browser real client, farming slices
-  // across a Worker pool — see src/worker/pool.ts), concurrently across
-  // workers. EITHER WAY the reduction below walks `slices` in index order
-  // 0..nSlices-1 and performs the exact same weighted-sum arithmetic in the
-  // same order, so pv/stderr/diagnostics are bit-identical regardless of how
-  // (or how fast, or in what completion order) the slices were computed —
-  // see tests/pool.test.ts.
+  // `slices[s]` results, gathered either sequentially in-process — the
+  // default, every existing caller: tests, bench, the no-pool worker — or,
+  // when `hooks.sliceRunner` is supplied (browser real client, farming
+  // slices across a Worker pool — see src/worker/pool.ts), concurrently
+  // across workers. EITHER WAY, the reduction below walks `slices` in index
+  // order 0..nSlices-1, and performs the exact same weighted-sum arithmetic
+  // in the same order. So pv, stderr, and diagnostics are bit-identical,
+  // regardless of how, how fast, or in what completion order the slices
+  // were computed. See tests/pool.test.ts.
   const slices: (McRunResult | undefined)[] = new Array(nSlices);
 
   if (hooks.sliceRunner) {
@@ -311,9 +314,9 @@ async function priceOnce(
   }
 
   const W = wSum > 0 ? wSum : 1;
-  // Computed once over the full concatenated sample set (not per-slice —
-  // ES/histogram don't combine linearly across slices the way weighted
-  // means do, so per-slice values would be wrong for the global picture).
+  // Computed once over the full concatenated sample set, not per slice. ES
+  // and histogram do not combine linearly across slices the way weighted
+  // means do. So per-slice values would be wrong for the global picture.
   let histogram: { binEdges: number[]; counts: number[] } | undefined;
   let pLoss: number | undefined;
   let expectedShortfall5: number | undefined;
@@ -345,15 +348,15 @@ async function priceOnce(
 
 /**
  * Evaluates exactly ONE slice of a priceOnce pass, self-contained and
- * synchronous — everything it needs (spec, market, numPaths, seed,
- * antithetic, sliceIndex) is plain, structured-cloneable data, so this is
+ * synchronous. Everything it needs — spec, market, numPaths, seed,
+ * antithetic, sliceIndex — is plain, structured-cloneable data. So this is
  * the function a pool worker's RPC handler calls (see src/worker/pool.ts and
- * src/worker/pricer.worker.ts): the coordinator (main thread) never ships
- * closures across the postMessage boundary, only this call's arguments, and
- * each pool worker rebuilds its own grid/evaluator/cache keys exactly as
- * priceOnce's in-process loop does.
+ * src/worker/pricer.worker.ts). The coordinator, the main thread, never
+ * ships closures across the postMessage boundary, only this call's
+ * arguments. Each pool worker rebuilds its own grid, evaluator, and cache
+ * keys exactly as priceOnce's in-process loop does.
  *
- * NOT used by the LSMC/issuerCallable branch — that always runs as one
+ * NOT used by the LSMC/issuerCallable branch. That branch always runs as one
  * synchronous priceOnce pass on a single worker (see executePriceRequest and
  * pool.ts's `runIssuerCallable`).
  */
@@ -424,13 +427,14 @@ export function applySolveValue(spec: ProductSpec, target: SolveTarget, x: numbe
     case 'none':
       return spec;
     case 'upfront':
-      // 'upfront' isn't an input the solver roots on — executePriceRequest's
+      // 'upfront' is not an input the solver roots on. executePriceRequest's
       // isDirect check means this branch is only ever reached with x=0, from
       // useLiveReprice's watched-signature exclusion (see that file). Fold
-      // upfrontPct out of the watched signature the same way every other
-      // solve target folds out its own field, or writing the solved upfront
-      // value back into the spec keeps changing the signature and retriggers
-      // another live reprice forever (jitters, never settles).
+      // upfrontPct out of the watched signature, the same way every other
+      // solve target folds out its own field. Otherwise, writing the solved
+      // upfront value back into the spec keeps changing the signature. That
+      // retriggers another live reprice forever: the price jitters and never
+      // settles.
       return spec.kind === 'accumulator' ? { ...spec, upfrontPct: x } : spec;
     case 'couponPa':
       return { ...(spec as CouponProductSpec), couponPaPct: x };
@@ -484,12 +488,12 @@ export function applySolveValue(spec: ProductSpec, target: SolveTarget, x: numbe
 }
 
 /**
- * Bracket + PV target for each solve variable.
+ * Bracket and PV target for each solve variable.
  *
- * `feePct` is the fee the issuer retains out of the reoffer, so the STRUCTURE
- * only has to be worth `reoffer − fee`. Lowering the target is what makes a
- * fee-bearing quote less aggressive than a fair value — it is the dominant
- * reason a bank's coupon sits below the risk-neutral one.
+ * `feePct` is the fee the issuer retains out of the reoffer. So the
+ * STRUCTURE only has to be worth `reoffer − fee`. Lowering the target is
+ * what makes a fee-bearing quote less aggressive than a fair value. This is
+ * the dominant reason a bank's coupon sits below the risk-neutral one.
  */
 export function solveBounds(
   spec: ProductSpec,
@@ -544,8 +548,9 @@ function notionalOf(spec: ProductSpec, market: MarketData): number {
 
 /**
  * Resolves the market the Monte Carlo should actually run on, plus the basis
- * describing that choice. With no surface this returns the market unchanged and
- * reports flat-vol pricing, so behavior is identical to before.
+ * describing that choice. With no surface, the function returns the market
+ * unchanged and reports flat-vol pricing. So behavior is identical to
+ * before.
  */
 function effectiveMarketFor(
   spec: ProductSpec,
@@ -578,25 +583,25 @@ export async function executePriceRequest(req: PriceRequest, hooks: PricingHooks
   const start = Date.now();
   const { mc } = req;
   // Skew: when a surface is available, price the product at the vol of ITS OWN
-  // risk strike rather than at the flat/ATM vol. These payoffs live away from
-  // the money, so that choice moves the price materially — see
+  // risk strike, rather than at the flat/ATM vol. These payoffs live away from
+  // the money. So that choice moves the price materially. See
   // engine/riskStrike for which strike governs each family.
   //
   // The effective vol is fixed ONCE here, from the spec as submitted, and held
-  // for every pass of a solve. Recomputing it per iteration (which matters
-  // only when solving the barrier itself) would change `vol` on each trial and
-  // therefore change the path-cache key, evicting the cache and undoing the
-  // interactive solve speed. The vol is a modelling choice, not a payoff term,
-  // so holding it constant across the solve is the right trade; it does mean a
+  // for every pass of a solve. Recomputing it per iteration — which matters
+  // only when solving the barrier itself — would change `vol` on each trial.
+  // That would change the path-cache key, evicting the cache and undoing the
+  // interactive solve speed. The vol is a modelling choice, not a payoff term.
+  // So holding it constant across the solve is the right trade. It does mean a
   // solved barrier is priced at the vol of the STARTING barrier.
   const basis = effectiveMarketFor(req.product, req.market);
   const market = basis.market;
   const feePct = market.costs?.feePct ?? 0;
   // A `preview` request runs at a reduced path count for fast, transient
-  // pricing during live typing; the trailing-edge "settle" request uses the
-  // full mc.numPaths and is the authoritative result. Both the solve loop
-  // and the final pricing pass below use this one path count consistently
-  // (a solve's final priceOnce must match the paths it was solved against).
+  // pricing during live typing. The trailing-edge "settle" request uses the
+  // full mc.numPaths, and is the authoritative result. Both the solve loop
+  // and the final pricing pass below use this one path count consistently.
+  // A solve's final priceOnce must match the paths it was solved against.
   const numPaths = req.preview ? mc.previewNumPaths ?? DEFAULT_PREVIEW_PATHS : mc.numPaths;
   let spec = req.product;
   let solvedValue: number | undefined;
@@ -644,8 +649,8 @@ export async function executePriceRequest(req: PriceRequest, hooks: PricingHooks
   }
 
   hooks.onProgress(0, numPaths, 'pricing');
-  // Only this pass's result is displayed, so it is the only one that pays for
-  // the distribution diagnostics (solve iterations and greeks bumps skip them).
+  // Only this pass's result is displayed. So it is the only one that pays for
+  // the distribution diagnostics. Solve iterations and greeks bumps skip them.
   const final = await priceOnce(
     spec,
     market,
@@ -665,30 +670,31 @@ export async function executePriceRequest(req: PriceRequest, hooks: PricingHooks
 
   let greeks: PriceResult['greeks'];
   if (req.greeks) {
-    // Delta is reported as exactly 0 WITHOUT running any MC, rather than via
-    // bump-and-reprice: every payoff family here (coupon, participation,
-    // accumulator) is priced as a PERCENTAGE of notional and reads only
-    // relative performance (spots[i]/spots[0] — see the payoffs modules).
-    // `fillPath` (gbm.ts) sets `spots[0] = s0` and every subsequent spot is
-    // s0 times a multiplicative factor, so scaling s0 by (1+e) scales EVERY
-    // spot on the path by the same (1+e) and leaves every spots[i]/spots[0]
-    // ratio — hence the whole path of relative performance, hence PV% —
-    // exactly unchanged. That's not an empirical near-zero: it's a structural
-    // identity of "price at inception, spot == initial fixing", so a spot
-    // bump-and-reprice pair was always going to return ~0 (the ~1e-14 the
-    // old code observed was float noise around an exact analytic zero). This
+    // Delta is reported as exactly 0 WITHOUT running any MC, instead of via
+    // bump-and-reprice. Every payoff family here — coupon, participation,
+    // accumulator — is priced as a PERCENTAGE of notional, and reads only
+    // relative performance, spots[i]/spots[0] (see the payoffs modules).
+    // `fillPath` (gbm.ts) sets `spots[0] = s0`, and every subsequent spot
+    // equals s0 times a multiplicative factor. So scaling s0 by (1+e) scales
+    // EVERY spot on the path by the same (1+e), and leaves every
+    // spots[i]/spots[0] ratio unchanged. This means the whole path of
+    // relative performance, and so PV%, stays exactly unchanged. This is not
+    // an empirical near-zero. It is a structural identity of "price at
+    // inception, spot equals initial fixing". So a spot bump-and-reprice
+    // pair was always going to return approximately 0 — the ~1e-14 the old
+    // code observed was float noise around an exact analytic zero. This
     // stops being true once the model separates the initial fixing from the
-    // live spot (e.g. a seasoned/live trade repriced mid-life, where
-    // performance is measured off a fixing struck in the past at a different
-    // level than today's spot) — whoever adds that needs to bring back a
-    // real spot bump here.
+    // live spot, for example a seasoned or live trade repriced mid-life,
+    // where performance is measured off a fixing struck in the past at a
+    // different level than today's spot. Whoever adds that case needs to
+    // bring back a real spot bump here.
     hooks.onProgress(0, numPaths * 2, 'greeks');
     const bump = async (m: MarketData, i: number) =>
       priceOnce(spec, m, numPaths, mc.seed, mc.antithetic, hooks, 'greeks', i * numPaths, numPaths * 2);
     // Bumping vol here also shifts the quanto drift term (−corrEqFx · vol · fxVol
-    // in riskNeutralDrift), so under a quanto this vega is the *total* vega —
-    // vol's effect on both the diffusion and the drift. That's intentional:
-    // it's the correct sensitivity to a re-quoted equity vol, not a bug.
+    // in riskNeutralDrift). So under a quanto, this vega is the *total* vega:
+    // vol's effect on both the diffusion and the drift. This is intentional.
+    // It is the correct sensitivity to a re-quoted equity vol, not a bug.
     const vu = await bump({ ...market, vol: market.vol + 0.01 }, 0);
     const vd = await bump({ ...market, vol: Math.max(0.001, market.vol - 0.01) }, 1);
     if ([vu, vd].some((r) => r.cancelled) || hooks.isCancelled()) return null;
@@ -726,12 +732,12 @@ export class CancelledError extends Error {
 }
 
 /**
- * Ridders' method (secant-accelerated bisection — robust on smooth CRN
- * objectives, ~8-12 evaluations typical) given an already-valid bracket
- * [a, b] with opposite-signed f(a)/f(b). Shared by both the cold-start
+ * Ridders' method: secant-accelerated bisection, robust on smooth CRN
+ * objectives, typically 8-12 evaluations. Takes an already-valid bracket
+ * [a, b] with opposite-signed f(a) and f(b). Shared by both the cold-start
  * bracket-expansion path and the warm-start tight-bracket path in
- * asyncRootFind below — the answer this converges to depends only on f and
- * the bracket, not on how the bracket was found.
+ * asyncRootFind below. The answer this converges to depends only on f and
+ * the bracket, not on how the function found the bracket.
  */
 async function riddersLoop(
   f: (x: number) => Promise<number>,
@@ -773,18 +779,18 @@ async function riddersLoop(
 }
 
 /**
- * Async root finder for MC objectives. Two entry paths into the same
+ * Async root finder for MC objectives. It has two entry paths into the same
  * Ridders' loop:
  *
- * - Warm start (guess given): try a TIGHT bracket around the previously
- *   solved value first (a few evaluations, typically 2-3 total). If that
- *   tight bracket doesn't actually contain the root (signs match — the
- *   guess was stale, e.g. the product changed enough that the root moved
- *   past it), fall through to the cold-start path below rather than fail —
- *   the guess only ever changes *how fast* the answer is found, never the
- *   answer itself.
- * - Cold start: bracket expansion from [lo, hi] toward [hardLo, hardHi]
- *   until the signs of f at the two ends differ, then Ridders' loop.
+ * - Warm start (a guess is given): try a TIGHT bracket around the
+ *   previously solved value first, a few evaluations, typically 2-3 total.
+ *   If that tight bracket does not actually contain the root — the signs
+ *   match, meaning the guess was stale, for example the product changed
+ *   enough that the root moved past it — fall through to the cold-start
+ *   path below, rather than fail. The guess only ever changes *how fast*
+ *   the function finds the answer, never the answer itself.
+ * - Cold start: bracket expansion from [lo, hi] toward [hardLo, hardHi],
+ *   until the signs of f at the two ends differ, then the Ridders' loop.
  *
  * tolY is in PV percentage points.
  */

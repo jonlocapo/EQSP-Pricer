@@ -37,7 +37,7 @@ export function AccumulatorPage() {
   const [tenorValue, setTenorValue] = useState<number>(6);
 
   const validation = validateAccumulator(spec, market);
-  // Accumulators/decumulators are share-only: the product accumulates a
+  // Accumulators and decumulators are share-only. The product accumulates a
   // daily number of shares, which has no meaning for an index underlying.
   const indexBlocked = assetType === 'index';
   const priceDisabled = !validation.valid || indexBlocked;
@@ -56,17 +56,17 @@ export function AccumulatorPage() {
     return solve.kind === kind;
   }
 
-  // Accumulator has no 'none' solve state — exactly one of strike/upfront is
-  // always the active target. Clicking the inactive chip switches to it;
-  // clicking the already-active one is a no-op.
+  // Accumulator has no 'none' solve state. Exactly one of strike/upfront is
+  // always the active target. Clicking the inactive chip switches to it.
+  // Clicking the already-active one is a no-op.
   function selectSolve(kind: 'strike' | 'upfront') {
     setSolve({ kind });
   }
 
   function setDirection(direction: 'accumulate' | 'decumulate') {
     if (direction === spec.direction) return;
-    // Only swap the trigger default if the user hasn't touched it away from
-    // the outgoing direction's default (don't clobber a hand-entered value).
+    // Only swap the trigger default if the user has not touched it away from
+    // the outgoing direction's default. Do not clobber a hand-entered value.
     const prevDefault = spec.direction === 'decumulate' ? 90 : 110;
     const nextDefault = direction === 'decumulate' ? 90 : 110;
     const patch: Partial<typeof spec> = { direction };
@@ -77,8 +77,8 @@ export function AccumulatorPage() {
   function updateTenor(value: number, unit: TenorUnit) {
     setTenorValue(value);
     setTenorUnit(unit);
-    // A cleared field mid-retype reads NaN. Keep it empty on screen but never
-    // publish it — buildGrid would derive NaN steps from a NaN tenor.
+    // A cleared field mid-retype reads NaN. Keep it empty on screen, but never
+    // publish it. buildGrid would derive NaN steps from a NaN tenor.
     if (!Number.isFinite(value)) return;
     const tenorYears = unit === 'weeks' ? value / 52 : value / 12;
     setSpec({ tenorYears });
@@ -202,8 +202,8 @@ export function AccumulatorPage() {
             <span>Guarantee periods</span>
           </div>
           <div className="stepper">
-            {/* These are "arrows" like NumericField's steppers, so they get the
-             * same fast step-style debounce rather than the slow typing one. */}
+            {/* These are "arrows" like NumericField's steppers. So they get the
+             * same fast step-style debounce, rather than the slow typing one. */}
             <button
               type="button"
               onClick={() => {

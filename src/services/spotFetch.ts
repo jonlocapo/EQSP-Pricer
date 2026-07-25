@@ -28,10 +28,11 @@ const PROXIES = [
 ];
 
 /**
- * Fetch text, retrying through public CORS proxies when the origin doesn't
- * send CORS headers (Yahoo, Stooq, ECB, CBOE). Returns the body and whether
- * a proxy was used. `isValid` guards against 200-with-garbage responses
- * (bot challenges, proxy error pages) so they count as failures.
+ * Fetch text, retrying through public CORS proxies when the origin does
+ * not send CORS headers (Yahoo, Stooq, ECB, CBOE). Returns the body and
+ * whether a proxy was used. `isValid` guards against 200-with-garbage
+ * responses, such as bot challenges or proxy error pages, so they count
+ * as failures.
  */
 export async function fetchTextWithCorsFallback(
   url: string,
@@ -76,7 +77,7 @@ async function fetchSpotYahoo(symbol: string): Promise<SpotFetchResult> {
   if (!meta?.regularMarketPrice || !(meta.regularMarketPrice > 0)) {
     throw new Error(parsed.chart?.error?.description ?? `Yahoo has no price for "${symbol}"`);
   }
-  // Minor-unit listings (London's "GBp" pence) are converted to the major
+  // Minor-unit listings, London's "GBp" pence, are converted to the major
   // currency, so the spot and the currency label always agree.
   const { currency, priceDivisor } = normalizeQuoteCurrency(meta.currency);
   return {
@@ -99,9 +100,10 @@ async function fetchSpotStooq(symbol: string): Promise<SpotFetchResult> {
 }
 
 /**
- * Fetch a last/delayed price for a Yahoo-style symbol (BA, ^SPX, BMW.DE).
- * Yahoo chart endpoint first (near-live), Stooq as backup. Callers surface
- * the error message — never fail silently.
+ * Fetch a last or delayed price for a Yahoo-style symbol (BA, ^SPX,
+ * BMW.DE). Tries the Yahoo chart endpoint first, for near-live prices,
+ * then Stooq as backup. Callers surface the error message; never fail
+ * silently.
  */
 export async function fetchSpot(symbol: string): Promise<SpotFetchResult> {
   if (!symbol.trim()) throw new Error('Pick an underlying first');

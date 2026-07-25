@@ -10,16 +10,16 @@ import type { PriceRequest } from '../src/model/request';
 /**
  * These tests exercise the exact production `hooks.sliceRunner` extension
  * point that `src/worker/pricer.worker.ts`'s real Worker pool plugs into
- * (see `PoolSliceRunner` there) — they just fake the "N workers" part
- * in-process (real `postMessage`/`MessageChannel` Worker pools aren't
- * available in vitest's node environment; realClient.ts/pricer.worker.ts are
- * exercised manually/in the browser). What's under test — and what's
+ * (see `PoolSliceRunner` there). They just fake the "N workers" part
+ * in-process, because real `postMessage`/`MessageChannel` Worker pools are
+ * not available in vitest's node environment; realClient.ts/pricer.worker.ts
+ * are exercised manually, in the browser. What is under test — and what is
  * actually at risk from farming slices across workers — is the pooling
- * arithmetic: does resolving slices out of order, "on different workers",
- * still produce the same pv/stderr as the sequential single-worker path?
- * `FakePoolSliceRunner` below deliberately resolves LATER slice indices
- * FIRST (the opposite of arrival order) to prove the aggregation in
- * priceOnce reduces over `sliceIndices` in index order regardless of
+ * arithmetic. Does resolving slices out of order, "on different workers",
+ * still produce the same pv and stderr as the sequential single-worker
+ * path? `FakePoolSliceRunner` below deliberately resolves LATER slice
+ * indices FIRST, the opposite of arrival order, to prove the aggregation
+ * in priceOnce reduces over `sliceIndices` in index order, regardless of
  * completion order.
  */
 class FakePoolSliceRunner implements SliceRunner {
@@ -35,9 +35,9 @@ class FakePoolSliceRunner implements SliceRunner {
     const promises = sliceIndices.map(
       (sliceIndex, i) =>
         new Promise<McRunResult>((resolve) => {
-          // Reverse completion order: the LAST job dispatched resolves
-          // FIRST, simulating slices landing on different workers that
-          // finish in an order unrelated to dispatch order.
+          // Reverse completion order: the LAST job dispatched resolves FIRST.
+          // This simulates slices landing on different workers that finish
+          // in an order unrelated to dispatch order.
           const delayMs = (sliceIndices.length - i) * 2;
           setTimeout(() => {
             const result = evaluatePriceSlice(spec, market, numPaths, seed, antithetic, sliceIndex);
@@ -104,7 +104,7 @@ function pooledHooks(progressLog: number[]): PricingHooks {
 
 describe('worker pool — slice pooling is bit-identical to the sequential single-worker path', () => {
   it('pooled pv AND stderr match the sequential result to 1e-9 despite out-of-order slice completion', async () => {
-    // 100k paths / SLICE_PATHS=20_000 (see pricing.ts) => 5 slices on the
+    // 100k paths / SLICE_PATHS=20_000 (see pricing.ts) gives 5 slices on the
     // daily (american) grid — enough slices to actually exercise pooling.
     __clearPathCacheForTests();
     const sequential = await executePriceRequest(req(100_000), sequentialHooks());
@@ -118,8 +118,8 @@ describe('worker pool — slice pooling is bit-identical to the sequential singl
     expect(pooled!.pvPct).toBeCloseTo(sequential!.pvPct, 9);
     expect(pooled!.stderrPct).toBeCloseTo(sequential!.stderrPct, 9);
 
-    // Progress still advances monotonically to the full path count even
-    // though slices finish out of order — aggregation must not regress or
+    // Progress still advances monotonically to the full path count, even
+    // though slices finish out of order. Aggregation must not regress or
     // double-count across "workers".
     expect(progressLog.length).toBeGreaterThan(0);
     for (let i = 1; i < progressLog.length; i++) {

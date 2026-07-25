@@ -18,11 +18,12 @@ import {
 } from '../src/engine/payoffs/participation';
 
 /**
- * CORRECTNESS GATE for the observables cache refactor: proves, BEFORE any
- * caching is wired up, that `phaseB(phaseA(path)) === monolithicEvaluator(path)`
- * for a sample of concrete GBM paths across a spread of coupon and
- * participation spec variants. If this test fails, the split itself is
- * wrong and no amount of caching machinery on top of it can be correct.
+ * CORRECTNESS GATE for the observables cache refactor. It proves, BEFORE
+ * any caching is wired up, that
+ * `phaseB(phaseA(path)) === monolithicEvaluator(path)` for a sample of
+ * concrete GBM paths across a spread of coupon and participation spec
+ * variants. If this test fails, the split itself is wrong, and no amount
+ * of caching machinery on top of it can be correct.
  */
 
 const market = { spot: 100, vol: 0.25, rate: 0.03, divYield: 0.01, currency: 'EUR' };

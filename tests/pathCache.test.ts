@@ -58,11 +58,11 @@ function req(product: PriceRequest['product'], m: MarketData = market, numPaths 
 }
 
 /**
- * Reimplements the pre-caching priceOnce slice/pooling loop verbatim
- * (SLICE_PATHS=20000 slices, seed + s*7919 per slice, weighted pooling of
- * pv/stderr) calling `runMc` directly with no caching involved at all. Used
- * as an independent ground truth to prove the cache-backed priceOnce
- * produces byte-identical pooled pv/stderr.
+ * Reimplements the pre-caching priceOnce slice/pooling loop verbatim:
+ * SLICE_PATHS=20000 slices, seed + s*7919 per slice, weighted pooling of
+ * pv and stderr. It calls `runMc` directly, with no caching involved at
+ * all. Used as an independent ground truth, to prove the cache-backed
+ * priceOnce produces byte-identical pooled pv and stderr.
  */
 function legacyPooledPrice(spec: CouponProductSpec, m: MarketData, numPaths: number, seed: number, antithetic: boolean) {
   const grid = buildGrid(spec);
@@ -108,23 +108,23 @@ describe('path cache — slice/seed/pooling structure preserved', () => {
 
   it('golden regression: fixed spec/seed/numPaths pins exact pv and stderr', async () => {
     // Captured from this codebase's executePriceRequest (spec=baseCoupon,
-    // mc={numPaths:40000, seed:42, antithetic:true}, solve:none) — see
+    // mc={numPaths:40000, seed:42, antithetic:true}, solve:none). See the
     // /tmp scratchpad capture script used during the Task 1 refactor. Any
     // future change to path generation, evaluator ordering, or the
-    // slice-pooling arithmetic that isn't a true no-op will move these.
+    // slice-pooling arithmetic that is not a true no-op will move these.
     //
     // RE-PINNED for the adaptive time grid (see src/engine/schedule.ts's
-    // needsDailyPath): baseCoupon is barrierType 'european' with a
-    // quarterly coupon + quarterly call, so it no longer needs a daily
-    // path — buildGrid now returns a COMPACT grid (one step per quarter,
-    // nSteps=4) instead of the old 252-step daily grid. GBM log-increments
-    // over a longer step are still exactly lognormal, so this is a
-    // different-but-equally-valid set of simulated paths for the SAME
-    // model (same seed, different step structure), not an approximation —
-    // see tests/adaptiveGrid.test.ts for the exactness proof (compact-grid
-    // price agrees with the daily-grid price to within MC error). The
-    // pv/stderr below are the new byte-exact values this legitimately
-    // moved to.
+    // needsDailyPath). baseCoupon is barrierType 'european' with a quarterly
+    // coupon and a quarterly call. So it no longer needs a daily path.
+    // buildGrid now returns a COMPACT grid, one step per quarter, nSteps=4,
+    // instead of the old 252-step daily grid. GBM log-increments over a
+    // longer step are still exactly lognormal. So this is a
+    // different-but-equally-valid set of simulated paths for the SAME model
+    // — same seed, different step structure — not an approximation. See
+    // tests/adaptiveGrid.test.ts for the exactness proof: the compact-grid
+    // price agrees with the daily-grid price to within MC error. The
+    // pv/stderr below are the new byte-exact values this legitimately moved
+    // to.
     __clearPathCacheForTests();
     const res = await executePriceRequest(req(baseCoupon), hooks);
     expect(res).not.toBeNull();
@@ -147,12 +147,13 @@ describe('path cache — reuse across reprices with unchanged market data', () =
     expect(resA).not.toBeNull();
     expect(resB).not.toBeNull();
 
-    // Advisory only — timing is noisy in sandboxed CI, log rather than hard-fail.
+    // Advisory only. Timing is noisy in sandboxed CI, so log rather than
+    // hard-fail.
     // eslint-disable-next-line no-console
     console.log(`[pathCache timing] miss=${t1 - t0}ms hit=${t2 - t1}ms`);
 
     // Real correctness assertion: clear the cache and reprice specB from
-    // scratch (forcing fresh generation) — the cache-hit result above must
+    // scratch, forcing fresh generation. The cache-hit result above must
     // match this fresh, uncached run to float precision.
     __clearPathCacheForTests();
     const freshB = await executePriceRequest(req(specB), hooks);
@@ -174,8 +175,8 @@ describe('path cache — reuse across reprices with unchanged market data', () =
       couponPaPct: 0,
       callType: 'none' as const,
     };
-    // Sanity check against a closed-form-adjacent bound isn't trivial for a
-    // full coupon note, so instead verify against the participation-style
+    // A sanity check against a closed-form-adjacent bound is not trivial for
+    // a full coupon note. So instead verify against the participation-style
     // ZCB+call identity used in pricing.test.ts, under the bumped vol.
     const capGuarPart = {
       kind: 'participation' as const,
@@ -208,8 +209,9 @@ describe('path cache — reuse across reprices with unchanged market data', () =
     const resLong = await executePriceRequest(req(longTenor), hooks);
     expect(resShort).not.toBeNull();
     expect(resLong).not.toBeNull();
-    // Sane PV bounds — both should be well inside [0, notional-ish %] and
-    // the two tenors' prices should differ (different grid, different key).
+    // Sane PV bounds. Both should be well inside [0, notional-ish %], and
+    // the two tenors' prices should differ, because they use a different
+    // grid and a different key.
     expect(resShort!.pvPct).toBeGreaterThan(50);
     expect(resShort!.pvPct).toBeLessThan(150);
     expect(resLong!.pvPct).toBeGreaterThan(50);

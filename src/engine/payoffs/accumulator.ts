@@ -18,8 +18,8 @@ export function makeAccumulatorEvaluator(
   const nSteps = grid.nSteps;
   const settlementObs = grid.settlementObs;
   const estimatedNotional = spec.dailyShares * nSteps * (spec.strikePct / 100) * ctx.market.spot;
-  // sign = +1 accumulate (buy cheap), -1 decumulate (sell rich). All three
-  // direction-dependent comparisons reduce to this single constant:
+  // sign = +1 for accumulate (buy cheap), -1 for decumulate (sell rich). All
+  // three direction-dependent comparisons reduce to this single constant:
   //   KO:      sign * (S - trigger) >= 0   (accumulate: S >= trigger; decumulate: S <= trigger)
   //   geared:  sign * (S - strike)  <  0   (accumulate: S < strike;  decumulate: S > strike)
   //   cashflow: shares * sign * (S_settle - strike)  (accumulate: S_settle - strike; decumulate: strike - S_settle)

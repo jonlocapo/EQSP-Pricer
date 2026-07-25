@@ -2,16 +2,18 @@
  * Source-agnostic option-chain model plus a Yahoo Finance chain fetcher.
  *
  * Two consumers:
- *  - `impliedFromChain` derives a forward dividend yield (put-call parity) and
- *    an ATM volatility for a target tenor — what the market panel needs.
- *  - the full strike ladders are what a volatility skew/surface needs, so the
- *    chain is kept whole rather than collapsed to a single ATM number.
+ *  - `impliedFromChain` derives a forward dividend yield, via put-call
+ *    parity, and an ATM volatility for a target tenor. This is what the
+ *    market panel needs.
+ *  - The full strike ladders are what a volatility skew or surface needs.
+ *    So the chain is kept whole, rather than collapsed to a single ATM
+ *    number.
  *
- * Yahoo is preferred over CBOE because it takes the SAME symbol the app already
- * stores (no per-source symbol mapping to get wrong) and reports implied vols
- * directly. Coverage is still predominantly US-listed options, so a European
- * single name may legitimately have no chain anywhere — that is reported, not
- * silently papered over.
+ * Yahoo is preferred over CBOE because it takes the SAME symbol the app
+ * already stores, with no per-source symbol mapping to get wrong, and
+ * reports implied vols directly. Coverage is still predominantly US-listed
+ * options. So a European single name may legitimately have no chain
+ * anywhere. That case is reported, not silently papered over.
  */
 import { fetchTextWithCorsFallback } from './spotFetch';
 
@@ -74,12 +76,13 @@ export function yearsUntil(expiry: string, now = Date.now()): number {
  *
  *   C − P = S·e^{−qT} − K·e^{−rT}   ⇒   q = −ln((C − P + K·e^{−rT}) / S) / T
  *
- * Exact for European-style options (indices); an approximation for
- * American-style single names, which callers should label as such.
+ * This is exact for European-style options, such as indices. It is an
+ * approximation for American-style single names, which callers should
+ * label as such.
  *
- * Each expiry is judged independently — an unusable one is skipped rather than
- * aborting the whole search, and the last rejection reason is reported so a
- * failure explains itself.
+ * The function judges each expiry independently. It skips an unusable one,
+ * rather than aborting the whole search, and reports the last rejection
+ * reason, so a failure explains itself.
  */
 export function impliedFromChain(chain: OptionChain, rate: number, tenorYears: number): ImpliedFromChain {
   const { spot } = chain;
@@ -189,9 +192,10 @@ async function fetchYahooOptions(symbol: string, date?: number): Promise<{ resul
 }
 
 /**
- * Fetches up to `maxExpiries` expiries nearest `tenorYears`. Yahoo returns only
- * one expiry's ladders per request (plus the full list of expiry dates), so the
- * nearest expiries are requested individually and merged.
+ * Fetches up to `maxExpiries` expiries nearest `tenorYears`. Yahoo returns
+ * only one expiry's ladders per request, plus the full list of expiry
+ * dates. So the function requests the nearest expiries individually and
+ * merges them.
  */
 export async function fetchOptionChainYahoo(
   yahooSymbol: string,
@@ -212,8 +216,8 @@ export async function fetchOptionChainYahoo(
     throw new Error(`Yahoo lists no option expiries for "${symbol}"`);
   }
 
-  // The ladders already returned belong to one expiry; index them so that
-  // expiry isn't re-requested.
+  // The ladders already returned belong to one expiry. Index them, so that
+  // expiry is not re-requested.
   const slices = new Map<string, ExpirySlice>();
   for (const block of first.result.options ?? []) {
     if (block.expirationDate === undefined) continue;
@@ -248,7 +252,7 @@ export async function fetchOptionChainYahoo(
         });
       }
     } catch {
-      // One unavailable expiry shouldn't sink the whole chain; the caller
+      // One unavailable expiry should not sink the whole chain. The caller
       // fails only if NO usable expiry survives.
     }
   }

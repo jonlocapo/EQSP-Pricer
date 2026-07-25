@@ -13,7 +13,7 @@ function BarChart({ values, labelPrefix }: { values: number[]; labelPrefix: stri
     <div className="bar-chart">
       {values.map((v, i) => (
         // Each column is a full-height flex cell that owns the hover/tooltip
-        // target, so near-zero probabilities (a near-invisible bar) are
+        // target, so near-zero probabilities, a near-invisible bar, are
         // still fully hoverable across the column's whole height.
         <div key={i} className="bar-cell" data-label={`${labelPrefix} ${i + 1}: ${(v * 100).toFixed(1)}%`}>
           <div className="bar" style={{ height: v > 0 ? `${Math.max(2, (v / max) * 100)}%` : '0%' }} />
@@ -51,12 +51,12 @@ export function ResultsBar() {
   const isLoading = running || pending;
   if (!isLoading && !result && !error) return null;
 
-  // A 'cached' reprice (only product terms changed, the underlying/market/
-  // tenor didn't) reuses the MC path cache and is quick — show a small
-  // spinner next to the last value instead of hiding it behind the full
-  // bottom progress bar. Only applies while a previous value is on screen to
-  // keep showing; the very first price ever always falls through to the bar
-  // (there's no runScope yet, so it starts out 'full').
+  // A 'cached' reprice — only product terms changed, the underlying, market,
+  // and tenor did not — reuses the MC path cache and is quick. Show a small
+  // spinner next to the last value, instead of hiding it behind the full
+  // bottom progress bar. This only applies while a previous value is on
+  // screen to keep showing. The very first price ever always falls through
+  // to the bar, because there is no runScope yet, so it starts out 'full'.
   const scopeNow = running ? runScope : pendingScope;
   const showCachedSpinner = isLoading && scopeNow === 'cached' && !!result;
   const showBar = isLoading && !showCachedSpinner;
@@ -65,9 +65,10 @@ export function ResultsBar() {
     result?.solvedValue !== undefined ? result.solvedValue.toFixed(2) : result?.pvPct.toFixed(3);
   const headlineLabel = result?.solvedValue !== undefined ? 'Solved value' : 'PV %';
 
-  // Latency readout: makes the path-cache warm-start speedup visible instead
-  // of implicit. Solves show iteration count + warm/cold; a plain live price
-  // (no solve target) has neither, so it just reads the elapsed time.
+  // Latency readout: makes the path-cache warm-start speedup visible,
+  // instead of implicit. Solves show iteration count and warm/cold. A
+  // plain live price, no solve target, has neither, so it just reads the
+  // elapsed time.
   const solveSpeedLabel =
     result?.solveIterations !== undefined
       ? `solved in ${result.elapsedMs} ms · ${result.solveIterations} iter${result.solveIterations === 1 ? '' : 's'} (${

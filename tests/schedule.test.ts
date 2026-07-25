@@ -32,7 +32,7 @@ function baseCoupon(overrides: Partial<CouponProductSpec>): CouponProductSpec {
 }
 
 describe('buildGrid — coupon products (European/none monitoring => COMPACT grid)', () => {
-  // barrierType 'none' (this suite's default) never needs a running min, so
+  // barrierType 'none', this suite's default, never needs a running min. So
   // buildGrid uses the compact grid: one step per actual observation date,
   // not 252/yr. See needsDailyPath in schedule.ts.
 
@@ -88,7 +88,7 @@ describe('buildGrid — coupon products (European/none monitoring => COMPACT gri
 
 describe('buildGrid — American monitoring stays on the DAILY grid (mispricing guard)', () => {
   // A future refactor that accidentally coarsens American barrier
-  // monitoring would silently mis-price knock-in probability — pin the
+  // monitoring would silently mis-price knock-in probability. Pin the
   // daily-grid invariant explicitly.
   it('coupon with barrierType american builds the full 252/yr daily grid', () => {
     const grid = buildGrid(baseCoupon({ tenorYears: 1, barrierType: 'american', couponFrequency: 'quarterly' }));
@@ -146,9 +146,9 @@ describe('buildGrid — accumulator', () => {
   });
 
   it('biweekly settlement uses 10-step spacing', () => {
-    // STEPS_PER_YEAR = 252, so 3M (0.25y) -> nSteps = round(0.25*252) = 63.
-    // settlementSchedule steps by 10 while idx < nSteps: 10,20,30,40,50,60,
-    // then the final entry is forced to nSteps (63) regardless of spacing.
+    // STEPS_PER_YEAR = 252, so 3M (0.25y) gives nSteps = round(0.25*252) = 63.
+    // settlementSchedule steps by 10 while idx < nSteps: 10,20,30,40,50,60.
+    // Then the final entry is forced to nSteps (63), regardless of spacing.
     const grid = buildGrid(baseAccumulator({ tenorYears: 0.25, settlementFrequency: 'biweekly' }));
     expect(grid.nSteps).toBe(63);
     expect(grid.settlementObs).toEqual([10, 20, 30, 40, 50, 60, 63]);

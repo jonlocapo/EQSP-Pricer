@@ -5,15 +5,16 @@
  *  1. Yahoo — takes the same symbol the app already stores, so there is no
  *     per-source symbol mapping to get wrong, and it reports implied vols
  *     directly.
- *  2. CBOE delayed quotes — the original source, kept as a fallback. It is
+ *  2. CBOE delayed quotes, the original source, kept as a fallback. It is
  *     US-listed only and needs its own symbol roots (see toCboeSymbol).
  *
- * The derivation itself (parity dividend yield + ATM vol) is shared and lives
- * in ./optionChain, so both sources produce identical results from identical
- * quotes.
+ * The derivation itself, parity dividend yield plus ATM vol, is shared and
+ * lives in ./optionChain. So both sources produce identical results from
+ * identical quotes.
  *
- * Fails loudly: if neither source yields a usable chain the error names what
- * each one said, so the caller can surface it instead of silently falling back.
+ * Fails loudly. If neither source yields a usable chain, the error names
+ * what each one said, so the caller can surface it instead of silently
+ * falling back.
  */
 import { fetchTextWithCorsFallback } from './spotFetch';
 import { isIndexSymbol, toCboeSymbol } from './symbols';
@@ -131,7 +132,7 @@ export async function fetchImpliedFromOptions(
       return {
         ...implied,
         source: chain.source,
-        // Parity is exact only for European-style options; listed single-name
+        // Parity is exact only for European-style options. Listed single-name
         // options are American.
         approximate: !isIndexSymbol(yahooSymbol),
         chain,

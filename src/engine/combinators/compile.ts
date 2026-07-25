@@ -5,34 +5,34 @@ import type { Cmp, Expr } from './expr';
 import { makeContractObservables } from './observables';
 
 /**
- * Lowers a `Contract` tree (expr.ts + contract.ts) into a `SplitEvaluator` —
- * the exact interface makeSplitEvaluator/pathCache.ts already know how to
- * cache and replay (see payoffs/index.ts, engine/pathCache.ts). This is the
- * whole point of the combinator layer: any tree built from the primitive
- * algebra automatically inherits the observables/path-cache fast path,
- * with no special-casing needed anywhere else in the engine.
+ * Lowers a `Contract` tree (expr.ts + contract.ts) into a `SplitEvaluator`.
+ * This is the exact interface makeSplitEvaluator/pathCache.ts already know
+ * how to cache and replay (see payoffs/index.ts, engine/pathCache.ts). This
+ * is the whole point of the combinator layer: any tree built from the
+ * primitive algebra automatically inherits the observables/path-cache fast
+ * path, with no special-casing needed anywhere else in the engine.
  *
  * Three techniques, in order of appearance below:
  *
- * 1. Hash-consing: `Expr`/`Cmp` are plain (possibly duplicated) object
+ * 1. Hash-consing: `Expr`/`Cmp` are plain, possibly duplicated, object
  *    trees authored by product builders (products.ts). `intern` folds
- *    structurally-identical subtrees into one row of a flat `CNode[]`
+ *    structurally identical subtrees into one row of a flat `CNode[]`
  *    table, keyed by a canonical string signature over already-interned
- *    child indices (so it hash-conses bottom-up, one array-index compare
- *    per level, not full tree diffing).
+ *    child indices. So it hash-conses bottom-up, one array-index compare
+ *    per level, not full tree diffing.
  * 2. Path-independent hoisting: any node whose entire subtree is made of
- *    `const`/boolean-literal leaves (no perfT/minPerf/maxPerf/perfAt) is
- *    constant-folded to a number *once*, at compile time — `isConst`/
- *    `constVal` on the CNode row. Discount factors are hoisted the same
- *    way: each schedule event's df(t) and the maturity df(T) are computed
- *    once in `compileContract`, before any path is evaluated, since event
- *    times never depend on the path.
+ *    `const`/boolean-literal leaves, with no perfT/minPerf/maxPerf/perfAt,
+ *    is constant-folded to a number *once*, at compile time —
+ *    `isConst`/`constVal` on the CNode row. Discount factors are hoisted
+ *    the same way. Each schedule event's df(t), and the maturity df(T), are
+ *    computed once in `compileContract`, before any path is evaluated,
+ *    since event times never depend on the path.
  * 3. Per-path memo: each DAG node gets a stable integer index. A single
- *    `Float64Array` (values) + `Int32Array` (generation stamps) pair is
- *    preallocated once per compiled contract and reused across every path.
- *    Each path bumps a `gen` counter; a node is "already computed this
- *    path" iff `stamp[idx] === gen` — no per-path zeroing, no Map, no
- *    allocation in the hot loop.
+ *    `Float64Array` (values) plus `Int32Array` (generation stamps) pair is
+ *    preallocated once per compiled contract, and reused across every path.
+ *    Each path bumps a `gen` counter. A node is "already computed this
+ *    path" iff `stamp[idx] === gen`. This needs no per-path zeroing, no
+ *    Map, and no allocation in the hot loop.
  */
 
 type NodeKind =
@@ -59,9 +59,10 @@ type NodeKind =
   | 'not';
 
 /** One hash-consed DAG row. Unused child slots are -1. `num` doubles as the
- * const value (kind 'const') or the scale factor (kind 'scale'); `obsIndex`
- * is only meaningful for 'perfAt'. `a`/`b`/`c` are child node indices;
- * 'ite' uses a=cond, b=trueBranch, c=falseBranch; 'ind'/'not' use a=cond. */
+ * const value (kind 'const') or the scale factor (kind 'scale'). `obsIndex`
+ * is only meaningful for 'perfAt'. `a`, `b`, and `c` are child node
+ * indices. 'ite' uses a=cond, b=trueBranch, c=falseBranch. 'ind' and 'not'
+ * use a=cond. */
 interface CNode {
   kind: NodeKind;
   a: number;
@@ -143,11 +144,12 @@ class Interner {
   }
 }
 
-/** Path-dependent leaves (perfT/minPerf/maxPerf/perfAt) are never const;
- * every other node is const iff all of its children are (children are
- * already-interned indices, so this is a plain array lookup — no
- * recursion). 'ite' is conservatively const only when cond AND both
- * branches are const (sufficient, not necessary, but always safe). */
+/** Path-dependent leaves (perfT/minPerf/maxPerf/perfAt) are never const.
+ * Every other node is const only when all of its children are. Children are
+ * already-interned indices, so this is a plain array lookup, with no
+ * recursion. 'ite' is conservatively const only when cond AND both branches
+ * are const. This condition is sufficient, not necessary, but always
+ * safe. */
 function computeIsConst(kind: NodeKind, a: number, b: number, c: number, nodes: CNode[]): boolean {
   switch (kind) {
     case 'const':
@@ -215,8 +217,8 @@ function computeConstVal(kind: NodeKind, a: number, b: number, c: number, num: n
 }
 
 /** Per-path memoized DAG evaluation. Constant nodes short-circuit without
- * touching memo/stamp at all (they were folded once at compile time);
- * everything else is computed at most once per path per unique node,
+ * touching memo or stamp at all; the compiler folded them once at compile
+ * time. Everything else is computed at most once per path per unique node,
  * keyed by the generation stamp. */
 function evalNode(
   idx: number,
@@ -313,18 +315,18 @@ function evalNode(
 interface CompiledEvent {
   gridIndex: number;
   period: number;
-  /** Discount factor at this event's time — path-independent, computed
-   * once here rather than per path. */
+  /** Discount factor at this event's time. Path-independent, computed once
+   * here, rather than per path. */
   df: number;
   coupon?: { condIdx: number; amtIdx: number; memory: boolean };
   autocall?: { condIdx: number; redIdx: number };
 }
 
 /** Compiles a `Contract` tree into a `SplitEvaluator`. Plugs into
- * makeSplitEvaluator/pathCache.ts unchanged: `observables` only depends on
- * the contract's schedule shape (never on Expr/Cmp numeric leaves), and
- * `outcome` is a pure function of `PathObservables` — exactly the phase
- * split the rest of the engine already knows how to cache. */
+ * makeSplitEvaluator/pathCache.ts unchanged. `observables` depends only on
+ * the contract's schedule shape, never on Expr/Cmp numeric leaves.
+ * `outcome` is a pure function of `PathObservables`. This is exactly the
+ * phase split the rest of the engine already knows how to cache. */
 export function compileContract(contract: Contract, ctx: EvaluatorContext): SplitEvaluator {
   const { grid } = ctx;
   const interner = new Interner();
@@ -355,7 +357,7 @@ export function compileContract(contract: Contract, ctx: EvaluatorContext): Spli
 
   const nodes = interner.nodes;
   // Per-path memo, preallocated once and reused across every path this
-  // compiled contract ever evaluates — zero allocation in the hot loop.
+  // compiled contract ever evaluates. Zero allocation in the hot loop.
   const memo = new Float64Array(nodes.length);
   const stamp = new Int32Array(nodes.length);
   let gen = 0;

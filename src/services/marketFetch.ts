@@ -1,17 +1,17 @@
 /**
  * Best-effort open-data market fetches beyond spot. Sources are free and
- * keyless, hence limited:
- *  - Historical (realized) volatility from Stooq daily closes — a rough
- *    starting point for the vol input, NOT implied vol.
+ * keyless, so they are limited:
+ *  - Historical (realized) volatility from Stooq daily closes. This is a
+ *    rough starting point for the vol input, NOT implied vol.
  *  - Official overnight reference rates: ECB €STR (EUR) and NY Fed SOFR
- *    (USD). Daily fixings, not a live curve.
- * Everything is a suggestion; manual override always wins.
+ *    (USD). These are daily fixings, not a live curve.
+ * Everything here is a suggestion. Manual override always wins.
  */
 import { fetchTextWithCorsFallback } from './spotFetch';
 import { toStooqSymbol } from './symbols';
 
-/** Stooq serves an HTML bot-challenge with HTTP 200 to some IPs; treat any
- * non-CSV body as a failed attempt so the proxy fallback kicks in. */
+/** Stooq serves an HTML bot-challenge with HTTP 200 to some IPs. Treat any
+ * non-CSV body as a failed attempt, so the proxy fallback kicks in. */
 function looksLikeCsv(text: string): boolean {
   const head = text.trimStart().slice(0, 1);
   return head !== '<' && text.includes(',');
@@ -42,9 +42,9 @@ export interface DatedClose {
 }
 
 /**
- * Extracts the parallel (timestamp, close) series from a Yahoo chart-endpoint
- * JSON payload, dropping bars with a null/non-positive close (and their
- * matching timestamp) so the two arrays stay aligned.
+ * Extracts the parallel (timestamp, close) series from a Yahoo
+ * chart-endpoint JSON payload. Drops bars with a null or non-positive
+ * close, and their matching timestamp, so the two arrays stay aligned.
  */
 export function closesWithDatesFromYahooChart(json: unknown): DatedClose[] {
   const parsed = json as {
@@ -67,8 +67,8 @@ export function closesWithDatesFromYahooChart(json: unknown): DatedClose[] {
   for (let i = 0; i < raw.length; i++) {
     const c = raw[i];
     if (typeof c === 'number' && Number.isFinite(c) && c > 0) {
-      // Fall back to the index when no timestamp array is present (some
-      // callers, e.g. plain vol history, don't need real dates).
+      // Fall back to the index when no timestamp array is present. Some
+      // callers, for example plain vol history, do not need real dates.
       const t = typeof timestamps?.[i] === 'number' ? timestamps[i] : i;
       out.push({ t, close: c });
     }
@@ -107,9 +107,9 @@ async function fetchHistVolStooq(symbol: string): Promise<HistVolResult> {
   };
 }
 
-/** `symbol` is Yahoo-style (BA, ^SPX, BMW.DE). Yahoo chart endpoint first
- * (near-live daily closes), Stooq as backup — Stooq frequently serves an
- * HTML bot-challenge with HTTP 200 instead of CSV. */
+/** `symbol` is Yahoo-style (BA, ^SPX, BMW.DE). Tries the Yahoo chart
+ * endpoint first, for near-live daily closes, then Stooq as backup. Stooq
+ * frequently serves an HTML bot-challenge with HTTP 200 instead of CSV. */
 export async function fetchHistVol(symbol: string): Promise<HistVolResult> {
   try {
     return await fetchHistVolYahoo(symbol);
@@ -169,9 +169,10 @@ export async function fetchRefRate(currency: string): Promise<RefRateResult> {
 }
 
 /**
- * Fetches ~1Y of daily (timestamp, close) bars for a Yahoo-style symbol via
- * the same chart endpoint used for spot/hist-vol. Works for equities and FX
- * pairs alike (Yahoo serves FX crosses as `{BASE}{QUOTE}=X`).
+ * Fetches about 1 year of daily (timestamp, close) bars for a Yahoo-style
+ * symbol, via the same chart endpoint used for spot and hist-vol. Works for
+ * equities and FX pairs alike; Yahoo serves FX crosses as
+ * `{BASE}{QUOTE}=X`.
  */
 export async function fetchDailyCloses(yahooSymbol: string): Promise<DatedClose[]> {
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=1y&interval=1d`;
@@ -193,9 +194,10 @@ function utcDateKey(epochSeconds: number): string {
 
 /**
  * Pearson correlation of daily log-returns between two dated close series,
- * aligned by UTC calendar date (the two series may have different lengths
- * and different trading calendars — FX trades ~365 days/yr, equities fewer).
- * Throws if fewer than 30 overlapping days remain after alignment.
+ * aligned by UTC calendar date. The two series may have different lengths
+ * and different trading calendars; FX trades about 365 days a year,
+ * equities fewer. Throws if fewer than 30 overlapping days remain after
+ * alignment.
  */
 export function realizedCorrelation(a: DatedClose[], b: DatedClose[]): number {
   const bByDate = new Map<string, number>();
@@ -246,11 +248,11 @@ export interface FxRealizedResult {
 }
 
 /**
- * Realized FX vol and equity–FX correlation for a quanto note, from Yahoo
- * daily closes (~1Y). FX rate X is quoted as units of NOTE currency per 1
- * unit of UNDERLYING currency (`{UNDERLYING}{NOTE}=X`), matching the
- * riskNeutralDrift sign convention and the "FX quoted as note per underlying"
- * caption.
+ * Realized FX vol and equity-FX correlation for a quanto note, from Yahoo
+ * daily closes, about 1 year. FX rate X is quoted as units of NOTE
+ * currency per 1 unit of UNDERLYING currency (`{UNDERLYING}{NOTE}=X`).
+ * This matches the riskNeutralDrift sign convention and the "FX quoted as
+ * note per underlying" caption.
  */
 export async function fetchFxRealizedVolAndCorr(
   underlyingCcy: string,

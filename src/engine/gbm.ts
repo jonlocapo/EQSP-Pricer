@@ -7,14 +7,14 @@ import { normals } from './rng';
 export const STEPS_PER_YEAR = 252;
 
 /**
- * Fills `spots` (length nSteps+1) with a single log-Euler GBM path under the
- * risk-neutral measure, driven by the standard normals in `z` (length
- * nSteps). `sign` flips the driving noise for antithetic pairs.
+ * Fills `spots`, length nSteps+1, with a single log-Euler GBM path under the
+ * risk-neutral measure, driven by the standard normals in `z`, length
+ * nSteps. `sign` flips the driving noise for antithetic pairs.
  *
- * `drift`/`diffCoeff` are PER-STEP precomputed arrays (length nSteps, one
- * entry per simulation step) rather than a single scalar, so this same loop
- * works for both a uniform (daily) grid and a non-uniform (adaptive/compact)
- * grid without any extra branching in the hot path — see
+ * `drift` and `diffCoeff` are PER-STEP precomputed arrays, length nSteps,
+ * one entry per simulation step, rather than a single scalar. So this same
+ * loop works for both a uniform (daily) grid and a non-uniform
+ * (adaptive/compact) grid, without any extra branching in the hot path. See
  * `PathBatchGenerator`'s constructor, which computes these arrays ONCE, not
  * per path.
  */
@@ -34,14 +34,15 @@ export function fillPath(
 }
 
 /**
- * A pre-drawn slice of driving normals, in the exact order `PathBatchGenerator`
- * would draw them itself (see rng.ts's `normals` + this file's default draw
- * loop): one Float64Array of length `nSteps` per antithetic pair (shared by
- * `plus`/`minus` — the sign flip happens in `fillPath`, not in the draw), or
- * one per single path. Supplying this to `PathBatchGenerator` skips Box-Muller
- * entirely — normals depend only on (seed, nSteps, antithetic, path count),
- * never on market data, so the same `ZSlice` is valid for any market. See
- * `pathCache.ts`'s normals cache, which is what produces/caches these.
+ * A pre-drawn slice of driving normals, in the exact order
+ * `PathBatchGenerator` would draw them itself (see rng.ts's `normals` and
+ * this file's default draw loop). It holds one Float64Array of length
+ * `nSteps` per antithetic pair, shared by `plus` and `minus` — the sign
+ * flip happens in `fillPath`, not in the draw — or one per single path.
+ * Supplying this to `PathBatchGenerator` skips Box-Muller entirely. Normals
+ * depend only on (seed, nSteps, antithetic, path count), never on market
+ * data. So the same `ZSlice` is valid for any market. See `pathCache.ts`'s
+ * normals cache, which produces and caches these.
  */
 export interface ZSlice {
   antithetic: boolean;
@@ -51,7 +52,7 @@ export interface ZSlice {
 
 /**
  * Generates antithetic path pairs, reusing preallocated buffers across
- * calls. Callers must fully consume (or copy) the returned arrays before
+ * calls. Callers must fully consume, or copy, the returned arrays before
  * requesting the next pair.
  */
 export class PathBatchGenerator {
@@ -67,27 +68,27 @@ export class PathBatchGenerator {
   private zIdx = 0;
 
   /**
-   * `stepDt` is either a single scalar (uniform/daily grid — every existing
-   * call site that only ever priced a daily grid keeps working unchanged)
-   * or a per-step Float64Array/number[] of length `nSteps` (a compact,
-   * possibly non-uniform adaptive grid). Either way, `drift[i]`/
-   * `diffCoeff[i]` are precomputed ONCE here, never per path — the inner
-   * loop in `fillPath` stays one `Math.exp` plus a couple of multiplies
+   * `stepDt` is either a single scalar — a uniform, daily, grid; every
+   * existing call site that only ever priced a daily grid keeps working
+   * unchanged — or a per-step Float64Array/number[] of length `nSteps`, a
+   * compact, possibly non-uniform, adaptive grid. Either way, `drift[i]`
+   * and `diffCoeff[i]` are precomputed ONCE here, never per path. The inner
+   * loop in `fillPath` stays one `Math.exp` plus a couple of multiplies,
    * regardless of grid shape.
    *
    * BIT-IDENTITY: the scalar branch computes `drift`/`diffCoeff` exactly
-   * once (same arithmetic, same operand order as the pre-adaptive-grid
-   * engine) and fills every slot with that identical double via
-   * `Float64Array.fill`, so a uniform grid's paths are byte-identical to
-   * before this change.
+   * once, using the same arithmetic and the same operand order as the
+   * pre-adaptive-grid engine, and fills every slot with that identical
+   * double via `Float64Array.fill`. So a uniform grid's paths are
+   * byte-identical to before this change.
    */
   /**
-   * `zSlice`, when provided, replaces live Box-Muller draws with replay of a
-   * pre-drawn normals slice (see `pathCache.ts`'s normals cache) — `seed` is
-   * then unused for normals (drift/diffCoeff computation below is unaffected
-   * either way). Omitting it preserves the exact prior behavior (live draw
-   * from `normals(seed)`), so every existing call site (runMc, lsmc, tests)
-   * is untouched and bit-identical.
+   * `zSlice`, when provided, replaces live Box-Muller draws with a replay
+   * of a pre-drawn normals slice (see `pathCache.ts`'s normals cache).
+   * `seed` is then unused for normals; the drift/diffCoeff computation
+   * below is unaffected either way. Omitting `zSlice` preserves the exact
+   * prior behavior, a live draw from `normals(seed)`. So every existing
+   * call site — runMc, lsmc, tests — is untouched and bit-identical.
    */
   constructor(
     seed: number,
@@ -129,7 +130,8 @@ export class PathBatchGenerator {
 
   /** Draws one antithetic pair, filling z once and reusing the two buffers.
    * When constructed with a `zSlice`, replays the next stored z instead of
-   * drawing (no Box-Muller) — same `fillPath` call either way. */
+   * drawing, with no Box-Muller. Either way, the `fillPath` call is the
+   * same. */
   nextPair(): { plus: Float64Array; minus: Float64Array } {
     const z = this.zSlice ? this.zSlice.pairs![this.zIdx++] : this.liveZ();
     fillPath(this.plusBuf, this.s0, this.drift, this.diffCoeff, z, 1);
@@ -144,8 +146,8 @@ export class PathBatchGenerator {
     return this.plusBuf;
   }
 
-  /** Draws nSteps fresh normals into the reusable `z` buffer (live mode
-   * only — see constructor). */
+  /** Draws nSteps fresh normals into the reusable `z` buffer. Live mode
+   * only — see constructor. */
   private liveZ(): Float64Array {
     for (let i = 0; i < this.nSteps; i++) this.z[i] = this.nextNormal!();
     return this.z;

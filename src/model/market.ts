@@ -1,10 +1,10 @@
 import type { VolSurface } from './volSurface';
 
 /**
- * Quanto parameters for a cross-currency note, i.e. a trade whose underlying
- * trades in one currency while the payoff settles 1:1 in a different note
- * currency. Every payoff in this app is a function of performance S_T/S_0
- * paid in the note currency, so any currency mismatch is a quanto.
+ * Quanto parameters for a cross-currency note. In this trade, the underlying
+ * trades in one currency, but the payoff settles 1:1 in a different note
+ * currency. Every payoff in this app is a function of performance S_T/S_0,
+ * paid in the note currency. So any currency mismatch makes the note a quanto.
  */
 export interface QuantoParams {
   /** Underlying-currency risk-free rate, decimal. */
@@ -16,24 +16,25 @@ export interface QuantoParams {
 }
 
 /**
- * Costs a real issuer embeds but a textbook risk-neutral price ignores. These
- * are the difference between a fair value and a level a bank actually quotes,
- * so they are modelled explicitly and shown separately rather than hidden in a
- * fudged volatility.
+ * Costs a real issuer embeds. A textbook risk-neutral price ignores these
+ * costs. The costs create the difference between a fair value and the level a
+ * bank actually quotes. The model shows each cost explicitly, separate from
+ * the price, instead of hiding it inside a fudged volatility.
  *
- * SIGNS MATTER, and they do not all point the same way:
+ * SIGNS MATTER. The costs do not all move the price the same way:
  *  - `fundingSpreadBp` makes a bank quote MORE generously, not less. A note is
- *    a funding instrument: the issuer discounts its own liability at its
- *    funding curve (rate + spread), which makes the bond component cheaper and
- *    frees cash to buy optionality — that is why a wide-funding issuer can pay
+ *    a funding instrument. The issuer discounts its own liability at its
+ *    funding curve (rate + spread). This makes the bond component cheaper and
+ *    frees cash to buy optionality. That is why a wide-funding issuer can pay
  *    a higher coupon.
- *  - `borrowCostBp` is a market CARRY input, not a desk charge: it lowers the
- *    forward, which makes the put the investor is short worth more, lowers the
- *    note's value, and so RAISES the solved coupon (measured: +0.13 coupon
- *    points per 100bp on a 1y 60%-barrier note). If you want a borrow charge
- *    that reduces what is payable instead, model it as fee, not as carry.
- *  - `feePct` is the distribution fee / margin the bank retains. It reduces the
- *    value put into the structure and is the dominant reason a bank's quote is
+ *  - `borrowCostBp` is a market CARRY input, not a desk charge. It lowers the
+ *    forward. A lower forward raises the value of the put the investor is
+ *    short, which lowers the note's value, and so RAISES the solved coupon
+ *    (measured: +0.13 coupon points per 100bp on a 1y 60%-barrier note). To
+ *    model a borrow charge that reduces the payable amount instead, use fee,
+ *    not carry.
+ *  - `feePct` is the distribution fee, the margin the bank retains. It reduces
+ *    the value put into the structure. It is the main reason a bank's quote is
  *    less aggressive than fair value.
  */
 export interface CostParams {
@@ -59,22 +60,23 @@ export interface MarketData {
   divYield: number;
   currency: string;
   /**
-   * Present iff this is a cross-currency (quanto) note — underlying and note
-   * currencies differ. Absent means single-currency: today's behavior,
-   * drift = rate − divYield. When present, drift uses the quanto-adjusted
-   * risk-neutral measure (see riskNeutralDrift); discounting always stays at
-   * the note `rate`.
+   * Present only for a cross-currency (quanto) note, where the underlying and
+   * note currencies differ. Absent means a single-currency note: today's
+   * behavior, with drift = rate − divYield. When present, drift uses the
+   * quanto-adjusted risk-neutral measure (see riskNeutralDrift). Discounting
+   * always stays at the note `rate`.
    */
   quanto?: QuantoParams;
   /**
-   * Issuer/desk costs. Absent means a pure risk-neutral fair value — today's
-   * behavior, and still the right default for a theoretical price.
+   * Issuer and desk costs. Absent means a pure risk-neutral fair value,
+   * today's behavior. This is still the right default for a theoretical
+   * price.
    */
   costs?: CostParams;
   /**
-   * Implied-vol surface built from a fetched option chain. When present the
+   * Implied-vol surface built from a fetched option chain. When present, the
    * engine prices a product at the vol of ITS OWN risk strike (see
-   * engine/riskStrike) instead of the flat `vol`, which matters because these
+   * engine/riskStrike), instead of the flat `vol`. This matters because these
    * payoffs live away from the money. Absent means flat-vol pricing.
    */
   volSurface?: VolSurface;
@@ -88,18 +90,19 @@ export const DEFAULT_MARKET: MarketData = {
   currency: 'EUR',
 };
 
-/** Note currencies the app can quote in (it can only source reference rates
- * for EUR and USD; the rest must be entered by hand). Shared so the picker and
- * the "currency follows the underlying" logic can't drift apart. */
+/** Note currencies the app can quote in. The app can source reference rates
+ * only for EUR and USD; enter the rest by hand. Both the picker and the
+ * "currency follows the underlying" logic share this list, so they cannot
+ * drift apart. */
 export const SUPPORTED_CURRENCIES = ['EUR', 'USD', 'CHF', 'GBP', 'JPY'];
 
 /**
  * Risk-neutral drift of the underlying under the note-currency measure.
  * Single-currency: mu = rate − divYield.
  * Quanto: mu = rateUnderlying − divYield − corrEqFx · vol · fxVol.
- * Borrow cost, when set, is carried like an extra dividend: it lowers the
- * forward, which makes the puts these notes are short more expensive.
- * Discounting is unaffected here — see `discountRate`.
+ * When set, the borrow cost acts like an extra dividend. It lowers the
+ * forward, which raises the value of the puts these notes are short.
+ * Discounting is unaffected here. See `discountRate`.
  */
 export function riskNeutralDrift(m: MarketData): number {
   const borrow = (m.costs?.borrowCostBp ?? 0) / 10_000;
@@ -111,10 +114,10 @@ export function riskNeutralDrift(m: MarketData): number {
 
 /**
  * Rate used to discount the note's own cashflows. A note is a funded
- * liability of the issuer, so it is discounted on the issuer's curve
- * (risk-free + funding spread), not the risk-free curve. A wider spread lowers
- * the present value of the bond component, which is precisely the funding
- * benefit that lets an issuer pay a higher coupon.
+ * liability of the issuer. So the model discounts it on the issuer's curve
+ * (risk-free + funding spread), not the risk-free curve. A wider spread
+ * lowers the present value of the bond component. This is precisely the
+ * funding benefit that lets an issuer pay a higher coupon.
  */
 export function discountRate(m: MarketData): number {
   return m.rate + (m.costs?.fundingSpreadBp ?? 0) / 10_000;

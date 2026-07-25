@@ -1,24 +1,26 @@
 /**
  * Single-entry cache of raw simulated GBM paths, scoped to the worker
- * module (a module-level singleton — persists across `executePriceRequest`
- * calls within the same worker instance, not per-request).
+ * module. This is a module-level singleton. It persists across
+ * `executePriceRequest` calls within the same worker instance, not per
+ * request.
  *
- * Path *generation* (GBM stepping) is the expensive part of MC pricing;
- * payoff *evaluation* is comparatively cheap. Generated paths depend only on
+ * Path *generation* (GBM stepping) is the expensive part of MC pricing.
+ * Payoff *evaluation* is comparatively cheap. Generated paths depend only on
  * market data, MC settings (numPaths/seed/antithetic), and the path grid
- * shape (nSteps/dtYears) — not on product terms (strikes/barriers/coupons).
- * So during a solve-for (many `priceOnce` calls, same market+mc+tenor, only
- * the product spec changing) the same raw paths can be reused across every
- * iteration, re-running only the cheap evaluator.
+ * shape (nSteps/dtYears). They do not depend on product terms
+ * (strikes/barriers/coupons). So during a solve-for — many `priceOnce` calls
+ * with the same market, MC settings, and tenor, where only the product spec
+ * changes — the solver can reuse the same raw paths across every iteration,
+ * and re-run only the cheap evaluator.
  *
- * Capped at a single key (evict-and-replace on any mismatch) to bound
- * memory: 100k paths × ~253 steps × 8 bytes ≈ 200MB is already a lot to
- * hold once; multiple entries would multiply that.
+ * The cache is capped at a single key: any mismatch evicts and replaces the
+ * entry, to bound memory. 100k paths × ~253 steps × 8 bytes is already about
+ * 200MB to hold once; multiple entries would multiply that.
  *
- * `runMc` (streaming, no retention) is untouched by this module — it stays
- * the small/serial/test-facing API. This cache is a worker-side optimization
- * layered on top via `evaluatePathSource`, so cache hits are byte-identical
- * to a fresh `runMc` run of the same spec.
+ * This module leaves `runMc` (streaming, no retention) untouched — `runMc`
+ * stays the small, serial, test-facing API. This cache is a worker-side
+ * optimization layered on top via `evaluatePathSource`. So a cache hit is
+ * byte-identical to a fresh `runMc` run of the same spec.
  */
 import type { MarketData } from '../model/market';
 import { PathBatchGenerator } from './gbm';
@@ -41,8 +43,9 @@ interface StoredSlice {
   singles?: Float64Array[];
 }
 
-/** Same shape as StoredSlice but holding cached per-path observables instead
- * of raw spots — the "handful of floats each" that Phase A produces. */
+/** Same shape as StoredSlice, but holds cached per-path observables instead
+ * of raw spots. Phase A produces these observables, a handful of floats
+ * each. */
 interface StoredObservablesSlice {
   antithetic: boolean;
   pairs?: { plus: PathObservables; minus: PathObservables }[];
@@ -80,19 +83,19 @@ export interface CacheKeyParams {
   antithetic: boolean;
   nSteps: number;
   /** Cheap, stable digest of the grid's per-step-time vector (see
-   * `gridTimesDigest`) — NOT just nSteps/dtYears. An adaptive (possibly
-   * non-uniform) grid can have two different `times` vectors for the same
-   * nSteps (e.g. a quarterly-coupon-only schedule vs. a merged
-   * quarterly-coupon + monthly-call schedule can happen to produce the same
-   * step count), so nSteps alone is not a safe cache key component any
-   * more — it would let two genuinely different grids collide and replay
-   * the wrong paths. */
+   * `gridTimesDigest`), NOT just nSteps/dtYears. An adaptive, possibly
+   * non-uniform, grid can have two different `times` vectors for the same
+   * nSteps. For example, a quarterly-coupon-only schedule and a merged
+   * quarterly-coupon plus monthly-call schedule can happen to produce the
+   * same step count. So nSteps alone is no longer a safe cache key
+   * component. Using nSteps alone would let two genuinely different grids
+   * collide and replay the wrong paths. */
   timesKey: string;
 }
 
-/** Cheap, stable digest of a grid's step-time vector for use in a cache key.
- * `times` arrays are small (at most a few hundred entries, even for the
- * daily grid), so a full join is cheap and unambiguous — this only runs
+/** Cheap, stable digest of a grid's step-time vector, for use in a cache
+ * key. `times` arrays are small, at most a few hundred entries even for the
+ * daily grid. So a full join is cheap and unambiguous. This function runs
  * once per `priceOnce` call, never per path. */
 export function gridTimesDigest(grid: PricingGrid): string {
   return `${grid.nSteps}:${grid.times.join(',')}`;
@@ -122,16 +125,18 @@ export function computeCacheKey(p: CacheKeyParams): string {
 }
 
 /**
- * Observables depend on the raw paths (already covered by `computeCacheKey`)
- * plus the observation index sets (grid.couponObs / grid.callObs) and the
- * requirements descriptor (which of minPerf/maxPerf Phase A actually tracks
- * — see `ObservablesRequirements`) — NOT on any numeric spec parameter
- * (barrier/coupon LEVELS). During a typical solve the schedule and
- * monitoring MODE are fixed (only levels change) so this key stays constant
- * and observables hit on every iteration after the first; if the schedule
- * or monitoring mode itself changes (e.g. couponFrequency, or barrierType
- * flips european->american, mid live-solve), this key changes, the raw
- * paths still hit (unaffected), and observables recompute from them.
+ * Observables depend on the raw paths, already covered by
+ * `computeCacheKey`, plus the observation index sets (grid.couponObs /
+ * grid.callObs) and the requirements descriptor. The requirements
+ * descriptor says which of minPerf/maxPerf Phase A actually tracks (see
+ * `ObservablesRequirements`). Observables do NOT depend on any numeric spec
+ * parameter, such as barrier or coupon LEVELS. During a typical solve, the
+ * schedule and monitoring MODE stay fixed and only levels change. So this
+ * key stays constant, and observables hit on every iteration after the
+ * first. If the schedule or monitoring mode itself changes mid live-solve —
+ * for example couponFrequency changes, or barrierType flips from european to
+ * american — this key changes. The raw paths still hit, unaffected, and
+ * observables recompute from them.
  */
 export function computeObservablesKey(pathKey: string, grid: PricingGrid, requirements: ObservablesRequirements): string {
   return `${pathKey}|obs:${stableStringify({
@@ -143,21 +148,22 @@ export function computeObservablesKey(pathKey: string, grid: PricingGrid, requir
 }
 
 /**
- * Single-entry cache of the driving normals (Box-Muller output), separate
- * from the raw-path cache above and keyed WITHOUT market data — normals
- * depend only on (seed, numPaths, antithetic, nSteps): the mulberry32 stream
- * is seeded per-slice (`seed + s*7919`, same derivation as the raw cache) and
- * `nSteps` values are drawn per pair/single in sequence, exactly as
- * `PathBatchGenerator` draws them live (see gbm.ts). A spot/vol/rate/div edit
- * or a greeks bump changes `computeCacheKey` (which embeds market) but NOT
- * this key, so those cases hit here even on a raw-path miss: path generation
- * then skips Box-Muller entirely and only re-runs `fillPath`'s cheap `exp`
- * stepping loop.
+ * Single-entry cache of the driving normals (Box-Muller output). This cache
+ * is separate from the raw-path cache above, and its key deliberately
+ * excludes market data. Normals depend only on (seed, numPaths, antithetic,
+ * nSteps). The mulberry32 stream is seeded per-slice (`seed + s*7919`, the
+ * same derivation as the raw cache), and each pair or single draws `nSteps`
+ * values in sequence, exactly as `PathBatchGenerator` draws them live (see
+ * gbm.ts). A spot, vol, rate, or dividend edit, or a greeks bump, changes
+ * `computeCacheKey` (which embeds market) but NOT this key. So those cases
+ * hit here even on a raw-path miss: path generation then skips Box-Muller
+ * entirely, and re-runs only `fillPath`'s cheap `exp` stepping loop.
  *
- * Bounded the same way as the raw-path cache (single logical key,
- * evict-and-replace on mismatch): at 100k paths / 252 steps (antithetic,
- * 50k pairs) this is ~50,000 × 252 × 8 bytes ≈ 100MB, on top of the raw-path
- * cache's own ~200MB when both are populated for the same run.
+ * This cache is bounded the same way as the raw-path cache: a single
+ * logical key, evict-and-replace on mismatch. At 100k paths and 252 steps
+ * (antithetic, 50k pairs), this is about 50,000 × 252 × 8 bytes, roughly
+ * 100MB, on top of the raw-path cache's own roughly 200MB when both are
+ * populated for the same run.
  */
 interface NormalsCacheEntry {
   key: string;
@@ -173,20 +179,21 @@ export interface NormalsKeyParams {
   nSteps: number;
 }
 
-/** Cache key for the normals cache: deliberately excludes market data (spot/
- * vol/rate/div/quanto) and the grid's actual step-time values — normals
- * don't depend on either, only on how many are drawn and in what shape (see
- * module doc above). */
+/** Cache key for the normals cache. It deliberately excludes market data
+ * (spot, vol, rate, div, quanto) and the grid's actual step-time values.
+ * Normals do not depend on either. They depend only on how many values are
+ * drawn, and in what shape (see module doc above). */
 export function computeNormalsKey(p: NormalsKeyParams): string {
   return stableStringify({ numPaths: p.numPaths, seed: p.seed, antithetic: p.antithetic, nSteps: p.nSteps });
 }
 
 /** Draws a fresh `ZSlice` via Box-Muller, in exactly the order
- * `PathBatchGenerator` would draw it live: one `normals(sliceSeed)` stream,
- * consumed `nSteps` values at a time, once per pair (antithetic) or once per
- * single path, in ascending index order — matching `evaluatePathSource`'s
- * `nPairs = Math.max(1, Math.ceil(numPaths / 2))` / `numPaths` consumption
- * counts exactly, so this is bit-identical to the live draw it replaces. */
+ * `PathBatchGenerator` would draw it live. The function consumes one
+ * `normals(sliceSeed)` stream, `nSteps` values at a time, once per pair for
+ * antithetic mode or once per single path, in ascending index order. This
+ * matches `evaluatePathSource`'s consumption counts exactly —
+ * `nPairs = Math.max(1, Math.ceil(numPaths / 2))` for pairs, `numPaths` for
+ * singles. So the result is bit-identical to the live draw it replaces. */
 function generateZSlice(sliceSeed: number, nSteps: number, antithetic: boolean, slicePaths: number): ZSlice {
   const draw = normals(sliceSeed);
   if (antithetic) {
@@ -208,10 +215,10 @@ function generateZSlice(sliceSeed: number, nSteps: number, antithetic: boolean, 
   return { antithetic: false, singles };
 }
 
-/** Fetches (generating + storing on first access) the `ZSlice` for
- * (key, sliceIndex). A key mismatch against the currently-cached entry
- * evicts it entirely (single-entry cache, same discipline as the raw-path
- * cache above). */
+/** Fetches the `ZSlice` for (key, sliceIndex), generating and storing it on
+ * first access. A key mismatch against the currently cached entry evicts
+ * the entry entirely. This is a single-entry cache, the same discipline as
+ * the raw-path cache above. */
 function getOrCreateZSlice(
   key: string,
   sliceIndex: number,
@@ -245,9 +252,9 @@ class ReplayPathSource implements PathSource {
   }
 }
 
-/** Wraps a live `PathBatchGenerator`, copying (not just streaming-through)
- * every path it produces so the whole slice can be retained after this
- * pass — the generator's own buffers are overwritten in place. */
+/** Wraps a live `PathBatchGenerator`. It copies, not just streams through,
+ * every path the generator produces, so the pass can retain the whole slice
+ * afterward. The generator's own buffers get overwritten in place. */
 class RecordingPathSource implements PathSource {
   private readonly pairs: { plus: Float64Array; minus: Float64Array }[] = [];
   private readonly singles: Float64Array[] = [];
@@ -272,15 +279,15 @@ class RecordingPathSource implements PathSource {
 }
 
 /**
- * Evaluates one "slice" of a cacheable MC run: on a cache hit, replays the
- * stored paths for (key, sliceIndex); on a miss, generates them fresh (with
- * `sliceSeed`), stores a full copy, and evaluates in the same pass. Either
- * way the aggregation goes through `evaluatePathSource`, so results are
- * numerically identical to an uncached `runMc` call with the same
- * numPaths/seed/antithetic/nSteps/dtYears/s0/market.
+ * Evaluates one "slice" of a cacheable MC run. On a cache hit, the function
+ * replays the stored paths for (key, sliceIndex). On a miss, it generates
+ * fresh paths with `sliceSeed`, stores a full copy, and evaluates in the
+ * same pass. Either way, the aggregation goes through `evaluatePathSource`.
+ * So results are numerically identical to an uncached `runMc` call with the
+ * same numPaths, seed, antithetic, nSteps, dtYears, s0, and market.
  *
- * A key mismatch against the currently-cached entry evicts it entirely
- * (single-entry cache).
+ * A key mismatch against the currently cached entry evicts the entry
+ * entirely. This is a single-entry cache.
  */
 export function evaluateCachedSlice(
   key: string,
@@ -307,12 +314,13 @@ export function evaluateCachedSlice(
     return agg.finalize(false, referenceLevelPct);
   }
 
-  // Raw-path miss: still try the normals cache first (keyed without market —
-  // see computeNormalsKey) so a market-only change (spot/vol/rate/div edit,
-  // greeks bump) replays already-drawn normals instead of paying Box-Muller
-  // again. `normalsKey` is optional only so this function keeps working for
-  // any caller that doesn't have one handy; omitting it just means every
-  // call draws fresh (the pre-normals-cache behavior).
+  // Raw-path miss: still try the normals cache first (keyed without market
+  // data — see computeNormalsKey). This lets a market-only change (spot,
+  // vol, rate, or div edit, or a greeks bump) replay already-drawn normals,
+  // instead of paying for Box-Muller again. `normalsKey` is optional only so
+  // this function keeps working for any caller that does not have one
+  // handy. Omitting it just means every call draws fresh normals, the
+  // pre-normals-cache behavior.
   const zSlice = normalsKey
     ? getOrCreateZSlice(normalsKey, sliceIndex, sliceSeed, slicePaths, antithetic, nSteps)
     : undefined;
@@ -323,8 +331,8 @@ export function evaluateCachedSlice(
   return agg.finalize(false, referenceLevelPct);
 }
 
-/** Replays a previously-stored observables slice in the exact order it was
- * computed (which mirrors the raw slice's generation order). */
+/** Replays a previously stored observables slice in the exact order it was
+ * computed. This order mirrors the raw slice's generation order. */
 class ObservablesReplaySource implements PathSource<PathObservables> {
   private pairIdx = 0;
   private singleIdx = 0;
@@ -340,7 +348,8 @@ class ObservablesReplaySource implements PathSource<PathObservables> {
 }
 
 /** Maps Phase A over an already-stored raw slice, preserving pair/single
- * structure and order exactly (no GBM cost — the paths already exist). */
+ * structure and order exactly. This has no GBM cost, because the paths
+ * already exist. */
 function computeObservablesSlice(stored: StoredSlice, observables: ObservablesEvaluator): StoredObservablesSlice {
   if (stored.antithetic) {
     return {
@@ -352,23 +361,26 @@ function computeObservablesSlice(stored: StoredSlice, observables: ObservablesEv
 }
 
 /**
- * Split-evaluator counterpart to `evaluateCachedSlice`: reuses the same
+ * Split-evaluator counterpart to `evaluateCachedSlice`. It reuses the same
  * single-entry raw-path cache, plus a second single-entry cache of per-path
- * observables (Phase A output) keyed by `observablesKey`.
+ * observables (Phase A output), keyed by `observablesKey`.
  *
- * On a raw-path hit + observables hit: replays cached observables straight
- * into Phase B (`outcome`) — no path walk at all.
- * On a raw-path hit + observables miss (schedule changed): recomputes
- * observables from the already-cached raw paths (cheap — no GBM), then
- * evaluates.
- * On a raw-path miss: generates + stores raw paths (as `evaluateCachedSlice`
- * does), evaluating via `outcome(observables(spots))` — which is exactly the
- * monolithic evaluator's composition (see tests/observables.test.ts) — then
- * separately computes and stores observables for future hits.
+ * On a raw-path hit plus an observables hit: the function replays cached
+ * observables straight into Phase B (`outcome`). No path walk happens at
+ * all.
+ * On a raw-path hit plus an observables miss (the schedule changed): the
+ * function recomputes observables from the already-cached raw paths. This
+ * is cheap, because it needs no GBM. Then it evaluates.
+ * On a raw-path miss: the function generates and stores raw paths, as
+ * `evaluateCachedSlice` does, evaluating via `outcome(observables(spots))`.
+ * This composition is exactly the monolithic evaluator's composition (see
+ * tests/observables.test.ts). Then the function separately computes and
+ * stores observables for future hits.
  *
- * Either way, aggregation goes through `evaluatePathSource` with the same
- * pair/single ordering as the raw-path case, so results are byte-identical
- * to `evaluateCachedSlice`/`runMc` with an equivalent monolithic evaluator.
+ * In every case, aggregation goes through `evaluatePathSource` with the same
+ * pair/single ordering as the raw-path case. So results are byte-identical
+ * to `evaluateCachedSlice` or `runMc` with an equivalent monolithic
+ * evaluator.
  */
 export function evaluateCachedSliceSplit(
   key: string,
@@ -410,11 +422,11 @@ export function evaluateCachedSliceSplit(
     return agg.finalize(false, referenceLevelPct);
   }
 
-  // Full miss: generate + store raw paths, evaluating via the exact same
+  // Full miss: generate and store raw paths, evaluating via the exact same
   // composition (outcome ∘ observables) proven equivalent to the monolithic
-  // evaluator, so this branch is byte-identical to evaluateCachedSlice's
-  // miss path with the monolithic evaluator. Same normals-cache reuse as
-  // evaluateCachedSlice — see its comment.
+  // evaluator. So this branch is byte-identical to evaluateCachedSlice's
+  // miss path with the monolithic evaluator. It reuses the normals cache the
+  // same way evaluateCachedSlice does — see its comment.
   const zSlice = normalsKey
     ? getOrCreateZSlice(normalsKey, sliceIndex, sliceSeed, slicePaths, antithetic, nSteps)
     : undefined;

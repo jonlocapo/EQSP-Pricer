@@ -21,25 +21,26 @@ interface MarketState {
   manualOverride: boolean;
   /**
    * Currency the underlying actually trades in, per the last successful
-   * spot fetch (Yahoo meta). May differ from `market.currency` (the trade's
-   * settlement currency) — that's a quanto/composite note. When it differs,
-   * MarketPanel shows quanto inputs that populate `market.quanto`; see its
-   * warning line.
+   * spot fetch (Yahoo meta). May differ from `market.currency`, the
+   * trade's settlement currency. That difference makes it a quanto or
+   * composite note. When it differs, MarketPanel shows quanto inputs that
+   * populate `market.quanto` — see its warning line.
    */
   underlyingCurrency?: string;
   setMarket: (patch: Partial<MarketData>) => void;
   /**
-   * Sets or clears the quanto params without flagging `manualOverride` (that
-   * flag tracks manual spot edits, not the quanto/cross-currency mechanics).
+   * Sets or clears the quanto params without flagging `manualOverride`.
+   * That flag tracks manual spot edits, not the quanto or cross-currency
+   * mechanics.
    */
   setQuanto: (quanto: QuantoParams | undefined) => void;
   setUnderlyingName: (name: string) => void;
-  /** Set from a search pick: symbol + display name + inferred asset type. */
-  /** `currency` is the underlying's listing currency when the ticker search
-   * reported one. It seeds the note currency (so picking a US name switches
-   * the note to USD rather than silently leaving a quanto) while remaining
-   * manually overridable, and always records underlyingCurrency for quanto
-   * detection even when the note can't be quoted in it. */
+  /** Set from a search pick: symbol, display name, and inferred asset type. */
+  /** `currency` is the underlying's listing currency, when the ticker
+   * search reported one. It seeds the note currency, so picking a US name
+   * switches the note to USD rather than silently leaving a quanto, while
+   * remaining manually overridable. It always records underlyingCurrency
+   * for quanto detection, even when the note cannot be quoted in it. */
   setUnderlying: (ticker: string, name: string, assetType: AssetType, currency?: string) => void;
   setAssetType: (t: AssetType) => void;
   setFetchStatus: (s: FetchStatus) => void;

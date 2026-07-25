@@ -8,11 +8,12 @@ interface Pending {
   onProgress: (p: ProgressUpdate) => void;
 }
 
-/** Cap on pool size: `priceOnce`'s slices are only ever as numerous as
- * `numPaths / 20_000` (5 for a 100k-path run), and each pool worker holds
- * its own ~100-300MB of path/normals caches (see pathCache.ts) once warm —
- * more workers than that buys nothing and multiplies memory, so this is a
- * sensible ceiling regardless of how many cores the machine reports. */
+/** Cap on pool size. `priceOnce`'s slices are only ever as numerous as
+ * `numPaths / 20_000`, 5 for a 100k-path run. Each pool worker holds its
+ * own roughly 100-300MB of path and normals caches (see pathCache.ts) once
+ * warm. More workers than that buys nothing and multiplies memory. So this
+ * is a sensible ceiling, regardless of how many cores the machine
+ * reports. */
 const MAX_POOL_SIZE = 8;
 const MIN_POOL_SIZE = 4;
 
@@ -32,27 +33,29 @@ function spawnWorker(): Worker {
 /**
  * PricerClient backed by a pool of identical Monte Carlo Web Workers.
  *
- * Worker 0 is the "coordinator": the main thread only ever talks to it
- * (same wire protocol as the original single-worker client — WorkerRequest/
- * WorkerResponse, unchanged), and it alone runs `executePriceRequest`
- * (including the LSMC/issuerCallable branch, which stays one synchronous
- * pass on that single worker). For the ordinary Monte Carlo slice loop, the
- * coordinator farms slices out across the rest of the pool via sibling
- * MessageChannel ports wired up below (`pricer.worker.ts`'s
- * `PoolSliceRunner`) — `s % poolSize` assignment, so the same slice always
- * lands on the same worker across a solve's many `priceOnce` calls, keeping
- * that worker's path/observables/normals caches warm.
+ * Worker 0 is the "coordinator". The main thread only ever talks to it,
+ * using the same wire protocol as the original single-worker client —
+ * WorkerRequest/WorkerResponse, unchanged. It alone runs
+ * `executePriceRequest`, including the LSMC/issuerCallable branch, which
+ * stays one synchronous pass on that single worker. For the ordinary Monte
+ * Carlo slice loop, the coordinator farms slices out across the rest of
+ * the pool via sibling MessageChannel ports wired up below
+ * (`pricer.worker.ts`'s `PoolSliceRunner`). The assignment is
+ * `s % poolSize`, so the same slice always lands on the same worker across
+ * a solve's many `priceOnce` calls. This keeps that worker's path,
+ * observables, and normals caches warm.
  *
- * Falls back to a single worker (poolSize 1, no pool wiring at all) when
- * `navigator.hardwareConcurrency` is 1 or Worker construction throws (e.g.
- * an environment without module worker support) — `pricer.worker.ts`'s
- * `PoolSliceRunner` degrades to "workerIndex is always 0" in that case, so
- * no separate code path is needed for it.
+ * Falls back to a single worker — poolSize 1, no pool wiring at all — when
+ * `navigator.hardwareConcurrency` is 1, or Worker construction throws, for
+ * example in an environment without module worker support. In that case,
+ * `pricer.worker.ts`'s `PoolSliceRunner` degrades to "workerIndex is
+ * always 0". So no separate code path is needed for it.
  */
 export class WorkerPricerClient implements PricerClient {
   private coordinator: Worker;
-  /** Kept alive by holding a reference (nothing else pins them) — never read
-   * again after wiring, but must not be GC'd for the pool to keep working. */
+  /** Kept alive by holding a reference; nothing else pins them. Never read
+   * again after wiring, but must not be garbage-collected for the pool to
+   * keep working. */
   private readonly siblingWorkers: Worker[];
   private pending = new Map<string, Pending>();
 
@@ -66,9 +69,9 @@ export class WorkerPricerClient implements PricerClient {
         siblings.push(spawnWorker());
       }
     } catch {
-      // Worker construction failed (unsupported environment) — fall back to
-      // a single coordinator-only worker; if even that throws, propagate
-      // (there is no usable fallback below "one worker").
+      // Worker construction failed, an unsupported environment. Fall back to
+      // a single coordinator-only worker. If even that throws, propagate the
+      // error; there is no usable fallback below "one worker".
       siblings.length = 0;
       coordinator = spawnWorker();
     }
@@ -129,19 +132,20 @@ export class WorkerPricerClient implements PricerClient {
     });
   }
 
-  /** Cancels at the coordinator; the coordinator forwards a `cancelReq` down
-   * every sibling pool port so a cancel reaches every worker with (or about
-   * to have) in-flight slices for `id` — see pricer.worker.ts's `cancel`
-   * handler. */
+  /** Cancels at the coordinator. The coordinator forwards a `cancelReq`
+   * down every sibling pool port, so a cancel reaches every worker with,
+   * or about to have, in-flight slices for `id` — see pricer.worker.ts's
+   * `cancel` handler. */
   cancel(id: string): void {
     const msg: WorkerRequest = { type: 'cancel', id };
     this.coordinator.postMessage(msg);
   }
 
-  /** Tears down the whole pool (coordinator + siblings). Not currently
-   * called anywhere in the app (the client lives for the page's lifetime),
-   * provided for symmetry/tests and to keep `siblingWorkers` demonstrably
-   * live for the pool's whole lifetime rather than a write-only field. */
+  /** Tears down the whole pool, coordinator and siblings. Not currently
+   * called anywhere in the app; the client lives for the page's lifetime.
+   * Provided for symmetry and tests, and to keep `siblingWorkers`
+   * demonstrably live for the pool's whole lifetime, rather than a
+   * write-only field. */
   terminate(): void {
     this.coordinator.terminate();
     for (const w of this.siblingWorkers) w.terminate();

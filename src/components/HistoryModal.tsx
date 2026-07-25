@@ -25,8 +25,8 @@ export function HistoryModal({ onClose }: HistoryModalProps) {
   const setAccumulatorSolve = useTradeStore((s) => s.setAccumulatorSolve);
 
   // Grouped by underlying, most-recently-used underlying first. `entries` is
-  // already newest-first, so each group's first element is its newest run and
-  // the within-group order needs no extra sorting.
+  // already newest-first. So each group's first element is its newest run,
+  // and the within-group order needs no extra sorting.
   const groups = useMemo(() => {
     const byUnderlying = new Map<string, HistoryEntry[]>();
     for (const e of entries) {
@@ -38,8 +38,8 @@ export function HistoryModal({ onClose }: HistoryModalProps) {
     return [...byUnderlying.entries()].sort((a, b) => b[1][0].timestamp - a[1][0].timestamp);
   }, [entries]);
 
-  // Collapsed rather than expanded state, so groups default to open and a
-  // newly-created group doesn't start hidden.
+  // Collapsed rather than expanded state, so groups default to open, and a
+  // newly created group does not start hidden.
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
 
   function toggleGroup(key: string) {

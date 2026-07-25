@@ -9,11 +9,11 @@ import type { CouponProductSpec } from '../src/model/product';
 /**
  * The DIRECTION each cost and the volatility skew move a solved coupon.
  *
- * Directions are asserted because they are the economically meaningful claim,
- * and because they are easy to get backwards — the borrow sign in this file's
- * first draft was wrong until it was measured. Magnitudes are quoted in
- * comments as of the reference case below; they are not pinned, so ordinary MC
- * noise cannot make this file fail spuriously.
+ * Directions are asserted, because they are the economically meaningful
+ * claim, and because they are easy to get backwards. The borrow sign in
+ * this file's first draft was wrong, until it was measured. Magnitudes are
+ * quoted in comments as of the reference case below. They are not pinned,
+ * so ordinary MC noise cannot make this file fail spuriously.
  */
 
 const hooks: PricingHooks = {
@@ -99,7 +99,7 @@ describe('cost layer — direction each term moves the solved coupon', () => {
     // Measured about -1.54 coupon points for a 1.5% fee on this 1y note.
     expect(withFee).toBeLessThan(base);
     // This is the dominant reason a bank's quote is less aggressive than a
-    // fair value, so the effect must be of fee-like magnitude, not marginal.
+    // fair value. So the effect must be of fee-like magnitude, not marginal.
     expect(base - withFee).toBeGreaterThan(0.5);
   });
 
@@ -114,10 +114,10 @@ describe('cost layer — direction each term moves the solved coupon', () => {
   it('borrow cost RAISES the coupon, because it is carry and not a desk charge', async () => {
     const base = await solvedCoupon(baseMarket);
     const borrowed = await solvedCoupon(withCosts({ borrowCostBp: 100 }));
-    // Borrow lowers the forward -> the put the investor is short is worth more
-    // -> the note is worth less -> the coupon must rise. Measured about +0.13.
-    // (Intuition says "a cost should reduce what is payable" — that would be a
-    // fee, not carry. Getting this backwards is easy; hence the test.)
+    // Borrow lowers the forward. The put the investor is short is worth more.
+    // The note is worth less. The coupon must rise. Measured about +0.13.
+    // Intuition says "a cost should reduce what is payable" — that would be
+    // a fee, not carry. Getting this backwards is easy; hence the test.
     expect(borrowed).toBeGreaterThan(base);
   });
 
@@ -145,7 +145,7 @@ describe('volatility skew — pricing at the risk strike instead of ATM', () => 
       hooks,
     );
     expect(res!.basis!.volSource).toBe('surface');
-    // The 60% knock-in barrier governs the downside, so that is where the
+    // The 60% knock-in barrier governs the downside. So that is where the
     // surface is read — 37% here, not the 25% ATM vol.
     expect(res!.basis!.riskStrikePct).toBe(60);
     expect(res!.basis!.volUsed).toBeCloseTo(0.37, 12);
@@ -173,10 +173,10 @@ describe('volatility skew — pricing at the risk strike instead of ATM', () => 
   it('a skewed surface RAISES the coupon versus flat ATM vol', async () => {
     const flat = await solvedCoupon(baseMarket);
     const skewed = await solvedCoupon({ ...baseMarket, volSurface: skewSurface });
-    // Flat ATM vol underprices a low-barrier knock-in put, which overstates the
-    // note's value and so understates the coupon. Correcting it pushes the
-    // coupon UP (measured about +4.7 on this note) — i.e. skew makes the model
-    // MORE aggressive, so it is not what explains a bank quoting less.
+    // Flat ATM vol underprices a low-barrier knock-in put. That overstates the
+    // note's value, and so understates the coupon. Correcting it pushes the
+    // coupon UP, measured about +4.7 on this note. Skew makes the model MORE
+    // aggressive. So skew is not what explains a bank quoting less.
     expect(skewed).toBeGreaterThan(flat);
   });
 });

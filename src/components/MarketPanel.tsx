@@ -20,11 +20,11 @@ interface FetchLine {
 
 /**
  * One-shot live data fetch. Concurrently:
- *  - spot (Yahoo→Stooq) — also detects the underlying's trading currency
- *  - reference rate (€STR/SOFR) when the note ccy has an open source
- *  - options-implied div yield + ATM vol (CBOE), falling back to 1Y
+ *  - spot, Yahoo then Stooq — also detects the underlying's trading currency
+ *  - reference rate (€STR/SOFR), when the note ccy has an open source
+ *  - options-implied div yield and ATM vol (CBOE), falling back to 1Y
  *    historical vol when the chain is unavailable
- * Applies whatever succeeded; reports each component's outcome loudly.
+ * Applies whatever succeeded, and reports each component's outcome loudly.
  */
 async function fetchLiveData(
   ticker: string,
@@ -67,7 +67,7 @@ async function fetchLiveData(
     const r = impliedR.value;
     // Keep the whole chain as a vol surface, not just the ATM number, so the
     // engine can price each product at its own risk strike. A chain too thin
-    // to build a surface from is not an error — the ATM vol is still good.
+    // to build a surface from is not an error. The ATM vol is still good.
     let surface: VolSurface | undefined;
     let surfaceMsg = '';
     try {
@@ -90,10 +90,10 @@ async function fetchLiveData(
     });
   } else {
     const impliedMsg = impliedR.reason instanceof Error ? impliedR.reason.message : 'failed';
-    // Options chain unavailable — fall back to realized vol; div stays manual.
+    // Options chain unavailable. Fall back to realized vol; div stays manual.
     try {
       const hv = await fetchHistVol(ticker);
-      // Clear any surface from a previous fetch: a realized vol is flat, and
+      // Clear any surface from a previous fetch. A realized vol is flat, and
       // keeping a stale surface would price this underlying on another one's
       // skew.
       useMarketStore.setState((s) => ({ market: { ...s.market, vol: hv.vol, volSurface: undefined } }));
@@ -110,9 +110,9 @@ async function fetchLiveData(
   }
 
   // Cross-currency note: the quanto drift needs the UNDERLYING currency's
-  // rate (not the note rate). Fetch it when there's a mismatch and an open
-  // source exists; FX vol and Eq-FX correlation are auto-filled from Yahoo
-  // 1Y realized FX/equity closes (best-effort, manual edits still override).
+  // rate, not the note rate. Fetch it when there is a mismatch and an open
+  // source exists. FX vol and Eq-FX correlation are auto-filled from Yahoo
+  // 1Y realized FX/equity closes, best-effort; manual edits still override.
   if (underlyingCcy && underlyingCcy !== noteCcy) {
     const cur = useMarketStore.getState().market.quanto;
     if ((REF_RATE_CCYS as readonly string[]).includes(underlyingCcy)) {
@@ -194,15 +194,15 @@ export function MarketPanel() {
 
   const quantoMismatch = !!underlyingCurrency && underlyingCurrency !== market.currency;
 
-  // Costs default to zero (a pure risk-neutral fair value); the badge makes it
-  // obvious when a quoted level is no longer the fair value.
+  // Costs default to zero, a pure risk-neutral fair value. The badge makes
+  // it obvious when a quoted level is no longer the fair value.
   const costs = market.costs ?? NO_COSTS;
   const costsActive = costs.fundingSpreadBp !== 0 || costs.borrowCostBp !== 0 || costs.feePct !== 0;
   const setCosts = (patch: Partial<CostParams>) => setMarket({ costs: { ...costs, ...patch } });
 
   // When a currency mismatch first appears, seed quanto params from the
-  // current note rate; when it resolves (or the underlying ccy is unknown),
-  // clear them so single-currency pricing is untouched.
+  // current note rate. When it resolves, or the underlying ccy is unknown,
+  // clear them, so single-currency pricing is untouched.
   useEffect(() => {
     if (quantoMismatch && !market.quanto) {
       setQuanto({ rateUnderlying: market.rate, fxVol: 0.1, corrEqFx: 0 });
@@ -343,7 +343,7 @@ export function MarketPanel() {
           </div>
         )}
 
-        {/* Issuer/desk costs. A pure risk-neutral price ignores these, which is
+        {/* Issuer and desk costs. A pure risk-neutral price ignores these. That is
          * why a fair value looks more aggressive than a bank's quote. Their
          * signs deliberately differ — see CostParams in model/market.ts. */}
         <div className="field-group">

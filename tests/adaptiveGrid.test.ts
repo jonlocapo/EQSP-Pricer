@@ -12,16 +12,17 @@ import type { EvaluatorContext } from '../src/engine/payoffs/types';
 import type { PriceRequest } from '../src/model/request';
 
 /**
- * CORRECTNESS GATE for the adaptive time grid: for European-only monitoring,
- * stepping the GBM straight to each observation date instead of walking
- * every day is mathematically EXACT (log-increments over a longer step are
- * still exactly lognormal under GBM), not an approximation. This file proves
- * that empirically — the compact grid's price must agree with an explicit
- * daily-grid price of the SAME spec (same seed/market/paths, only the grid's
- * step structure differs) to within Monte Carlo error — and separately pins
- * a case where the closed-form ZCB + BS call identity itself is the
- * reference, so the proof isn't circular (both MC runs could in principle
- * share a bug and still agree with each other).
+ * CORRECTNESS GATE for the adaptive time grid. For European-only
+ * monitoring, stepping the GBM straight to each observation date, instead
+ * of walking every day, is mathematically EXACT under GBM — log-increments
+ * over a longer step are still exactly lognormal — not an approximation.
+ * This file proves that empirically. The compact grid's price must agree
+ * with an explicit daily-grid price of the SAME spec — same seed, market,
+ * and paths, only the grid's step structure differs — to within Monte
+ * Carlo error. It also separately pins a case where the closed-form ZCB +
+ * BS call identity itself is the reference, so the proof is not circular.
+ * Otherwise both MC runs could in principle share a bug and still agree
+ * with each other.
  */
 
 const market: MarketData = { spot: 100, vol: 0.25, rate: 0.02, divYield: 0.02, currency: 'EUR' };
@@ -64,8 +65,9 @@ describe('adaptive grid — compact grid price agrees with the daily grid to wit
 
     const compactGrid = buildGrid(spec);
     const dailyGrid = buildDailyGrid(spec);
-    // Sanity: this spec really does get the speedup (compact grid is much
-    // smaller than the daily grid) and buildGrid picked the compact path.
+    // Sanity: this spec really does get the speedup. The compact grid is
+    // much smaller than the daily grid, and buildGrid picked the compact
+    // path.
     expect(compactGrid.nSteps).toBeLessThan(dailyGrid.nSteps);
     expect(compactGrid.nSteps).toBe(4); // one step per quarter
 
@@ -145,9 +147,9 @@ describe('adaptive grid — compact grid price agrees with the daily grid to wit
   });
 
   it('capital-guaranteed participation (compact grid, through the full pricing pipeline) matches the closed-form ZCB + BS call identity', async () => {
-    // Independent reference: not just "the two MC runs agree with each
-    // other" (which a shared bug could still satisfy) but that the compact
-    // grid's result matches an analytic formula outside the MC engine
+    // Independent reference. This is not just "the two MC runs agree with
+    // each other", which a shared bug could still satisfy. The compact
+    // grid's result must match an analytic formula outside the MC engine
     // entirely — the same identity tests/pricing.test.ts uses for the
     // daily-grid case.
     const capGuar: ParticipationSpec = {
