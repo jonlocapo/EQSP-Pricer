@@ -1,18 +1,30 @@
 /**
- * Market-implied dividend yield and ATM volatility from CBOE's free delayed
- * option chains (no auth; CORS-proxy fallback in the browser).
+ * Market-implied dividend yield and ATM volatility from free option chains.
  *
- * Forward dividend yield via put-call parity at the ATM strike of the expiry
- * nearest the trade tenor:  C − P = S·e^{−qT} − K·e^{−rT}  ⇒
- * q = −ln((C − P + K·e^{−rT}) / S) / T.
- * Exact for European-style options (indices, e.g. SPX); an approximation for
- * American-style single names — callers should label it as such.
+ * Two sources are tried in order:
+ *  1. Yahoo — takes the same symbol the app already stores, so there is no
+ *     per-source symbol mapping to get wrong, and it reports implied vols
+ *     directly.
+ *  2. CBOE delayed quotes — the original source, kept as a fallback. It is
+ *     US-listed only and needs its own symbol roots (see toCboeSymbol).
  *
- * Fails loudly: every unusable condition throws with a specific reason; the
- * caller must surface the message, never fall back silently.
+ * The derivation itself (parity dividend yield + ATM vol) is shared and lives
+ * in ./optionChain, so both sources produce identical results from identical
+ * quotes.
+ *
+ * Fails loudly: if neither source yields a usable chain the error names what
+ * each one said, so the caller can surface it instead of silently falling back.
  */
 import { fetchTextWithCorsFallback } from './spotFetch';
 import { isIndexSymbol, toCboeSymbol } from './symbols';
+import {
+  fetchOptionChainYahoo,
+  impliedFromChain,
+  yearsUntil,
+  type ExpirySlice,
+  type OptionChain,
+  type OptionQuote,
+} from './optionChain';
 
 export interface ImpliedResult {
   divYield: number;
@@ -24,6 +36,8 @@ export interface ImpliedResult {
   source: string;
   /** True when parity is only approximate (American-style options). */
   approximate: boolean;
+  /** The chain the result came from, kept for volatility-surface use. */
+  chain: OptionChain;
 }
 
 interface CboeOption {
@@ -36,18 +50,8 @@ interface CboeOption {
 
 const OPT_RE = /^([A-Z_]+?)(\d{6})([CP])(\d{8})$/;
 
-function midPrice(o: CboeOption): number | null {
-  if (o.bid > 0 && o.ask > 0 && o.ask >= o.bid) return (o.bid + o.ask) / 2;
-  if (o.last_trade_price && o.last_trade_price > 0) return o.last_trade_price;
-  return null;
-}
-
-/** `yahooSymbol` is Yahoo-style (BA, ^SPX); mapped to CBOE internally. */
-export async function fetchImpliedFromOptions(
-  yahooSymbol: string,
-  tenorYears: number,
-  rate: number,
-): Promise<ImpliedResult> {
+/** Fetches CBOE's delayed chain and converts it to the shared chain shape. */
+async function fetchOptionChainCboe(yahooSymbol: string): Promise<OptionChain> {
   const symbol = toCboeSymbol(yahooSymbol);
   const url = `https://cdn.cboe.com/api/global/delayed_quotes/options/${encodeURIComponent(symbol)}.json`;
   let text: string;
@@ -67,88 +71,77 @@ export async function fetchImpliedFromOptions(
     throw new Error(`CBOE returned an empty chain for "${symbol}"`);
   }
 
-  // Group by expiry, then strike.
-  const byExpiry = new Map<string, Map<number, { call?: CboeOption; put?: CboeOption }>>();
+  const byExpiry = new Map<string, { calls: OptionQuote[]; puts: OptionQuote[] }>();
   for (const o of options) {
     const m = OPT_RE.exec(o.option);
     if (!m) continue;
     const [, , yymmdd, cp, strikeRaw] = m;
     const expiry = `20${yymmdd.slice(0, 2)}-${yymmdd.slice(2, 4)}-${yymmdd.slice(4, 6)}`;
-    const strike = Number(strikeRaw) / 1000;
-    let strikes = byExpiry.get(expiry);
-    if (!strikes) byExpiry.set(expiry, (strikes = new Map()));
-    let pair = strikes.get(strike);
-    if (!pair) strikes.set(strike, (pair = {}));
-    if (cp === 'C') pair.call = o;
-    else pair.put = o;
-  }
-
-  const now = Date.now();
-  const msPerYear = 365.25 * 24 * 3600 * 1000;
-  const candidates = [...byExpiry.keys()]
-    .map((e) => ({ expiry: e, tYears: (new Date(`${e}T21:00:00Z`).getTime() - now) / msPerYear }))
-    .filter((c) => c.tYears > 10 / 365)
-    .sort((a, b) => Math.abs(a.tYears - tenorYears) - Math.abs(b.tYears - tenorYears));
-  if (candidates.length === 0) throw new Error('No listed expiry beyond 10 days — cannot imply');
-
-  // Try more than the nearest few expiries: a single illiquid expiry should
-  // never end the search (it used to — see the parity check below).
-  let lastReject = '';
-  for (const { expiry, tYears } of candidates.slice(0, 6)) {
-    const strikes = byExpiry.get(expiry)!;
-    const atmStrikes = [...strikes.keys()]
-      .filter((k) => {
-        const p = strikes.get(k)!;
-        return p.call && p.put && midPrice(p.call) !== null && midPrice(p.put) !== null;
-      })
-      .sort((a, b) => Math.abs(a - spot) - Math.abs(b - spot));
-    if (atmStrikes.length === 0) {
-      lastReject = `no quotable call/put pair at ${expiry}`;
-      continue;
-    }
-    const strike = atmStrikes[0];
-    // Widened from 10%: on thinner chains the nearest two-sided strike can sit
-    // further from spot and was being discarded even though it is perfectly
-    // usable for parity and an ATM-ish vol.
-    if (Math.abs(strike - spot) / spot > 0.25) {
-      lastReject = `nearest two-sided strike ${strike} is >25% from spot at ${expiry}`;
-      continue;
-    }
-    const pair = strikes.get(strike)!;
-    const c = midPrice(pair.call!)!;
-    const p = midPrice(pair.put!)!;
-
-    const q = -Math.log((c - p + strike * Math.exp(-rate * tYears)) / spot) / tYears;
-    const ivC = pair.call!.iv;
-    const ivP = pair.put!.iv;
-    const ivs = [ivC, ivP].filter((v) => v > 0.005 && v < 3);
-    if (ivs.length === 0) {
-      lastReject = `no plausible IV at ${expiry}`;
-      continue;
-    }
-    const atmVol = ivs.reduce((a, b) => a + b, 0) / ivs.length;
-
-    // An implausible parity yield means THIS expiry is unusable, not that the
-    // whole chain is. Previously this threw, so one bad expiry aborted the
-    // entire fetch even when later candidates were fine.
-    if (!Number.isFinite(q) || q < -0.05 || q > 0.2) {
-      lastReject = `parity gave an implausible dividend yield (${(q * 100).toFixed(2)}%) at K=${strike}, ${expiry}`;
-      continue;
-    }
-    return {
-      divYield: q,
-      atmVol,
-      spot,
-      expiry,
-      strike,
-      tYears,
-      source: proxied ? 'CBOE delayed (proxied)' : 'CBOE delayed',
-      approximate: !isIndexSymbol(yahooSymbol),
+    const quote: OptionQuote = {
+      strike: Number(strikeRaw) / 1000,
+      bid: o.bid,
+      ask: o.ask,
+      last: o.last_trade_price ?? undefined,
+      iv: o.iv,
     };
+    let entry = byExpiry.get(expiry);
+    if (!entry) byExpiry.set(expiry, (entry = { calls: [], puts: [] }));
+    if (cp === 'C') entry.calls.push(quote);
+    else entry.puts.push(quote);
   }
+
+  const slices: ExpirySlice[] = [...byExpiry.entries()]
+    .map(([expiry, e]) => ({
+      expiry,
+      tYears: yearsUntil(expiry),
+      calls: e.calls.sort((a, b) => a.strike - b.strike),
+      puts: e.puts.sort((a, b) => a.strike - b.strike),
+    }))
+    .sort((a, b) => a.tYears - b.tYears);
+
+  return {
+    symbol,
+    spot,
+    slices,
+    source: proxied ? 'CBOE delayed (proxied)' : 'CBOE delayed',
+  };
+}
+
+/** `yahooSymbol` is Yahoo-style (BA, ^SPX, BMW.DE). */
+export async function fetchImpliedFromOptions(
+  yahooSymbol: string,
+  tenorYears: number,
+  rate: number,
+): Promise<ImpliedResult> {
+  const reasons: string[] = [];
+
+  for (const load of [
+    () => fetchOptionChainYahoo(yahooSymbol, tenorYears),
+    () => fetchOptionChainCboe(yahooSymbol),
+  ]) {
+    let chain: OptionChain;
+    try {
+      chain = await load();
+    } catch (e) {
+      reasons.push(e instanceof Error ? e.message : String(e));
+      continue;
+    }
+    try {
+      const implied = impliedFromChain(chain, rate, tenorYears);
+      return {
+        ...implied,
+        source: chain.source,
+        // Parity is exact only for European-style options; listed single-name
+        // options are American.
+        approximate: !isIndexSymbol(yahooSymbol),
+        chain,
+      };
+    } catch (e) {
+      reasons.push(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   throw new Error(
-    `No liquid ATM call/put pair near the tenor — enter div yield and vol manually${
-      lastReject ? ` (last attempt: ${lastReject})` : ''
-    }`,
+    `Could not imply vol/div yield from any option source — enter them manually. ${reasons.join('; ')}`,
   );
 }
