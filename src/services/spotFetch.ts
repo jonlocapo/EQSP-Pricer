@@ -1,4 +1,4 @@
-import { toStooqSymbol } from './symbols';
+import { normalizeQuoteCurrency, toStooqSymbol } from './symbols';
 
 export interface SpotFetchResult {
   spot: number;
@@ -76,11 +76,14 @@ async function fetchSpotYahoo(symbol: string): Promise<SpotFetchResult> {
   if (!meta?.regularMarketPrice || !(meta.regularMarketPrice > 0)) {
     throw new Error(parsed.chart?.error?.description ?? `Yahoo has no price for "${symbol}"`);
   }
+  // Minor-unit listings (London's "GBp" pence) are converted to the major
+  // currency, so the spot and the currency label always agree.
+  const { currency, priceDivisor } = normalizeQuoteCurrency(meta.currency);
   return {
-    spot: meta.regularMarketPrice,
+    spot: meta.regularMarketPrice / priceDivisor,
     asOf: meta.regularMarketTime ? new Date(meta.regularMarketTime * 1000).toISOString() : '',
     source: proxied ? 'yahoo (proxied)' : 'yahoo',
-    currency: meta.currency,
+    currency,
   };
 }
 

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { DEFAULT_MARKET, type MarketData, type QuantoParams } from '../model/market';
+import { DEFAULT_MARKET, SUPPORTED_CURRENCIES, type MarketData, type QuantoParams } from '../model/market';
 
 export interface FetchStatus {
   state: 'idle' | 'loading' | 'ok' | 'error';
@@ -35,7 +35,12 @@ interface MarketState {
   setQuanto: (quanto: QuantoParams | undefined) => void;
   setUnderlyingName: (name: string) => void;
   /** Set from a search pick: symbol + display name + inferred asset type. */
-  setUnderlying: (ticker: string, name: string, assetType: AssetType) => void;
+  /** `currency` is the underlying's listing currency when the ticker search
+   * reported one. It seeds the note currency (so picking a US name switches
+   * the note to USD rather than silently leaving a quanto) while remaining
+   * manually overridable, and always records underlyingCurrency for quanto
+   * detection even when the note can't be quoted in it. */
+  setUnderlying: (ticker: string, name: string, assetType: AssetType, currency?: string) => void;
   setAssetType: (t: AssetType) => void;
   setFetchStatus: (s: FetchStatus) => void;
   markManualOverride: () => void;
@@ -55,8 +60,18 @@ export const useMarketStore = create<MarketState>((set) => ({
     set((s) => ({ market: { ...s.market, ...patch }, manualOverride: true })),
   setQuanto: (quanto) => set((s) => ({ market: { ...s.market, quanto } })),
   setUnderlyingName: (name) => set({ underlyingName: name }),
-  setUnderlying: (ticker, underlyingName, assetType) =>
-    set({ ticker, underlyingName, assetType, fetchStatus: { state: 'idle' } }),
+  setUnderlying: (ticker, underlyingName, assetType, currency) =>
+    set((s) => ({
+      ticker,
+      underlyingName,
+      assetType,
+      fetchStatus: { state: 'idle' },
+      underlyingCurrency: currency ?? s.underlyingCurrency,
+      market:
+        currency && SUPPORTED_CURRENCIES.includes(currency)
+          ? { ...s.market, currency }
+          : s.market,
+    })),
   setAssetType: (assetType) => set({ assetType }),
   setFetchStatus: (fetchStatus) => set({ fetchStatus }),
   markManualOverride: () => set({ manualOverride: true }),

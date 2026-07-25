@@ -8,8 +8,7 @@ import { NumericField } from './NumericField';
 import { SelectField } from './SelectField';
 import { Segmented } from './Segmented';
 import { TickerSearch } from './TickerSearch';
-
-const CURRENCIES = ['EUR', 'USD', 'CHF', 'GBP', 'JPY'];
+import { SUPPORTED_CURRENCIES as CURRENCIES } from '../model/market';
 
 interface FetchLine {
   kind: 'ok' | 'err' | 'info';
@@ -202,7 +201,7 @@ export function MarketPanel() {
           ticker={ticker}
           displayName={underlyingName}
           onPick={(m) => {
-            setUnderlying(m.symbol, m.name, m.quoteType === 'INDEX' ? 'index' : 'share');
+            setUnderlying(m.symbol, m.name, m.quoteType === 'INDEX' ? 'index' : 'share', m.currency);
             void handleFetchLive(m.symbol);
           }}
         />

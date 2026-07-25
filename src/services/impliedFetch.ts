@@ -91,7 +91,10 @@ export async function fetchImpliedFromOptions(
     .sort((a, b) => Math.abs(a.tYears - tenorYears) - Math.abs(b.tYears - tenorYears));
   if (candidates.length === 0) throw new Error('No listed expiry beyond 10 days — cannot imply');
 
-  for (const { expiry, tYears } of candidates.slice(0, 3)) {
+  // Try more than the nearest few expiries: a single illiquid expiry should
+  // never end the search (it used to — see the parity check below).
+  let lastReject = '';
+  for (const { expiry, tYears } of candidates.slice(0, 6)) {
     const strikes = byExpiry.get(expiry)!;
     const atmStrikes = [...strikes.keys()]
       .filter((k) => {
@@ -99,9 +102,18 @@ export async function fetchImpliedFromOptions(
         return p.call && p.put && midPrice(p.call) !== null && midPrice(p.put) !== null;
       })
       .sort((a, b) => Math.abs(a - spot) - Math.abs(b - spot));
-    if (atmStrikes.length === 0) continue;
+    if (atmStrikes.length === 0) {
+      lastReject = `no quotable call/put pair at ${expiry}`;
+      continue;
+    }
     const strike = atmStrikes[0];
-    if (Math.abs(strike - spot) / spot > 0.1) continue; // no liquid strike near ATM
+    // Widened from 10%: on thinner chains the nearest two-sided strike can sit
+    // further from spot and was being discarded even though it is perfectly
+    // usable for parity and an ATM-ish vol.
+    if (Math.abs(strike - spot) / spot > 0.25) {
+      lastReject = `nearest two-sided strike ${strike} is >25% from spot at ${expiry}`;
+      continue;
+    }
     const pair = strikes.get(strike)!;
     const c = midPrice(pair.call!)!;
     const p = midPrice(pair.put!)!;
@@ -110,13 +122,18 @@ export async function fetchImpliedFromOptions(
     const ivC = pair.call!.iv;
     const ivP = pair.put!.iv;
     const ivs = [ivC, ivP].filter((v) => v > 0.005 && v < 3);
-    if (ivs.length === 0) continue;
+    if (ivs.length === 0) {
+      lastReject = `no plausible IV at ${expiry}`;
+      continue;
+    }
     const atmVol = ivs.reduce((a, b) => a + b, 0) / ivs.length;
 
+    // An implausible parity yield means THIS expiry is unusable, not that the
+    // whole chain is. Previously this threw, so one bad expiry aborted the
+    // entire fetch even when later candidates were fine.
     if (!Number.isFinite(q) || q < -0.05 || q > 0.2) {
-      throw new Error(
-        `Parity gave an implausible dividend yield (${(q * 100).toFixed(2)}%) at K=${strike}, ${expiry} — chain too illiquid, enter manually`,
-      );
+      lastReject = `parity gave an implausible dividend yield (${(q * 100).toFixed(2)}%) at K=${strike}, ${expiry}`;
+      continue;
     }
     return {
       divYield: q,
@@ -129,5 +146,9 @@ export async function fetchImpliedFromOptions(
       approximate: !isIndexSymbol(yahooSymbol),
     };
   }
-  throw new Error('No liquid ATM call/put pair near the tenor — enter div yield and vol manually');
+  throw new Error(
+    `No liquid ATM call/put pair near the tenor — enter div yield and vol manually${
+      lastReject ? ` (last attempt: ${lastReject})` : ''
+    }`,
+  );
 }

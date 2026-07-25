@@ -42,6 +42,11 @@ export const DEFAULT_MARKET: MarketData = {
   currency: 'EUR',
 };
 
+/** Note currencies the app can quote in (it can only source reference rates
+ * for EUR and USD; the rest must be entered by hand). Shared so the picker and
+ * the "currency follows the underlying" logic can't drift apart. */
+export const SUPPORTED_CURRENCIES = ['EUR', 'USD', 'CHF', 'GBP', 'JPY'];
+
 /**
  * Risk-neutral drift of the underlying under the note-currency measure.
  * Single-currency: mu = rate − divYield.
