@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMarketStore } from '../state/marketStore';
 import { fetchSpot } from '../services/spotFetch';
-import { fetchFxRealizedVolAndCorr, fetchHistVol, fetchRefRate, REF_RATE_CCYS } from '../services/marketFetch';
+import { fetchFxRealizedVolAndCorr, fetchRealizedStats, fetchRefRate, REF_RATE_CCYS } from '../services/marketFetch';
 import { fetchImpliedFromOptions } from '../services/impliedFetch';
 import { useTradeStore } from '../state/tradeStore';
 import { NumericField } from './NumericField';
@@ -10,6 +10,7 @@ import { Segmented } from './Segmented';
 import { TickerSearch } from './TickerSearch';
 import { NO_COSTS, SUPPORTED_CURRENCIES as CURRENCIES, type CostParams } from '../model/market';
 import { buildVolSurface, skewPoints, type VolSurface } from '../model/volSurface';
+import { buildRealizedSurface } from '../model/realizedSurface';
 
 interface FetchLine {
   kind: 'ok' | 'err' | 'info';
@@ -53,7 +54,7 @@ async function fetchLiveData(
   // can take the full timeout to fail), and waiting for them before even
   // trying a vol we can compute ourselves made every failure cost the whole
   // timeout. Whichever arrives is applied; implied then supersedes realized.
-  const histP = fetchHistVol(ticker);
+  const histP = fetchRealizedStats(ticker);
 
   const [spotR, rateR, impliedR, histR] = await Promise.allSettled([spotP, rateP, impliedP, histP]);
 
@@ -108,20 +109,32 @@ async function fetchLiveData(
     });
   } else if (histR.status === 'fulfilled') {
     const hv = histR.value;
-    // Clear any surface from a previous fetch. A realized vol is flat, and
-    // keeping a stale surface would price this underlying on another one's
-    // skew.
-    useMarketStore.setState((s) => ({ market: { ...s.market, vol: hv.vol, volSurface: undefined } }));
+    // No chain, but the price history still supports a term structure AND a
+    // skew (from measured return moments), so build a surface rather than
+    // dropping to a single flat number. Any surface from a previous underlying
+    // is replaced, never kept.
+    let surface: VolSurface | undefined;
+    let surfaceMsg = '';
+    try {
+      const spotNow = useMarketStore.getState().market.spot;
+      surface = buildRealizedSurface(spotNow, hv, `${hv.source} surface`);
+      const skew = skewPoints(surface, tenorYears, 80);
+      surfaceMsg = ` · realized skew ${skew >= 0 ? '+' : ''}${(skew * 100).toFixed(1)}pt (80% vs ATM), ${hv.terms.length} tenors`;
+    } catch {
+      surfaceMsg = ' · flat (history too short for a surface)';
+    }
+    useMarketStore.setState((s) => ({ market: { ...s.market, vol: hv.vol, volSurface: surface } }));
     lines.push({
       kind: 'ok',
-      msg: `Vol ${(hv.vol * 100).toFixed(2)}% · ${hv.source} (1Y realized)`,
+      msg: `Vol ${(hv.vol * 100).toFixed(2)}% · ${hv.source}${surfaceMsg}`,
       short: `vol ${(hv.vol * 100).toFixed(2)}%`,
     });
     // Options are an upgrade, not a requirement: say so calmly rather than as
-    // an error, since a usable vol was still produced.
+    // an error, since a usable vol and skew were still produced. Realized
+    // levels carry no volatility risk premium, so they sit below traded implied.
     lines.push({
       kind: 'info',
-      msg: `No option chain, so vol is realized and div yield is left as entered (${
+      msg: `No option chain — vol/skew are REALIZED (typically below implied) and div yield is left as entered (${
         impliedR.reason instanceof Error ? impliedR.reason.message : 'options unavailable'
       })`,
     });

@@ -22,9 +22,17 @@ async function fetchWithTimeout(url: string, ms: number): Promise<string> {
   }
 }
 
+/**
+ * Public CORS relays, tried in order after a direct request fails. None needs a
+ * key. They are listed most-reliable-first and deliberately more than two deep:
+ * these services rate-limit and disappear without notice, and a single dead
+ * relay used to take the whole fetch down with it.
+ */
 const PROXIES = [
-  (url: string) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
   (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  (url: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+  (url: string) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+  (url: string) => `https://thingproxy.freeboard.io/fetch/${url}`,
 ];
 
 /**

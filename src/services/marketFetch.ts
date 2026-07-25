@@ -8,6 +8,7 @@
  * Everything here is a suggestion. Manual override always wins.
  */
 import { fetchTextWithCorsFallback } from './spotFetch';
+import { dailyReturnMoments, realizedTermStructure } from '../model/realizedSurface';
 import { toStooqSymbol } from './symbols';
 
 /** Stooq serves an HTML bot-challenge with HTTP 200 to some IPs. Treat any
@@ -279,4 +280,47 @@ export async function fetchFxRealizedVolAndCorr(
   }
 
   return { fxVol, corrEqFx, days, source: 'yahoo 1Y realized' };
+}
+
+/**
+ * Realized volatility term structure and return moments from daily closes.
+ *
+ * This is the self-sufficient path for volatility: it needs only the daily
+ * chart endpoint, which fetches dependably, unlike option chains. Feed the
+ * result to buildRealizedSurface (model/realizedSurface.ts) to get a surface
+ * with a measured term structure and a measured skew, instead of a single flat
+ * number.
+ */
+export interface RealizedStatsResult {
+  terms: { tYears: number; vol: number }[];
+  skewDaily: number;
+  excessKurtDaily: number;
+  /** Annualized vol over the longest available window — the headline figure. */
+  vol: number;
+  days: number;
+  source: string;
+}
+
+export async function fetchRealizedStats(yahooSymbol: string): Promise<RealizedStatsResult> {
+  const closes = await fetchDailyCloses(yahooSymbol);
+  const px = closes.map((c) => c.close).filter((c) => c > 0);
+  if (px.length < 30) {
+    throw new Error(`Only ${px.length} closes for "${yahooSymbol}" — not enough for a vol estimate`);
+  }
+  const logReturns: number[] = [];
+  for (let i = 1; i < px.length; i++) logReturns.push(Math.log(px[i] / px[i - 1]));
+
+  const { skewDaily, excessKurtDaily } = dailyReturnMoments(logReturns);
+  const terms = realizedTermStructure(logReturns);
+  if (terms.length === 0) {
+    throw new Error(`Not enough history for a realized vol term structure on "${yahooSymbol}"`);
+  }
+  return {
+    terms,
+    skewDaily,
+    excessKurtDaily,
+    vol: terms[terms.length - 1].vol,
+    days: logReturns.length,
+    source: 'yahoo 1Y realized',
+  };
 }
