@@ -116,6 +116,21 @@ describe('executePriceRequest', () => {
     expect(withQuanto!.pvPct).toBeLessThan(withoutQuanto!.pvPct);
   });
 
+  it('greeks: deltaPct is structurally exactly 0 (relative-performance payoff, spot == initial fixing), vegaPct is non-zero', async () => {
+    const res = await executePriceRequest(
+      { ...req(brc, { kind: 'none' }), greeks: true },
+      hooks,
+    );
+    expect(res).not.toBeNull();
+    expect(res!.greeks).toBeDefined();
+    // Not "close to zero" — exactly 0. See pricing.ts's greeks block: this is
+    // reported directly, without running any MC, because a proportional spot
+    // bump leaves every path's spots[i]/spots[0] ratio (hence PV%) unchanged
+    // for a payoff priced at inception off relative performance.
+    expect(res!.greeks!.deltaPct).toBe(0);
+    expect(res!.greeks!.vegaPct).not.toBe(0);
+  });
+
   it('respects cancellation', async () => {
     let calls = 0;
     const res = await executePriceRequest(req(brc, { kind: 'none' }), {

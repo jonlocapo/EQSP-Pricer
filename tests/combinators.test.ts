@@ -257,11 +257,22 @@ function baseCatapult(overrides: Partial<CatapultTerms> = {}): CatapultTerms {
 }
 
 function priceAll(terms: CatapultTerms, paths: Float64Array[][]): PathOutcome[] {
-  // buildGrid only needs tenorYears to determine nSteps/dtYears here; a
-  // minimal participation spec is a convenient vehicle (its couponObs/[nSteps]
-  // branch is irrelevant — the Catapult's own event grid indices come from
-  // buildCatapult's own schedule builder, independent of this spec's terms).
-  const grid = buildGrid(baseParticipation({ tenorYears: terms.tenorYears }));
+  // A minimal participation spec is a convenient vehicle to get a grid for
+  // this tenor — the Catapult's own event grid indices come from
+  // buildCatapult's own schedule builder (catapultObs), independent of this
+  // spec's terms. That schedule snaps its own observation times onto
+  // whatever grid it's given (see catapultObs/nearestGridIndex in
+  // products.ts), so the vehicle grid needs enough resolution to actually
+  // contain points near the Catapult's quarterly call dates — force the
+  // daily grid (American downside) rather than the default compact
+  // maturity-only participation grid, which would collapse every call date
+  // onto the single available point.
+  const grid = buildGrid(
+    baseParticipation({
+      tenorYears: terms.tenorYears,
+      downside: { strikePct: 100, leveragePct: 100, barrierType: 'american', kiBarrierPct: 60, twinWinPct: 0 },
+    }),
+  );
   const ctx: EvaluatorContext = { market, grid, df: makeDf(market.rate) };
   const contract = buildCatapult(terms, grid);
   const compiled = compileContract(contract, ctx);

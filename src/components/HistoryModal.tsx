@@ -1,3 +1,4 @@
+import { useMemo, useState } from 'react';
 import { useHistoryStore, type HistoryEntry } from '../state/historyStore';
 import { useMarketStore } from '../state/marketStore';
 import { useTradeStore } from '../state/tradeStore';
@@ -22,6 +23,33 @@ export function HistoryModal({ onClose }: HistoryModalProps) {
   const setCouponSolve = useTradeStore((s) => s.setCouponSolve);
   const setParticipationSolve = useTradeStore((s) => s.setParticipationSolve);
   const setAccumulatorSolve = useTradeStore((s) => s.setAccumulatorSolve);
+
+  // Grouped by underlying, most-recently-used underlying first. `entries` is
+  // already newest-first, so each group's first element is its newest run and
+  // the within-group order needs no extra sorting.
+  const groups = useMemo(() => {
+    const byUnderlying = new Map<string, HistoryEntry[]>();
+    for (const e of entries) {
+      const key = e.underlyingName || '—';
+      const existing = byUnderlying.get(key);
+      if (existing) existing.push(e);
+      else byUnderlying.set(key, [e]);
+    }
+    return [...byUnderlying.entries()].sort((a, b) => b[1][0].timestamp - a[1][0].timestamp);
+  }, [entries]);
+
+  // Collapsed rather than expanded state, so groups default to open and a
+  // newly-created group doesn't start hidden.
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+
+  function toggleGroup(key: string) {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
 
   function handleRestore(entry: HistoryEntry) {
     restoreMarket(entry.market, entry.underlyingName);
@@ -62,23 +90,49 @@ export function HistoryModal({ onClose }: HistoryModalProps) {
                   <th>Result</th>
                 </tr>
               </thead>
-              <tbody>
-                {entries.map((e) => (
-                  <tr key={e.id} className="clickable" onClick={() => handleRestore(e)}>
-                    <td>{new Date(e.timestamp).toLocaleString()}</td>
-                    <td>
-                      <span className="pill">{PAGE_LABEL[e.page]}</span>
-                    </td>
-                    <td>{e.termsSummary}</td>
-                    <td>{e.marketSummary}</td>
-                    <td>
-                      {e.solvedValue !== undefined
-                        ? `${e.solveLabel}: ${e.solvedValue.toFixed(2)}`
-                        : `${e.pvPct.toFixed(3)}%`}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
+              {groups.map(([underlying, rows]) => {
+                const isCollapsed = collapsed.has(underlying);
+                return (
+                  <tbody key={underlying}>
+                    <tr
+                      className="history-group-row"
+                      onClick={() => toggleGroup(underlying)}
+                      aria-expanded={!isCollapsed}
+                    >
+                      <td colSpan={5}>
+                        <button
+                          type="button"
+                          className={`history-group-arrow ${isCollapsed ? '' : 'open'}`}
+                          aria-label={isCollapsed ? `Expand ${underlying}` : `Collapse ${underlying}`}
+                          tabIndex={-1}
+                        >
+                          ▶
+                        </button>
+                        <b>{underlying}</b>
+                        <span className="history-group-count">
+                          {rows.length} run{rows.length === 1 ? '' : 's'}
+                        </span>
+                      </td>
+                    </tr>
+                    {!isCollapsed &&
+                      rows.map((e) => (
+                        <tr key={e.id} className="clickable" onClick={() => handleRestore(e)}>
+                          <td>{new Date(e.timestamp).toLocaleString()}</td>
+                          <td>
+                            <span className="pill">{PAGE_LABEL[e.page]}</span>
+                          </td>
+                          <td>{e.termsSummary}</td>
+                          <td>{e.marketSummary}</td>
+                          <td>
+                            {e.solvedValue !== undefined
+                              ? `${e.solveLabel}: ${e.solvedValue.toFixed(2)}`
+                              : `${e.pvPct.toFixed(3)}%`}
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                );
+              })}
             </table>
           )}
         </div>

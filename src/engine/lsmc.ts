@@ -1,5 +1,6 @@
 import type { MarketData } from '../model/market';
 import { makeDf } from './discount';
+import { discountRate } from '../model/market';
 import { PathBatchGenerator } from './gbm';
 import type { CashflowExtractor, PathCashflows, PricingGrid } from './payoffs/types';
 
@@ -107,12 +108,12 @@ function evalQuadratic(coeffs: [number, number, number], x: number): number {
  * this "continuing to hold" comparison and added back separately by the
  * caller.
  */
-function valueFrom(entries: CfEntry[], fromIdx: number, df: (t: number) => number, dtYears: number): number {
+function valueFrom(entries: CfEntry[], fromIdx: number, df: (t: number) => number, times: number[]): number {
   let pv = 0;
   for (const e of entries) {
-    if (e.idx > fromIdx) pv += e.amt * df(e.idx * dtYears);
+    if (e.idx > fromIdx) pv += e.amt * df(times[e.idx]);
   }
-  const dfRef = df(fromIdx * dtYears);
+  const dfRef = df(times[fromIdx]);
   return dfRef > 0 ? pv / dfRef : 0;
 }
 
@@ -124,8 +125,13 @@ function valueFrom(entries: CfEntry[], fromIdx: number, df: (t: number) => numbe
 export function priceIssuerCallable(opts: LsmcOptions): LsmcResult {
   const { numPaths, seed, nSteps, s0, market, cashflows, redemptionCostPct, callObs, callFromPeriod, dtYears } =
     opts;
+  // LSMC always runs on the daily grid (see schedule.ts's needsDailyPath),
+  // so `times[idx]` is bit-identical to the legacy `idx * dtYears` — using
+  // the grid's times keeps this correct if that ever changes, and matches
+  // the rest of the engine's timeOf(gridIndex, grid) convention.
+  const { times } = opts.grid;
 
-  const df = makeDf(market.rate);
+  const df = makeDf(discountRate(market));
   const callablePeriods = callObs
     .map((gridIdx, i) => ({ period: i + 1, gridIdx }))
     .filter((c) => c.period >= callFromPeriod);
@@ -153,7 +159,7 @@ export function priceIssuerCallable(opts: LsmcOptions): LsmcResult {
       const contValues = new Float64Array(numPaths);
       const xs = new Float64Array(numPaths);
       for (let p = 0; p < numPaths; p++) {
-        contValues[p] = valueFrom(pathFutureCf[p], gridIdx, df, dtYears);
+        contValues[p] = valueFrom(pathFutureCf[p], gridIdx, df, times);
         xs[p] = spotsAtCall[c][p] / s0;
       }
       const coeffs = fitQuadratic(xs, contValues);
@@ -198,11 +204,11 @@ export function priceIssuerCallable(opts: LsmcOptions): LsmcResult {
       const cost = redemptionCostPct(period);
       if (cost < fitted) {
         for (let i = 0; i < cf.gridIndices.length; i++) {
-          if (cf.gridIndices[i] <= gridIdx) pv += cf.amountsPct[i] * df(cf.gridIndices[i] * dtYears);
+          if (cf.gridIndices[i] <= gridIdx) pv += cf.amountsPct[i] * df(times[cf.gridIndices[i]]);
         }
-        pv += cost * df(gridIdx * dtYears);
+        pv += cost * df(times[gridIdx]);
         callCounts[c] += 1;
-        lifeYears = gridIdx * dtYears;
+        lifeYears = times[gridIdx];
         called = true;
         break;
       }
@@ -210,7 +216,7 @@ export function priceIssuerCallable(opts: LsmcOptions): LsmcResult {
 
     if (!called) {
       for (let i = 0; i < cf.gridIndices.length; i++) {
-        pv += cf.amountsPct[i] * df(cf.gridIndices[i] * dtYears);
+        pv += cf.amountsPct[i] * df(times[cf.gridIndices[i]]);
       }
     }
 

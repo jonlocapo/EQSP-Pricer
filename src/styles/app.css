@@ -304,15 +304,66 @@ select.input:focus {
 
 .numeric-field input {
   text-align: right;
-  padding-right: 30px;
+  /* Room for the suffix plus the stepper column to its right. */
+  padding-right: 46px;
+}
+
+/* Hide the browser's native spin buttons — NumericField renders its own
+ * (see .field-steppers) so there's exactly one set of arrows, reliably
+ * clickable and distinguishable from typing. */
+.numeric-field input::-webkit-outer-spin-button,
+.numeric-field input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  appearance: none;
+  margin: 0;
+}
+
+.numeric-field input[type='number'] {
+  -moz-appearance: textfield;
+  appearance: textfield;
 }
 
 .numeric-field .suffix {
   position: absolute;
-  right: 9px;
+  right: 26px;
   font-size: 12px;
   color: var(--text-faint);
   pointer-events: none;
+}
+
+.field-steppers {
+  position: absolute;
+  right: 3px;
+  top: 3px;
+  bottom: 3px;
+  width: 19px;
+  display: flex;
+  flex-direction: column;
+}
+
+.field-steppers button {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 7px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 2px;
+  padding: 0;
+}
+
+.field-steppers button:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.field-steppers button:active {
+  background: var(--accent);
+  color: var(--bg-elevated);
 }
 
 .numeric-field.solved input {
@@ -820,6 +871,45 @@ select.input:focus {
 .history-table tr.clickable:hover {
   background: var(--bg-sunken);
   cursor: pointer;
+}
+
+/* Collapsible per-underlying group header. Runs are grouped by underlying so a
+ * long history stays navigable. */
+.history-group-row {
+  cursor: pointer;
+  user-select: none;
+}
+
+.history-group-row td {
+  background: var(--bg-sunken);
+  padding: 7px 14px;
+  font-size: 12px;
+}
+
+.history-group-row:hover td {
+  background: var(--accent-soft);
+}
+
+.history-group-arrow {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 8px;
+  padding: 0;
+  margin-right: 8px;
+  cursor: pointer;
+  transition: transform 0.15s;
+  display: inline-block;
+}
+
+.history-group-arrow.open {
+  transform: rotate(90deg);
+}
+
+.history-group-count {
+  margin-left: 8px;
+  color: var(--text-faint);
+  font-size: 11px;
 }
 
 .history-empty {

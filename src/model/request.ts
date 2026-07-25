@@ -113,4 +113,29 @@ export interface PriceResult {
   /** Echoes PriceRequest.preview — a transient/advisory result at reduced
    * path count, not yet the settled full-precision price. */
   preview?: boolean;
+  /** What the price was actually built on. See PricingBasis. */
+  basis?: PricingBasis;
+}
+
+/**
+ * The assumptions behind a quoted level, reported so the number is auditable
+ * rather than a black box. Two of these change a price materially and used to
+ * be invisible: which point of the volatility surface the product was priced
+ * at, and how much of the value the fee retained.
+ */
+export interface PricingBasis {
+  /** The volatility the Monte Carlo actually ran at, decimal. */
+  volUsed: number;
+  /** 'flat' = MarketData.vol as entered; 'surface' = read off a fetched chain. */
+  volSource: 'flat' | 'surface';
+  /** Strike the surface was read at, % of initial fixing (surface only). */
+  riskStrikePct?: number;
+  /** Why that strike governs this product (see engine/riskStrike). */
+  riskStrikeReason?: string;
+  /** Discount rate applied to the note's cashflows: risk-free + funding spread. */
+  discountRate: number;
+  /** Fee retained upfront, % of notional. */
+  feePct: number;
+  /** PV before the fee was retained — the risk-neutral fair value. */
+  fairValuePct?: number;
 }

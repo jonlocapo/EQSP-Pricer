@@ -1,10 +1,15 @@
 import { fetchTextWithCorsFallback } from './spotFetch';
+import { normalizeQuoteCurrency } from './symbols';
 
 export interface SymbolMatch {
   symbol: string; // Yahoo-style: BA, ^SPX, BMW.DE
   name: string;
   exchange: string;
   quoteType: 'EQUITY' | 'INDEX' | 'ETF';
+  /** Listing currency, when the search response carries one. Lets the note
+   * currency follow the underlying on pick (see marketStore.setUnderlying)
+   * instead of silently leaving a USD name in a EUR note. */
+  currency?: string;
 }
 
 interface YahooSearchQuote {
@@ -13,6 +18,7 @@ interface YahooSearchQuote {
   longname?: string;
   exchDisp?: string;
   quoteType?: string;
+  currency?: string;
 }
 
 /** Name/ticker autocomplete via Yahoo Finance's public search endpoint. */
@@ -32,5 +38,6 @@ export async function searchSymbols(query: string): Promise<SymbolMatch[]> {
       name: m.longname ?? m.shortname ?? m.symbol,
       exchange: m.exchDisp ?? '',
       quoteType: m.quoteType as SymbolMatch['quoteType'],
+      currency: normalizeQuoteCurrency(m.currency).currency,
     }));
 }

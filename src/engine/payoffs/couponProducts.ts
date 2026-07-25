@@ -3,6 +3,7 @@ import type {
   CashflowExtractor,
   EvaluatorContext,
   ObservablesEvaluator,
+  ObservablesRequirements,
   OutcomeEvaluator,
   PathCashflows,
   PathObservables,
@@ -189,26 +190,40 @@ export function makeCouponEvaluator(spec: CouponProductSpec, ctx: EvaluatorConte
 // fixed. Phase B (`makeCouponOutcome`) is the cheap per-iteration part.
 // ---------------------------------------------------------------------------
 
+/**
+ * Coupon products never read `maxPerf` (only `minPerf`, for American KI
+ * monitoring) — see kiEventFromObs below. Always safe to skip tracking it.
+ */
+export function couponObservablesRequirements(spec: CouponProductSpec): ObservablesRequirements {
+  return { needsMin: spec.barrierType === 'american', needsMax: false };
+}
+
 /** Phase A: precompute terminal/running perf + perf at each merged
- * coupon/call observation, once per path. */
-export function makeCouponObservables(ctx: EvaluatorContext): ObservablesEvaluator {
+ * coupon/call observation, once per path. `req` (derived from the spec's
+ * monitoring MODE only, never barrier levels — see
+ * `couponObservablesRequirements`) says which of minPerf/maxPerf are
+ * actually read downstream; skipping the unused one keeps the per-step work
+ * to what the spec's monitoring mode needs, without losing cacheability
+ * across a barrier-level solve (the mode, and so `req`, stays fixed). */
+export function makeCouponObservables(ctx: EvaluatorContext, req: ObservablesRequirements): ObservablesEvaluator {
   const { grid } = ctx;
   const events = mergeEvents(grid);
   const eventIndices = events.map((e) => e.gridIndex);
   const nEvents = eventIndices.length;
+  const { needsMin, needsMax } = req;
 
   return (spots: Float64Array): PathObservables => {
     const S0 = spots[0];
     const nSteps = spots.length - 1;
     const eventPerf = new Float64Array(nEvents);
     let ei = 0;
-    let minPerf = Infinity;
-    let maxPerf = -Infinity;
+    let minPerf = needsMin ? Infinity : NaN;
+    let maxPerf = needsMax ? -Infinity : NaN;
 
     for (let i = 1; i <= nSteps; i++) {
       const p = spots[i] / S0;
-      if (p < minPerf) minPerf = p;
-      if (p > maxPerf) maxPerf = p;
+      if (needsMin && p < minPerf) minPerf = p;
+      if (needsMax && p > maxPerf) maxPerf = p;
       if (ei < nEvents && eventIndices[ei] === i) {
         eventPerf[ei] = p;
         ei++;

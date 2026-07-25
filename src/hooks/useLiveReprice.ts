@@ -4,18 +4,28 @@ import type { ProductSpec } from '../model/product';
 import type { SolveTarget } from '../model/request';
 import { applySolveValue } from '../worker/pricing';
 import { runPricing, peekRepriceScope } from '../services/runPricing';
+import { peekEditSource } from '../state/editSource';
 import { useResultsStore } from '../state/resultsStore';
 import type { PageId } from '../state/tradeStore';
 
-/** Trailing-edge debounce before a fast, reduced-path PREVIEW pass fires.
- * Short enough to feel live while the user is mid-edit. */
-const PREVIEW_DEBOUNCE_MS = 120;
-
-/** Trailing-edge debounce before the authoritative FULL-precision pass
- * fires, i.e. how long the user has to stop editing before the value
- * settles. Long enough that a burst of keystrokes/spinner clicks collapses
- * into one full run rather than one per keystroke. */
-const SETTLE_DEBOUNCE_MS = 300;
+/**
+ * Debounce profiles, chosen by how the edit was made (see state/editSource).
+ *
+ * 'step' (our stepper buttons): every tick is a complete, intended value, so
+ * feedback can come almost immediately. The wait only needs to collapse a
+ * burst of rapid clicks into one run — a reduced-path preview lands fast,
+ * then the full-precision pass settles it.
+ *
+ * 'type': keystrokes pass through values the user never meant — clearing the
+ * "8" of "80" to type "70" transiently reads 0, and each intermediate state
+ * would otherwise burn a full solve. So typing waits noticeably longer and
+ * skips the preview entirely: one solve is sufficient, which is the whole
+ * point of waiting.
+ */
+const DEBOUNCE: Record<'type' | 'step', { preview: number | null; settle: number }> = {
+  step: { preview: 90, settle: 260 },
+  type: { preview: null, settle: 600 },
+};
 
 export interface UseLiveRepriceParams {
   page: PageId;
@@ -44,10 +54,13 @@ export interface UseLiveRepriceParams {
  *   field is the active solve target (or turning solve off) also reprices.
  *
  * Either way:
- * - A short debounce fires a PREVIEW pass (reduced path count) so the user
- *   sees *something* move almost immediately.
- * - A longer trailing-edge debounce fires the FULL-precision pass once edits
- *   stop — this is the authoritative, settled value.
+ * - The wait before firing depends on HOW the edit was made (see DEBOUNCE and
+ *   state/editSource): stepper clicks get a short wait plus a reduced-path
+ *   PREVIEW pass so arrow bursts feel immediate, while typing waits longer and
+ *   skips the preview, so the meaningless intermediate values a keystroke
+ *   sequence passes through don't each burn a solve.
+ * - A trailing-edge debounce fires the FULL-precision pass once edits stop —
+ *   this is the authoritative, settled value.
  * - Each pass hands off to runPricing, which cancels whatever run is still
  *   in flight first (via the worker cancel protocol) so superseded runs
  *   never race the latest one or leak a stale result — UNLESS what's in
@@ -104,21 +117,25 @@ export function useLiveReprice({ page, product, market, underlyingName, solve, d
     // frozen while waiting for a pass to actually start.
     useResultsStore.getState().beginPending(peekRepriceScope(market, product));
 
-    previewTimer.current = setTimeout(() => {
-      const warmStartValue = useResultsStore.getState().result?.solvedValue;
-      void runPricing({
-        page,
-        product,
-        market,
-        underlyingName,
-        solve,
-        greeks: false,
-        preview: true,
-        warmStartValue,
-        addToHistory: false,
-        live: true,
-      });
-    }, PREVIEW_DEBOUNCE_MS);
+    const timing = DEBOUNCE[peekEditSource()];
+
+    if (timing.preview !== null) {
+      previewTimer.current = setTimeout(() => {
+        const warmStartValue = useResultsStore.getState().result?.solvedValue;
+        void runPricing({
+          page,
+          product,
+          market,
+          underlyingName,
+          solve,
+          greeks: false,
+          preview: true,
+          warmStartValue,
+          addToHistory: false,
+          live: true,
+        });
+      }, timing.preview);
+    }
 
     settleTimer.current = setTimeout(() => {
       const warmStartValue = useResultsStore.getState().result?.solvedValue;
@@ -134,7 +151,7 @@ export function useLiveReprice({ page, product, market, underlyingName, solve, d
         addToHistory: false,
         live: true,
       });
-    }, SETTLE_DEBOUNCE_MS);
+    }, timing.settle);
 
     return () => {
       if (previewTimer.current) clearTimeout(previewTimer.current);

@@ -8,8 +8,8 @@ import { NumericField } from './NumericField';
 import { SelectField } from './SelectField';
 import { Segmented } from './Segmented';
 import { TickerSearch } from './TickerSearch';
-
-const CURRENCIES = ['EUR', 'USD', 'CHF', 'GBP', 'JPY'];
+import { NO_COSTS, SUPPORTED_CURRENCIES as CURRENCIES, type CostParams } from '../model/market';
+import { buildVolSurface, skewPoints, type VolSurface } from '../model/volSurface';
 
 interface FetchLine {
   kind: 'ok' | 'err' | 'info';
@@ -65,12 +65,27 @@ async function fetchLiveData(
 
   if (impliedR.status === 'fulfilled') {
     const r = impliedR.value;
-    useMarketStore.setState((s) => ({ market: { ...s.market, vol: r.atmVol, divYield: r.divYield } }));
+    // Keep the whole chain as a vol surface, not just the ATM number, so the
+    // engine can price each product at its own risk strike. A chain too thin
+    // to build a surface from is not an error — the ATM vol is still good.
+    let surface: VolSurface | undefined;
+    let surfaceMsg = '';
+    try {
+      surface = buildVolSurface(r.chain);
+      const skew = skewPoints(surface, r.tYears, 80);
+      surfaceMsg = ` · skew ${skew >= 0 ? '+' : ''}${(skew * 100).toFixed(1)}pt (80% vs ATM)`;
+    } catch {
+      surfaceMsg = ' · flat vol (chain too thin for a surface)';
+    }
+    useMarketStore.setState((s) => ({
+      market: { ...s.market, vol: r.atmVol, divYield: r.divYield, volSurface: surface },
+    }));
     lines.push({
       kind: 'ok',
       msg:
         `Vol ${(r.atmVol * 100).toFixed(1)}%, div ${(r.divYield * 100).toFixed(2)}% · options ${r.expiry} K=${r.strike}` +
-        (r.approximate ? ' (approx, American-style)' : ''),
+        (r.approximate ? ' (approx, American-style)' : '') +
+        surfaceMsg,
       short: `vol ${(r.atmVol * 100).toFixed(1)}%`,
     });
   } else {
@@ -78,7 +93,10 @@ async function fetchLiveData(
     // Options chain unavailable — fall back to realized vol; div stays manual.
     try {
       const hv = await fetchHistVol(ticker);
-      useMarketStore.setState((s) => ({ market: { ...s.market, vol: hv.vol } }));
+      // Clear any surface from a previous fetch: a realized vol is flat, and
+      // keeping a stale surface would price this underlying on another one's
+      // skew.
+      useMarketStore.setState((s) => ({ market: { ...s.market, vol: hv.vol, volSurface: undefined } }));
       lines.push({
         kind: 'ok',
         msg: `Vol ${(hv.vol * 100).toFixed(2)}% · ${hv.source} (realized fallback)`,
@@ -176,6 +194,12 @@ export function MarketPanel() {
 
   const quantoMismatch = !!underlyingCurrency && underlyingCurrency !== market.currency;
 
+  // Costs default to zero (a pure risk-neutral fair value); the badge makes it
+  // obvious when a quoted level is no longer the fair value.
+  const costs = market.costs ?? NO_COSTS;
+  const costsActive = costs.fundingSpreadBp !== 0 || costs.borrowCostBp !== 0 || costs.feePct !== 0;
+  const setCosts = (patch: Partial<CostParams>) => setMarket({ costs: { ...costs, ...patch } });
+
   // When a currency mismatch first appears, seed quanto params from the
   // current note rate; when it resolves (or the underlying ccy is unknown),
   // clear them so single-currency pricing is untouched.
@@ -202,7 +226,7 @@ export function MarketPanel() {
           ticker={ticker}
           displayName={underlyingName}
           onPick={(m) => {
-            setUnderlying(m.symbol, m.name, m.quoteType === 'INDEX' ? 'index' : 'share');
+            setUnderlying(m.symbol, m.name, m.quoteType === 'INDEX' ? 'index' : 'share', m.currency);
             void handleFetchLive(m.symbol);
           }}
         />
@@ -256,21 +280,14 @@ export function MarketPanel() {
           </div>
         )}
 
-        <div className="field">
-          <div className="field-label">
-            <span>Spot</span>
-            {manualOverride && <span className="manual-badge">MANUAL</span>}
-          </div>
-          <div className="numeric-field">
-            <input
-              className="input"
-              type="number"
-              step={0.01}
-              value={market.spot}
-              onChange={(e) => setMarket({ spot: e.target.valueAsNumber })}
-            />
-          </div>
-        </div>
+        <NumericField
+          label="Spot"
+          value={market.spot}
+          step={0.01}
+          onChange={(v) => setMarket({ spot: v })}
+          badge={manualOverride ? 'MANUAL' : undefined}
+          badgeClassName="manual-badge"
+        />
 
         <NumericField
           label="Volatility"
@@ -325,6 +342,42 @@ export function MarketPanel() {
             </div>
           </div>
         )}
+
+        {/* Issuer/desk costs. A pure risk-neutral price ignores these, which is
+         * why a fair value looks more aggressive than a bank's quote. Their
+         * signs deliberately differ — see CostParams in model/market.ts. */}
+        <div className="field-group">
+          <div className="field-label">
+            <span>Costs</span>
+            {costsActive && <span className="solved-badge">ON</span>}
+          </div>
+          <div className="field-row">
+            <NumericField
+              label="Funding spread"
+              value={costs.fundingSpreadBp}
+              step={5}
+              suffix="bp"
+              title="Issuer funding spread over the risk-free rate. A note is a funded liability, so a wider spread cheapens the bond component and lets the issuer pay MORE."
+              onChange={(v) => setCosts({ fundingSpreadBp: v })}
+            />
+            <NumericField
+              label="Borrow cost"
+              value={costs.borrowCostBp}
+              step={5}
+              suffix="bp"
+              title="Stock borrow / repo carried by the hedge. Lowers the forward, making the short puts dearer, so it REDUCES the coupon."
+              onChange={(v) => setCosts({ borrowCostBp: v })}
+            />
+          </div>
+          <NumericField
+            label="Fee / margin"
+            value={costs.feePct}
+            step={0.1}
+            suffix="%"
+            title="Distribution fee retained upfront. The main reason a bank's quote is less aggressive than fair value."
+            onChange={(v) => setCosts({ feePct: v })}
+          />
+        </div>
       </div>
     </div>
   );

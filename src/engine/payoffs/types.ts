@@ -7,13 +7,48 @@ import type { ProductSpec } from '../../model/product';
  * they can be exercised in tests with hand-built literal arrays.
  */
 
-/** Daily simulation grid plus product observation schedules (grid indices). */
+/**
+ * Simulation grid plus product observation schedules (grid indices). Either
+ * DAILY (nSteps = round(tenorYears*252), uniform step) for products that
+ * need to walk every day — American barrier monitoring, the accumulator's
+ * strike-dependent daily walk, issuer-callable LSMC — or COMPACT (step set =
+ * the sorted, deduplicated union of the dates the payoff actually observes)
+ * for European-only monitoring, where stepping straight from one observation
+ * date to the next is mathematically EXACT under GBM (log-increments over a
+ * longer dt are still exactly lognormal — not an approximation). See
+ * schedule.ts's `buildGrid`/`needsDailyPath` for the decision.
+ *
+ * Steps need not be uniform (a merged coupon+call schedule, or a stub final
+ * period, can produce different dt per step), so time is carried explicitly
+ * via `times`/`stepDt` rather than derived from a single scalar dtYears.
+ *
+ * BIT-IDENTITY: for a daily (uniform) grid, `times[i] = i * dtYears` exactly
+ * (a plain loop, not a cumulative sum of stepDt) and every `stepDt[i]` is
+ * filled with the identical `dtYears` scalar (not `times[i+1]-times[i]`) —
+ * cumulative summation or a subtraction would move discount factors in the
+ * last ULP relative to the pre-adaptive-grid engine. This is what keeps
+ * American/accumulator/LSMC products byte-identical across this change. For
+ * a compact (non-uniform) grid, `times` comes directly from the real
+ * observation times and `stepDt[i] = times[i+1] - times[i]`.
+ */
 export interface PricingGrid {
-  /** Number of daily steps; spots arrays have nSteps + 1 entries (S0 first). */
+  /** Number of steps; spots arrays have nSteps + 1 entries (S0 first). */
   nSteps: number;
-  /** Year fraction of one step (1/252). */
+  /**
+   * Year fraction of one step, for UNIFORM (daily) grids only. Kept for
+   * backward compatibility (e.g. informational/debug use, and the
+   * accumulator's `estimatedNotional` scaling by nSteps); never used to
+   * derive time — see `times`/`timeOf`. For a compact grid this is just
+   * tenorYears/nSteps, a representative average, not a real step size.
+   */
   dtYears: number;
   tenorYears: number;
+  /** Absolute time (years) of each grid point, length nSteps + 1.
+   * times[0] = 0, times[nSteps] = tenorYears. */
+  times: number[];
+  /** Year fraction of each step, length nSteps. stepDt[i] is the dt from
+   * times[i] to times[i+1]. */
+  stepDt: Float64Array;
   /** Grid indices of coupon observation dates, ascending, last == nSteps. */
   couponObs: number[];
   /** Grid indices of call observation dates, ascending. Empty if callType 'none'. */
@@ -25,7 +60,7 @@ export interface PricingGrid {
   settlementObs: number[];
 }
 
-export const timeOf = (gridIndex: number, grid: PricingGrid): number => gridIndex * grid.dtYears;
+export const timeOf = (gridIndex: number, grid: PricingGrid): number => grid.times[gridIndex];
 
 /** What happened on one simulated path. pvPct is the discounted PV, % of notional. */
 export interface PathOutcome {
@@ -77,8 +112,24 @@ export interface PathObservables {
   eventPerf: Float64Array;
 }
 
+/**
+ * Small descriptor of which running-extremum functionals a spec's
+ * monitoring mode actually needs, so Phase A can skip tracking the unused
+ * one(s) instead of computing minPerf AND maxPerf unconditionally on every
+ * step of every path. Derived from the spec's monitoring MODE fields
+ * (barrierType / koMonitoring) only — never from barrier LEVELS — so it
+ * stays constant across a barrier-level solve and the observables cache
+ * (keyed on this descriptor, see pathCache.ts's computeObservablesKey)
+ * keeps hitting on every solve iteration.
+ */
+export interface ObservablesRequirements {
+  needsMin: boolean;
+  needsMax: boolean;
+}
+
 /** Phase A: path -> observables. Depends only on the grid (observation
- * index sets), never on spec numeric parameters. */
+ * index sets) and the requirements descriptor above, never on spec numeric
+ * parameters. */
 export type ObservablesEvaluator = (spots: Float64Array) => PathObservables;
 
 /** Phase B: observables + spec (closed over) -> outcome. This is the cheap

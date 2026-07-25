@@ -8,6 +8,8 @@ const grid: PricingGrid = {
   nSteps: 20,
   dtYears: 1 / 252,
   tenorYears: 20 / 252,
+  times: Array.from({ length: 21 }, (_, i) => i / 252),
+  stepDt: new Float64Array(20).fill(1 / 252),
   couponObs: [],
   callObs: [],
   settlementObs: [5, 10, 15, 20],

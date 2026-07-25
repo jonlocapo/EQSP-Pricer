@@ -2,6 +2,7 @@ import type { BarrierMonitoring, ParticipationSpec, UpsideVariant } from '../../
 import type {
   EvaluatorContext,
   ObservablesEvaluator,
+  ObservablesRequirements,
   OutcomeEvaluator,
   PathObservables,
   PathOutcome,
@@ -88,7 +89,14 @@ export function makeParticipationEvaluator(
 
   return (spots: Float64Array): PathOutcome => {
     const S0 = spots[0];
-    const perfT = spots[grid.nSteps] / S0;
+    // Terminal spot is always the path's own last element (matches
+    // evalKi/evalKo and makeParticipationObservables below, which all use
+    // spots.length-1): in production spots.length-1 === grid.nSteps always
+    // (paths are generated for exactly this grid), so this is a no-op
+    // there; it only matters for tests that hand-build paths of a fixed
+    // length against a grid of a different (e.g. compact) step count.
+    const nSteps = spots.length - 1;
+    const perfT = spots[nSteps] / S0;
 
     const koEvent = evalKo(spec.upside.variant, spots);
     const upStrike = spec.upside.strikePct / 100;
@@ -133,18 +141,31 @@ export function makeParticipationEvaluator(
 // tests/observables.test.ts for the per-path equivalence proof.
 // ---------------------------------------------------------------------------
 
+/** Which of minPerf (downside American KI)/maxPerf (koRebate American KO)
+ * this spec's monitoring MODE actually needs — never depends on barrier
+ * LEVELS, so it stays constant (and the observables cache keeps hitting)
+ * across a barrier-level solve. */
+export function participationObservablesRequirements(spec: ParticipationSpec): ObservablesRequirements {
+  const needsMin = spec.downside.barrierType === 'american';
+  const needsMax = spec.upside.variant.variant === 'koRebate' && spec.upside.variant.koMonitoring === 'american';
+  return { needsMin, needsMax };
+}
+
 /** Phase A: terminal perf + running min/max perf, once per path. Does not
- * depend on `spec` — only on the path itself. */
-export function makeParticipationObservables(): ObservablesEvaluator {
+ * depend on `spec` numerically — only on the path itself and `req` (the
+ * monitoring-mode-derived requirements descriptor above), so skipping the
+ * unused extremum doesn't reintroduce a per-solve-iteration recompute. */
+export function makeParticipationObservables(req: ObservablesRequirements): ObservablesEvaluator {
+  const { needsMin, needsMax } = req;
   return (spots: Float64Array): PathObservables => {
     const S0 = spots[0];
     const nSteps = spots.length - 1;
-    let minPerf = Infinity;
-    let maxPerf = -Infinity;
+    let minPerf = needsMin ? Infinity : NaN;
+    let maxPerf = needsMax ? -Infinity : NaN;
     for (let i = 1; i <= nSteps; i++) {
       const p = spots[i] / S0;
-      if (p < minPerf) minPerf = p;
-      if (p > maxPerf) maxPerf = p;
+      if (needsMin && p < minPerf) minPerf = p;
+      if (needsMax && p > maxPerf) maxPerf = p;
     }
     return { perfT: spots[nSteps] / S0, minPerf, maxPerf, eventPerf: new Float64Array(0) };
   };

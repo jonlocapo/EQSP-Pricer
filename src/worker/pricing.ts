@@ -11,16 +11,53 @@ import type {
   ParticipationSpec,
   ProductSpec,
 } from '../model/product';
-import type { Diagnostics, PriceRequest, PriceResult, SolveTarget } from '../model/request';
+import type { Diagnostics, PriceRequest, PriceResult, PricingBasis, SolveTarget } from '../model/request';
 import { buildGrid } from '../engine/schedule';
 import { makeDf } from '../engine/discount';
+import { discountRate } from '../model/market';
+import { volAtPctOfSpot } from '../model/volSurface';
+import { riskStrikeFor } from '../engine/riskStrike';
 import { priceIssuerCallable } from '../engine/lsmc';
-import { makeEvaluator, makeSplitEvaluator } from '../engine/payoffs';
+import { makeEvaluator, makeSplitEvaluator, observablesRequirementsOf } from '../engine/payoffs';
 import { makeCouponCashflowExtractor } from '../engine/payoffs/couponProducts';
 import type { EvaluatorContext } from '../engine/payoffs/types';
-import { computeCacheKey, computeObservablesKey, evaluateCachedSlice, evaluateCachedSliceSplit } from '../engine/pathCache';
+import {
+  computeCacheKey,
+  computeNormalsKey,
+  computeObservablesKey,
+  evaluateCachedSlice,
+  evaluateCachedSliceSplit,
+  gridTimesDigest,
+} from '../engine/pathCache';
+import type { McRunResult } from '../engine/mc';
 import { computeExpectedShortfall, computeHistogram, computePLoss } from '../engine/distribution';
 import type { PricingPhase } from './protocol';
+
+/**
+ * Farms the slices of ONE priceOnce pass out to a pool of Workers (see
+ * src/worker/pool.ts) instead of evaluating them in-process/sequentially.
+ * Implementations may run `sliceIndices` concurrently and in any completion
+ * order internally, but MUST resolve with results in the same order as
+ * `sliceIndices` (priceOnce always passes them as [0..nSlices-1]) — the
+ * pooling reduction in priceOnce sums over the returned array in that order,
+ * which is what keeps pooled pv/stderr bit-identical to the sequential,
+ * single-worker path regardless of which slice happens to finish first.
+ */
+export interface SliceRunner {
+  runSlices(
+    spec: ProductSpec,
+    market: MarketData,
+    numPaths: number,
+    seed: number,
+    antithetic: boolean,
+    sliceIndices: number[],
+    /** Invoked once per slice, as soon as that slice's result is available
+     * (any order) — `slicePaths` is the number of paths that slice covered.
+     * Used to aggregate a monotonically-advancing progress bar across
+     * workers. */
+    onSliceDone: (slicePaths: number) => void,
+  ): Promise<McRunResult[]>;
+}
 
 export interface PricingHooks {
   /** Called with cumulative progress. */
@@ -28,9 +65,25 @@ export interface PricingHooks {
   isCancelled: () => boolean;
   /** Yield to the event loop so cancel messages can arrive. */
   yieldNow: () => Promise<void>;
+  /** Optional: farm priceOnce's slices out to a Worker pool instead of
+   * evaluating them in-process. Omitted (the default) preserves the exact
+   * prior sequential, single-process behavior — every existing caller
+   * (tests, bench, the classic single-worker path) leaves this unset. */
+  sliceRunner?: SliceRunner;
 }
 
-const SLICE_PATHS = 20_000;
+export const SLICE_PATHS = 20_000;
+
+/** Size (path count) of slice `sliceIndex` of a priceOnce pass over
+ * `numPaths` — the exact `nSlices`/`per`/`slicePaths` formula priceOnce uses
+ * internally, exported as a single source of truth for callers that need a
+ * slice's size without re-deriving it (e.g. src/worker/pricer.worker.ts's
+ * pool progress aggregation). */
+export function sliceSizeOf(numPaths: number, sliceIndex: number): number {
+  const nSlices = Math.max(1, Math.ceil(numPaths / SLICE_PATHS));
+  const per = Math.ceil(numPaths / nSlices);
+  return Math.min(per, numPaths - sliceIndex * per);
+}
 
 /** Reduced path count for a `preview` request (fast, transient pricing
  * during live typing) when McSettings.previewNumPaths isn't specified. */
@@ -55,9 +108,18 @@ async function priceOnce(
   progressBase = 0,
   progressTotal?: number,
   solveIteration?: number,
+  /**
+   * Whether to build the distribution diagnostics (histogram / P(loss) /
+   * Expected Shortfall). Only the final displayed pass needs them, and they
+   * are not cheap: ES alone copies and comparator-sorts the whole per-path
+   * sample array twice. A solve runs priceOnce once per root-finder
+   * iteration and throws every intermediate result away, so computing them
+   * there is pure waste. Defaults to false — callers opt in.
+   */
+  wantDistribution = false,
 ): Promise<CoreResult> {
   const grid = buildGrid(spec);
-  const ctx: EvaluatorContext = { market, grid, df: makeDf(market.rate) };
+  const ctx: EvaluatorContext = { market, grid, df: makeDf(discountRate(market)) };
 
   if (spec.kind === 'coupon' && spec.callType === 'issuerCallable') {
     // LSMC runs in one synchronous shot (no mid-run cancellation in v1).
@@ -74,6 +136,8 @@ async function priceOnce(
       redemptionCostPct,
       callObs: grid.callObs,
       callFromPeriod: spec.callFromPeriod,
+      // issuerCallable/LSMC always runs on the daily grid (needsDailyPath),
+      // so grid.dtYears here is the real uniform step.
       dtYears: grid.dtYears,
     });
     hooks.onProgress(progressBase + numPaths, progressTotal ?? numPaths, phase, solveIteration);
@@ -112,13 +176,21 @@ async function priceOnce(
     seed,
     antithetic,
     nSteps: grid.nSteps,
-    dtYears: grid.dtYears,
+    timesKey: gridTimesDigest(grid),
   });
   // Observables (Phase A output) need an additional key component: a
-  // signature of the observation index sets (couponObs/callObs). The raw
-  // path cache stays valid across a schedule change (e.g. couponFrequency
-  // mid live-solve); only the cached observables must recompute.
-  const observablesKey = split ? computeObservablesKey(cacheKey, grid) : '';
+  // signature of the observation index sets (couponObs/callObs) plus the
+  // monitoring-mode requirements descriptor (which of minPerf/maxPerf Phase
+  // A tracks). The raw path cache stays valid across a schedule or
+  // monitoring-mode change (e.g. couponFrequency, or barrierType
+  // european->american, mid live-solve); only the cached observables must
+  // recompute.
+  const observablesKey = split ? computeObservablesKey(cacheKey, grid, observablesRequirementsOf(spec)) : '';
+  // Keyed WITHOUT market data (see computeNormalsKey) so a spot/vol/rate/div
+  // edit or a greeks bump — which changes `cacheKey` above and evicts the
+  // raw-path cache — still hits here, skipping Box-Muller entirely on
+  // regeneration (see pathCache.ts's normals cache doc).
+  const normalsKey = computeNormalsKey({ numPaths, seed, antithetic, nSteps: grid.nSteps });
   // Reference level for pLoss/ES: what the investor paid (coupon/
   // participation), or 0 for accumulator (its PV is already a P&L-style
   // value in % of estimated notional, not a price paid — see Diagnostics.pLoss doc).
@@ -135,39 +207,90 @@ async function priceOnce(
   const allSamples: number[] = [];
   let cancelled = false;
 
-  for (let s = 0; s < nSlices; s++) {
+  // `slices[s]` results, gathered either sequentially in-process (default —
+  // every existing caller: tests, bench, the no-pool worker) or, when
+  // `hooks.sliceRunner` is supplied (browser real client, farming slices
+  // across a Worker pool — see src/worker/pool.ts), concurrently across
+  // workers. EITHER WAY the reduction below walks `slices` in index order
+  // 0..nSlices-1 and performs the exact same weighted-sum arithmetic in the
+  // same order, so pv/stderr/diagnostics are bit-identical regardless of how
+  // (or how fast, or in what completion order) the slices were computed —
+  // see tests/pool.test.ts.
+  const slices: (McRunResult | undefined)[] = new Array(nSlices);
+
+  if (hooks.sliceRunner) {
     if (hooks.isCancelled()) {
       cancelled = true;
-      break;
+    } else {
+      const indices = Array.from({ length: nSlices }, (_, s) => s);
+      let pathsDone = 0;
+      const results = await hooks.sliceRunner.runSlices(
+        spec,
+        market,
+        numPaths,
+        seed,
+        antithetic,
+        indices,
+        (slicePaths) => {
+          pathsDone += slicePaths;
+          hooks.onProgress(progressBase + pathsDone, progressTotal ?? numPaths, phase, solveIteration);
+        },
+      );
+      for (let s = 0; s < nSlices; s++) slices[s] = results[s];
+      await hooks.yieldNow();
     }
+  } else {
+    for (let s = 0; s < nSlices; s++) {
+      if (hooks.isCancelled()) {
+        cancelled = true;
+        break;
+      }
+      const slicePaths = Math.min(per, numPaths - s * per);
+      const res = split
+        ? evaluateCachedSliceSplit(
+            cacheKey,
+            s,
+            seed + s * 7919,
+            slicePaths,
+            antithetic,
+            grid.nSteps,
+            grid.stepDt,
+            market.spot,
+            market,
+            observablesKey,
+            split.observables,
+            split.outcome,
+            undefined,
+            normalsKey,
+          )
+        : evaluateCachedSlice(
+            cacheKey,
+            s,
+            seed + s * 7919,
+            slicePaths,
+            antithetic,
+            grid.nSteps,
+            grid.stepDt,
+            market.spot,
+            market,
+            evaluator!,
+            undefined,
+            normalsKey,
+          );
+      slices[s] = res;
+      if (res.cancelled) {
+        cancelled = true;
+        break;
+      }
+      hooks.onProgress(progressBase + (s + 1) * per, progressTotal ?? numPaths, phase, solveIteration);
+      await hooks.yieldNow();
+    }
+  }
+
+  for (let s = 0; s < nSlices; s++) {
+    const res = slices[s];
+    if (!res) break; // not reached (cancelled before/at this slice)
     const slicePaths = Math.min(per, numPaths - s * per);
-    const res = split
-      ? evaluateCachedSliceSplit(
-          cacheKey,
-          s,
-          seed + s * 7919,
-          slicePaths,
-          antithetic,
-          grid.nSteps,
-          grid.dtYears,
-          market.spot,
-          market,
-          observablesKey,
-          split.observables,
-          split.outcome,
-        )
-      : evaluateCachedSlice(
-          cacheKey,
-          s,
-          seed + s * 7919,
-          slicePaths,
-          antithetic,
-          grid.nSteps,
-          grid.dtYears,
-          market.spot,
-          market,
-          evaluator!,
-        );
     const w = slicePaths;
     wSum += w;
     pvSum += w * res.pvPct;
@@ -181,13 +304,10 @@ async function priceOnce(
       while (callCounts.length <= i) callCounts.push(0);
       callCounts[i] += w * p;
     });
-    for (const sample of res.samples) allSamples.push(sample);
-    if (res.cancelled) {
-      cancelled = true;
-      break;
+    if (wantDistribution) {
+      for (const sample of res.samples) allSamples.push(sample);
     }
-    hooks.onProgress(progressBase + (s + 1) * per, progressTotal ?? numPaths, phase, solveIteration);
-    await hooks.yieldNow();
+    if (res.cancelled) cancelled = true;
   }
 
   const W = wSum > 0 ? wSum : 1;
@@ -198,7 +318,7 @@ async function priceOnce(
   let pLoss: number | undefined;
   let expectedShortfall5: number | undefined;
   let expectedShortfall1: number | undefined;
-  if (allSamples.length > 0) {
+  if (wantDistribution && allSamples.length > 0) {
     histogram = computeHistogram(allSamples);
     pLoss = computePLoss(allSamples, referenceLevelPct);
     expectedShortfall5 = computeExpectedShortfall(allSamples, 0.05);
@@ -223,12 +343,95 @@ async function priceOnce(
   };
 }
 
+/**
+ * Evaluates exactly ONE slice of a priceOnce pass, self-contained and
+ * synchronous — everything it needs (spec, market, numPaths, seed,
+ * antithetic, sliceIndex) is plain, structured-cloneable data, so this is
+ * the function a pool worker's RPC handler calls (see src/worker/pool.ts and
+ * src/worker/pricer.worker.ts): the coordinator (main thread) never ships
+ * closures across the postMessage boundary, only this call's arguments, and
+ * each pool worker rebuilds its own grid/evaluator/cache keys exactly as
+ * priceOnce's in-process loop does.
+ *
+ * NOT used by the LSMC/issuerCallable branch — that always runs as one
+ * synchronous priceOnce pass on a single worker (see executePriceRequest and
+ * pool.ts's `runIssuerCallable`).
+ */
+export function evaluatePriceSlice(
+  spec: ProductSpec,
+  market: MarketData,
+  numPaths: number,
+  seed: number,
+  antithetic: boolean,
+  sliceIndex: number,
+): McRunResult {
+  const grid = buildGrid(spec);
+  const ctx: EvaluatorContext = { market, grid, df: makeDf(discountRate(market)) };
+  const split = makeSplitEvaluator(spec, ctx);
+  const evaluator = split ? undefined : makeEvaluator(spec, ctx);
+  const nSlices = Math.max(1, Math.ceil(numPaths / SLICE_PATHS));
+  const per = Math.ceil(numPaths / nSlices);
+  const slicePaths = Math.min(per, numPaths - sliceIndex * per);
+
+  const cacheKey = computeCacheKey({
+    s0: market.spot,
+    market,
+    numPaths,
+    seed,
+    antithetic,
+    nSteps: grid.nSteps,
+    timesKey: gridTimesDigest(grid),
+  });
+  const observablesKey = split ? computeObservablesKey(cacheKey, grid, observablesRequirementsOf(spec)) : '';
+  const normalsKey = computeNormalsKey({ numPaths, seed, antithetic, nSteps: grid.nSteps });
+
+  return split
+    ? evaluateCachedSliceSplit(
+        cacheKey,
+        sliceIndex,
+        seed + sliceIndex * 7919,
+        slicePaths,
+        antithetic,
+        grid.nSteps,
+        grid.stepDt,
+        market.spot,
+        market,
+        observablesKey,
+        split.observables,
+        split.outcome,
+        undefined,
+        normalsKey,
+      )
+    : evaluateCachedSlice(
+        cacheKey,
+        sliceIndex,
+        seed + sliceIndex * 7919,
+        slicePaths,
+        antithetic,
+        grid.nSteps,
+        grid.stepDt,
+        market.spot,
+        market,
+        evaluator!,
+        undefined,
+        normalsKey,
+      );
+}
+
 /** Immutably applies a solve variable to the spec. */
 export function applySolveValue(spec: ProductSpec, target: SolveTarget, x: number): ProductSpec {
   switch (target.kind) {
     case 'none':
-    case 'upfront':
       return spec;
+    case 'upfront':
+      // 'upfront' isn't an input the solver roots on — executePriceRequest's
+      // isDirect check means this branch is only ever reached with x=0, from
+      // useLiveReprice's watched-signature exclusion (see that file). Fold
+      // upfrontPct out of the watched signature the same way every other
+      // solve target folds out its own field, or writing the solved upfront
+      // value back into the spec keeps changing the signature and retriggers
+      // another live reprice forever (jitters, never settles).
+      return spec.kind === 'accumulator' ? { ...spec, upfrontPct: x } : spec;
     case 'couponPa':
       return { ...(spec as CouponProductSpec), couponPaPct: x };
     case 'acCouponPa':
@@ -280,12 +483,20 @@ export function applySolveValue(spec: ProductSpec, target: SolveTarget, x: numbe
   }
 }
 
-/** Bracket + PV target for each solve variable. */
+/**
+ * Bracket + PV target for each solve variable.
+ *
+ * `feePct` is the fee the issuer retains out of the reoffer, so the STRUCTURE
+ * only has to be worth `reoffer − fee`. Lowering the target is what makes a
+ * fee-bearing quote less aggressive than a fair value — it is the dominant
+ * reason a bank's coupon sits below the risk-neutral one.
+ */
 export function solveBounds(
   spec: ProductSpec,
   target: SolveTarget,
+  feePct = 0,
 ): { lo: number; hi: number; hardLo: number; hardHi: number; targetPct: number } {
-  const reoffer = spec.kind === 'accumulator' ? spec.upfrontPct : spec.reofferPct;
+  const reoffer = (spec.kind === 'accumulator' ? spec.upfrontPct : spec.reofferPct) - feePct;
   switch (target.kind) {
     case 'couponPa':
     case 'acCouponPa':
@@ -331,9 +542,56 @@ function notionalOf(spec: ProductSpec, market: MarketData): number {
   return spec.notional;
 }
 
+/**
+ * Resolves the market the Monte Carlo should actually run on, plus the basis
+ * describing that choice. With no surface this returns the market unchanged and
+ * reports flat-vol pricing, so behavior is identical to before.
+ */
+function effectiveMarketFor(
+  spec: ProductSpec,
+  market: MarketData,
+): { market: MarketData; basis: PricingBasis } {
+  const feePct = market.costs?.feePct ?? 0;
+  const dr = discountRate(market);
+  if (!market.volSurface) {
+    return {
+      market,
+      basis: { volUsed: market.vol, volSource: 'flat', discountRate: dr, feePct },
+    };
+  }
+  const { strikePct, reason } = riskStrikeFor(spec);
+  const volUsed = volAtPctOfSpot(market.volSurface, strikePct, spec.tenorYears);
+  return {
+    market: { ...market, vol: volUsed },
+    basis: {
+      volUsed,
+      volSource: 'surface',
+      riskStrikePct: strikePct,
+      riskStrikeReason: reason,
+      discountRate: dr,
+      feePct,
+    },
+  };
+}
+
 export async function executePriceRequest(req: PriceRequest, hooks: PricingHooks): Promise<PriceResult | null> {
   const start = Date.now();
-  const { market, mc } = req;
+  const { mc } = req;
+  // Skew: when a surface is available, price the product at the vol of ITS OWN
+  // risk strike rather than at the flat/ATM vol. These payoffs live away from
+  // the money, so that choice moves the price materially — see
+  // engine/riskStrike for which strike governs each family.
+  //
+  // The effective vol is fixed ONCE here, from the spec as submitted, and held
+  // for every pass of a solve. Recomputing it per iteration (which matters
+  // only when solving the barrier itself) would change `vol` on each trial and
+  // therefore change the path-cache key, evicting the cache and undoing the
+  // interactive solve speed. The vol is a modelling choice, not a payoff term,
+  // so holding it constant across the solve is the right trade; it does mean a
+  // solved barrier is priced at the vol of the STARTING barrier.
+  const basis = effectiveMarketFor(req.product, req.market);
+  const market = basis.market;
+  const feePct = market.costs?.feePct ?? 0;
   // A `preview` request runs at a reduced path count for fast, transient
   // pricing during live typing; the trailing-edge "settle" request uses the
   // full mc.numPaths and is the authoritative result. Both the solve loop
@@ -349,7 +607,7 @@ export async function executePriceRequest(req: PriceRequest, hooks: PricingHooks
     req.solve.kind === 'none' || req.solve.kind === 'upfront';
 
   if (!isDirect) {
-    const { lo, hi, hardLo, hardHi, targetPct } = solveBounds(spec, req.solve);
+    const { lo, hi, hardLo, hardHi, targetPct } = solveBounds(spec, req.solve, feePct);
     let iter = 0;
     const evalF = async (x: number): Promise<number> => {
       iter += 1;
@@ -386,27 +644,56 @@ export async function executePriceRequest(req: PriceRequest, hooks: PricingHooks
   }
 
   hooks.onProgress(0, numPaths, 'pricing');
-  const final = await priceOnce(spec, market, numPaths, mc.seed, mc.antithetic, hooks, 'pricing');
+  // Only this pass's result is displayed, so it is the only one that pays for
+  // the distribution diagnostics (solve iterations and greeks bumps skip them).
+  const final = await priceOnce(
+    spec,
+    market,
+    numPaths,
+    mc.seed,
+    mc.antithetic,
+    hooks,
+    'pricing',
+    0,
+    undefined,
+    undefined,
+    true,
+  );
   if (final.cancelled || hooks.isCancelled()) return null;
 
   if (req.solve.kind === 'upfront') solvedValue = final.pvPct;
 
   let greeks: PriceResult['greeks'];
   if (req.greeks) {
-    hooks.onProgress(0, numPaths * 4, 'greeks');
+    // Delta is reported as exactly 0 WITHOUT running any MC, rather than via
+    // bump-and-reprice: every payoff family here (coupon, participation,
+    // accumulator) is priced as a PERCENTAGE of notional and reads only
+    // relative performance (spots[i]/spots[0] — see the payoffs modules).
+    // `fillPath` (gbm.ts) sets `spots[0] = s0` and every subsequent spot is
+    // s0 times a multiplicative factor, so scaling s0 by (1+e) scales EVERY
+    // spot on the path by the same (1+e) and leaves every spots[i]/spots[0]
+    // ratio — hence the whole path of relative performance, hence PV% —
+    // exactly unchanged. That's not an empirical near-zero: it's a structural
+    // identity of "price at inception, spot == initial fixing", so a spot
+    // bump-and-reprice pair was always going to return ~0 (the ~1e-14 the
+    // old code observed was float noise around an exact analytic zero). This
+    // stops being true once the model separates the initial fixing from the
+    // live spot (e.g. a seasoned/live trade repriced mid-life, where
+    // performance is measured off a fixing struck in the past at a different
+    // level than today's spot) — whoever adds that needs to bring back a
+    // real spot bump here.
+    hooks.onProgress(0, numPaths * 2, 'greeks');
     const bump = async (m: MarketData, i: number) =>
-      priceOnce(spec, m, numPaths, mc.seed, mc.antithetic, hooks, 'greeks', i * numPaths, numPaths * 4);
-    const up = await bump({ ...market, spot: market.spot * 1.01 }, 0);
-    const dn = await bump({ ...market, spot: market.spot * 0.99 }, 1);
+      priceOnce(spec, m, numPaths, mc.seed, mc.antithetic, hooks, 'greeks', i * numPaths, numPaths * 2);
     // Bumping vol here also shifts the quanto drift term (−corrEqFx · vol · fxVol
     // in riskNeutralDrift), so under a quanto this vega is the *total* vega —
     // vol's effect on both the diffusion and the drift. That's intentional:
     // it's the correct sensitivity to a re-quoted equity vol, not a bug.
-    const vu = await bump({ ...market, vol: market.vol + 0.01 }, 2);
-    const vd = await bump({ ...market, vol: Math.max(0.001, market.vol - 0.01) }, 3);
-    if ([up, dn, vu, vd].some((r) => r.cancelled) || hooks.isCancelled()) return null;
+    const vu = await bump({ ...market, vol: market.vol + 0.01 }, 0);
+    const vd = await bump({ ...market, vol: Math.max(0.001, market.vol - 0.01) }, 1);
+    if ([vu, vd].some((r) => r.cancelled) || hooks.isCancelled()) return null;
     greeks = {
-      deltaPct: (up.pvPct - dn.pvPct) / 2,
+      deltaPct: 0,
       vegaPct: (vu.pvPct - vd.pvPct) / 2,
     };
   }
@@ -425,6 +712,9 @@ export async function executePriceRequest(req: PriceRequest, hooks: PricingHooks
     diagnostics: final.diagnostics,
     elapsedMs: Date.now() - start,
     preview: req.preview,
+    // What the number was actually built on: which point of the vol surface,
+    // the discount rate including any funding spread, and the fee retained.
+    basis: { ...basis.basis, fairValuePct: final.pvPct },
   };
 }
 

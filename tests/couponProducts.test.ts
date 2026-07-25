@@ -8,6 +8,8 @@ const grid: PricingGrid = {
   nSteps: 4,
   dtYears: 0.25,
   tenorYears: 1,
+  times: [0, 0.25, 0.5, 0.75, 1],
+  stepDt: Float64Array.from([0.25, 0.25, 0.25, 0.25]),
   couponObs: [1, 2, 3, 4],
   callObs: [1, 2, 3, 4],
   settlementObs: [],

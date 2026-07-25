@@ -177,6 +177,40 @@ export function ResultsBar() {
             )}
           </div>
 
+          {result.basis && (
+            <div>
+              <h4 className="detail-block-title">Pricing basis</h4>
+              <div
+                className="detail-stat-row"
+                title={result.basis.riskStrikeReason ?? 'Flat volatility as entered in the market panel.'}
+              >
+                <span>Volatility used</span>
+                <span>
+                  {(result.basis.volUsed * 100).toFixed(2)}%
+                  {result.basis.volSource === 'surface' && result.basis.riskStrikePct !== undefined
+                    ? ` @ ${result.basis.riskStrikePct}%`
+                    : ' (flat)'}
+                </span>
+              </div>
+              <div className="detail-stat-row" title="Risk-free rate plus the issuer funding spread.">
+                <span>Discount rate</span>
+                <span>{(result.basis.discountRate * 100).toFixed(3)}%</span>
+              </div>
+              {result.basis.fairValuePct !== undefined && result.basis.feePct !== 0 && (
+                <>
+                  <div className="detail-stat-row" title="Risk-neutral value before the fee is retained.">
+                    <span>Fair value</span>
+                    <span>{result.basis.fairValuePct.toFixed(3)}%</span>
+                  </div>
+                  <div className="detail-stat-row" title="Distribution fee / margin retained upfront.">
+                    <span>Less fee</span>
+                    <span>−{result.basis.feePct.toFixed(2)}%</span>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
           {result.greeks && (
             <div>
               <h4 className="detail-block-title">Greeks</h4>

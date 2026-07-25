@@ -112,11 +112,24 @@ describe('path cache — slice/seed/pooling structure preserved', () => {
     // /tmp scratchpad capture script used during the Task 1 refactor. Any
     // future change to path generation, evaluator ordering, or the
     // slice-pooling arithmetic that isn't a true no-op will move these.
+    //
+    // RE-PINNED for the adaptive time grid (see src/engine/schedule.ts's
+    // needsDailyPath): baseCoupon is barrierType 'european' with a
+    // quarterly coupon + quarterly call, so it no longer needs a daily
+    // path — buildGrid now returns a COMPACT grid (one step per quarter,
+    // nSteps=4) instead of the old 252-step daily grid. GBM log-increments
+    // over a longer step are still exactly lognormal, so this is a
+    // different-but-equally-valid set of simulated paths for the SAME
+    // model (same seed, different step structure), not an approximation —
+    // see tests/adaptiveGrid.test.ts for the exactness proof (compact-grid
+    // price agrees with the daily-grid price to within MC error). The
+    // pv/stderr below are the new byte-exact values this legitimately
+    // moved to.
     __clearPathCacheForTests();
     const res = await executePriceRequest(req(baseCoupon), hooks);
     expect(res).not.toBeNull();
-    expect(res!.pvPct).toBeCloseTo(102.18470609646775, 9);
-    expect(res!.stderrPct).toBeCloseTo(0.03645190141454858, 9);
+    expect(res!.pvPct).toBeCloseTo(102.10796456672118, 9);
+    expect(res!.stderrPct).toBeCloseTo(0.037423213011319845, 9);
   });
 });
 

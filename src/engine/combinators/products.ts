@@ -199,19 +199,42 @@ export interface CatapultTerms {
   kiBarrierPct: number;
 }
 
-function catapultObs(tenorYears: number, freq: Frequency, nSteps: number, dtYears: number): number[] {
+/** Index of the grid point in `grid.times` closest to `t` (ties favor the
+ * earlier index), clamped to [1, grid.nSteps]. Generalizes the old
+ * `Math.round(t / dtYears)` snapping to any grid — uniform or not — by
+ * searching the grid's actual time vector instead of assuming a constant
+ * step size (which a merged/adaptive grid doesn't have). */
+function nearestGridIndex(t: number, grid: PricingGrid): number {
+  const { times, nSteps } = grid;
+  let lo = 0;
+  let hi = nSteps;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (times[mid] < t) lo = mid + 1;
+    else hi = mid;
+  }
+  // `lo` is the first index with times[lo] >= t; compare against its
+  // predecessor to find the closer of the two.
+  let idx = lo;
+  if (idx > 0 && (idx > nSteps || t - times[idx - 1] <= times[idx] - t)) {
+    idx = idx - 1;
+  }
+  return Math.min(nSteps, Math.max(1, idx));
+}
+
+function catapultObs(tenorYears: number, freq: Frequency, grid: PricingGrid): number[] {
   const periodsPerYear = PERIODS_PER_YEAR[freq];
   const numObs = Math.round(tenorYears * periodsPerYear);
   const indices: number[] = [];
   for (let k = 1; k <= numObs; k++) {
     const t = k / periodsPerYear;
-    indices.push(Math.min(nSteps, Math.max(1, Math.round(t / dtYears))));
+    indices.push(nearestGridIndex(t, grid));
   }
   return Array.from(new Set(indices)).sort((a, b) => a - b);
 }
 
 export function buildCatapult(terms: CatapultTerms, grid: PricingGrid): Contract {
-  const gridIndices = catapultObs(terms.tenorYears, terms.callFrequency, grid.nSteps, grid.dtYears);
+  const gridIndices = catapultObs(terms.tenorYears, terms.callFrequency, grid);
   const periodsPerYear = PERIODS_PER_YEAR[terms.callFrequency];
 
   const events: ScheduleEvent[] = gridIndices.map((gi, obsIndex) => {
