@@ -9,6 +9,7 @@ import { SelectField } from './SelectField';
 import { Segmented } from './Segmented';
 import { TickerSearch } from './TickerSearch';
 import { NO_COSTS, SUPPORTED_CURRENCIES as CURRENCIES, type CostParams } from '../model/market';
+import { buildVolSurface, skewPoints, type VolSurface } from '../model/volSurface';
 
 interface FetchLine {
   kind: 'ok' | 'err' | 'info';
@@ -64,12 +65,27 @@ async function fetchLiveData(
 
   if (impliedR.status === 'fulfilled') {
     const r = impliedR.value;
-    useMarketStore.setState((s) => ({ market: { ...s.market, vol: r.atmVol, divYield: r.divYield } }));
+    // Keep the whole chain as a vol surface, not just the ATM number, so the
+    // engine can price each product at its own risk strike. A chain too thin
+    // to build a surface from is not an error — the ATM vol is still good.
+    let surface: VolSurface | undefined;
+    let surfaceMsg = '';
+    try {
+      surface = buildVolSurface(r.chain);
+      const skew = skewPoints(surface, r.tYears, 80);
+      surfaceMsg = ` · skew ${skew >= 0 ? '+' : ''}${(skew * 100).toFixed(1)}pt (80% vs ATM)`;
+    } catch {
+      surfaceMsg = ' · flat vol (chain too thin for a surface)';
+    }
+    useMarketStore.setState((s) => ({
+      market: { ...s.market, vol: r.atmVol, divYield: r.divYield, volSurface: surface },
+    }));
     lines.push({
       kind: 'ok',
       msg:
         `Vol ${(r.atmVol * 100).toFixed(1)}%, div ${(r.divYield * 100).toFixed(2)}% · options ${r.expiry} K=${r.strike}` +
-        (r.approximate ? ' (approx, American-style)' : ''),
+        (r.approximate ? ' (approx, American-style)' : '') +
+        surfaceMsg,
       short: `vol ${(r.atmVol * 100).toFixed(1)}%`,
     });
   } else {
@@ -77,7 +93,10 @@ async function fetchLiveData(
     // Options chain unavailable — fall back to realized vol; div stays manual.
     try {
       const hv = await fetchHistVol(ticker);
-      useMarketStore.setState((s) => ({ market: { ...s.market, vol: hv.vol } }));
+      // Clear any surface from a previous fetch: a realized vol is flat, and
+      // keeping a stale surface would price this underlying on another one's
+      // skew.
+      useMarketStore.setState((s) => ({ market: { ...s.market, vol: hv.vol, volSurface: undefined } }));
       lines.push({
         kind: 'ok',
         msg: `Vol ${(hv.vol * 100).toFixed(2)}% · ${hv.source} (realized fallback)`,
