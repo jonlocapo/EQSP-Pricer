@@ -256,21 +256,14 @@ export function MarketPanel() {
           </div>
         )}
 
-        <div className="field">
-          <div className="field-label">
-            <span>Spot</span>
-            {manualOverride && <span className="manual-badge">MANUAL</span>}
-          </div>
-          <div className="numeric-field">
-            <input
-              className="input"
-              type="number"
-              step={0.01}
-              value={market.spot}
-              onChange={(e) => setMarket({ spot: e.target.valueAsNumber })}
-            />
-          </div>
-        </div>
+        <NumericField
+          label="Spot"
+          value={market.spot}
+          step={0.01}
+          onChange={(v) => setMarket({ spot: v })}
+          badge={manualOverride ? 'MANUAL' : undefined}
+          badgeClassName="manual-badge"
+        />
 
         <NumericField
           label="Volatility"

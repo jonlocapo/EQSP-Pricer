@@ -322,6 +322,9 @@ export function CouponPage() {
                                 step={1}
                                 value={v}
                                 onChange={(e) => {
+                                  // Ignore a cleared cell mid-retype rather than
+                                  // writing NaN into the barrier schedule.
+                                  if (!Number.isFinite(e.target.valueAsNumber)) return;
                                   const next = [...spec.customCallBarriersPct];
                                   next[i] = e.target.valueAsNumber;
                                   setSpec({ customCallBarriersPct: next });

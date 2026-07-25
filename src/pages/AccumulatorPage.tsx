@@ -7,6 +7,7 @@ import { Segmented } from '../components/Segmented';
 import { NumericField } from '../components/NumericField';
 import { SelectField } from '../components/SelectField';
 import { ActionRow } from '../components/ActionRow';
+import { noteEditSource } from '../state/editSource';
 import { validateAccumulator } from '../services/validation';
 import { runPricing } from '../services/runPricing';
 import { useLiveReprice } from '../hooks/useLiveReprice';
@@ -76,6 +77,9 @@ export function AccumulatorPage() {
   function updateTenor(value: number, unit: TenorUnit) {
     setTenorValue(value);
     setTenorUnit(unit);
+    // A cleared field mid-retype reads NaN. Keep it empty on screen but never
+    // publish it — buildGrid would derive NaN steps from a NaN tenor.
+    if (!Number.isFinite(value)) return;
     const tenorYears = unit === 'weeks' ? value / 52 : value / 12;
     setSpec({ tenorYears });
   }
@@ -145,7 +149,7 @@ export function AccumulatorPage() {
               className="input"
               type="number"
               step={1}
-              value={tenorValue}
+              value={Number.isFinite(tenorValue) ? tenorValue : ''}
               onChange={(e) => updateTenor(e.target.valueAsNumber, tenorUnit)}
               style={{ maxWidth: 90 }}
             />
@@ -198,7 +202,15 @@ export function AccumulatorPage() {
             <span>Guarantee periods</span>
           </div>
           <div className="stepper">
-            <button type="button" onClick={() => setSpec({ guaranteePeriods: Math.max(0, spec.guaranteePeriods - 1) })}>
+            {/* These are "arrows" like NumericField's steppers, so they get the
+             * same fast step-style debounce rather than the slow typing one. */}
+            <button
+              type="button"
+              onClick={() => {
+                noteEditSource('step');
+                setSpec({ guaranteePeriods: Math.max(0, spec.guaranteePeriods - 1) });
+              }}
+            >
               −
             </button>
             <input
@@ -207,7 +219,13 @@ export function AccumulatorPage() {
               value={spec.guaranteePeriods}
               onChange={(e) => setSpec({ guaranteePeriods: Math.max(0, e.target.valueAsNumber || 0) })}
             />
-            <button type="button" onClick={() => setSpec({ guaranteePeriods: spec.guaranteePeriods + 1 })}>
+            <button
+              type="button"
+              onClick={() => {
+                noteEditSource('step');
+                setSpec({ guaranteePeriods: spec.guaranteePeriods + 1 });
+              }}
+            >
               +
             </button>
             <span className="text-muted">settlement periods</span>
