@@ -120,6 +120,15 @@ export function CouponPage() {
   // dim it the same way the other solve targets dim their own field.
   const priceIsSolveTarget = solve.kind === 'none';
 
+  // Detected, not stored: an airbag is a *combination* of existing fields
+  // (put strike at the barrier with matching raw-shortfall leverage), so the
+  // hint follows whatever the user has actually set.
+  const isAirbag =
+    spec.barrierType !== 'none' &&
+    spec.kiBarrierPct > 0 &&
+    Math.abs(spec.putStrikePct - spec.kiBarrierPct) < 1e-9 &&
+    Math.abs(spec.downsideLeveragePct - 10000 / spec.kiBarrierPct) < 1e-6;
+
   function handleRun() {
     runPricing({
       page: 'coupon',
@@ -206,6 +215,46 @@ export function CouponPage() {
             solveActive={fieldSolved('kiBarrier')}
             onSolveClick={() => toggleSolve('kiBarrier')}
           />
+        )}
+        {spec.barrierType !== 'none' && (
+          <div className="field">
+            <div className="field-label">
+              <span>Downside style</span>
+            </div>
+            {/* One-shot actions, not sticky states (same convention as the
+             * participation templates). A one-star / airbag note measures the
+             * loss from the BARRIER instead of par, which in this model is just
+             * put strike = barrier with the raw-shortfall AUTO leverage — no
+             * separate payoff mode. See tests/composedProducts.test.ts. */}
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button
+                type="button"
+                className="btn btn-sm"
+                title="Standard geared put from par: loss is measured from 100%."
+                onClick={() => setSpec({ putStrikePct: 100, downsideLeveragePct: 100 })}
+              >
+                Standard
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm"
+                title="One-star / airbag: loss is measured from the barrier, so breaching it does not immediately cost the full shortfall from par. Sets put strike = barrier with matching leverage."
+                onClick={() =>
+                  setSpec({
+                    putStrikePct: spec.kiBarrierPct,
+                    downsideLeveragePct: 10000 / spec.kiBarrierPct,
+                  })
+                }
+              >
+                One-star (airbag)
+              </button>
+            </div>
+            {isAirbag && (
+              <span className="text-muted" style={{ fontSize: 11 }}>
+                Airbag: pays par down to {spec.kiBarrierPct}%, then loses proportionally.
+              </span>
+            )}
+          </div>
         )}
         <div className="field-row">
           <NumericField
