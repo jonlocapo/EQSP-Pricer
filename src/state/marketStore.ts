@@ -51,8 +51,12 @@ interface MarketState {
 
 export const useMarketStore = create<MarketState>((set) => ({
   market: { ...DEFAULT_MARKET },
-  underlyingName: 'S&P 500 INDEX',
-  ticker: '^SPX',
+  // EURO STOXX 50 as the default: a EUR index matches the EUR default note
+  // currency, so the app opens in a consistent single-currency state rather
+  // than an accidental quanto. ^STOXX50E is Yahoo's symbol for it — SX5E-style
+  // tickers are not, and produce no price or option history.
+  underlyingName: 'EURO STOXX 50',
+  ticker: '^STOXX50E',
   assetType: 'index',
   fetchStatus: { state: 'idle' },
   manualOverride: false,
@@ -78,7 +82,16 @@ export const useMarketStore = create<MarketState>((set) => ({
   markManualOverride: () => set({ manualOverride: true }),
   applyFetchedSpot: (spot, source, asOf, underlyingCurrency) =>
     set((s) => ({
-      market: { ...s.market, spot },
+      // The note currency follows the underlying here, not at ticker-pick time:
+      // Yahoo's SEARCH endpoint does not report a currency, but the chart
+      // endpoint behind the spot fetch does. Relying on the search response was
+      // why picking a US name never switched the note to USD. Only adopt
+      // currencies the app can actually quote; a manual change afterwards still
+      // wins, since this only runs on a fetch.
+      market:
+        underlyingCurrency && SUPPORTED_CURRENCIES.includes(underlyingCurrency)
+          ? { ...s.market, spot, currency: underlyingCurrency }
+          : { ...s.market, spot },
       fetchStatus: { state: 'ok', source, asOf },
       manualOverride: false,
       underlyingCurrency,

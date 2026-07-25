@@ -106,9 +106,28 @@ export function NumericField({
     if (Number.isFinite(parsed)) commit(parsed, 'type');
   }
 
+  /**
+   * Steps to the next multiple of `step`, not just `value ± step`.
+   *
+   * A value left by a solve is rarely on a round increment (3.0456 with a 0.1
+   * step). Adding the increment blindly keeps that untidy tail forever
+   * (3.1456, 3.2456, ...). Snapping to the next multiple in the direction of
+   * travel gives 3.1, then 3.2, so the first click also tidies the number.
+   * A value already on a multiple just moves one full increment.
+   */
   function stepBy(direction: 1 | -1): void {
     const base = Number.isFinite(value) ? value : 0;
-    const next = Number((base + direction * step).toFixed(decimalsOf(step)));
+    const dp = decimalsOf(step);
+    const units = base / step;
+    // Guard against a value that is only a floating-point hair off a multiple
+    // (0.1 * 30 !== 3 exactly): treat it as already on the multiple.
+    const onMultiple = Math.abs(units - Math.round(units)) < 1e-9;
+    const nextUnits = onMultiple
+      ? Math.round(units) + direction
+      : direction === 1
+        ? Math.ceil(units)
+        : Math.floor(units);
+    const next = Number((nextUnits * step).toFixed(dp));
     setDraft(null);
     commit(next, 'step');
   }

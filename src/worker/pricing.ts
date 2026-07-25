@@ -425,7 +425,15 @@ export function evaluatePriceSlice(
 export function applySolveValue(spec: ProductSpec, target: SolveTarget, x: number): ProductSpec {
   switch (target.kind) {
     case 'none':
-      return spec;
+      // Solving for the price makes the REOFFER (accumulator: upfront) the
+      // output, and runPricing writes the computed PV back into it. So fold it
+      // out here the same way every other target folds out its own field.
+      // useLiveReprice builds its watched signature through this function; if
+      // the field stayed in, writing the solved value back would change the
+      // signature, retrigger another live pass, and jitter forever — the exact
+      // failure previously seen on the AQ/DQ upfront solve.
+      if (spec.kind === 'accumulator') return { ...spec, upfrontPct: x };
+      return { ...spec, reofferPct: x };
     case 'upfront':
       // 'upfront' is not an input the solver roots on. executePriceRequest's
       // isDirect check means this branch is only ever reached with x=0, from
@@ -444,6 +452,8 @@ export function applySolveValue(spec: ProductSpec, target: SolveTarget, x: numbe
       return { ...(spec as CouponProductSpec), couponBarrierPct: x };
     case 'callBarrier':
       return { ...(spec as CouponProductSpec), callBarrierPct: x };
+    case 'putStrike':
+      return { ...(spec as CouponProductSpec), putStrikePct: x };
     case 'kiBarrier': {
       if (spec.kind === 'participation') {
         const p = spec;
@@ -484,6 +494,8 @@ export function applySolveValue(spec: ProductSpec, target: SolveTarget, x: numbe
     }
     case 'strike':
       return { ...spec, strikePct: x } as ProductSpec;
+    case 'koTrigger':
+      return { ...spec, koTriggerPct: x } as ProductSpec;
   }
 }
 
@@ -509,6 +521,10 @@ export function solveBounds(
       return { lo: 1, hi: 150, hardLo: 0.5, hardHi: 300, targetPct: reoffer };
     case 'callBarrier':
       return { lo: 50, hi: 150, hardLo: 10, hardHi: 300, targetPct: reoffer };
+    // A higher put strike means the short put attaches sooner and loses more,
+    // so PV falls as the strike rises — monotone, just decreasing.
+    case 'putStrike':
+      return { lo: 50, hi: 150, hardLo: 10, hardHi: 300, targetPct: reoffer };
     case 'kiBarrier': {
       const cap =
         spec.kind === 'coupon' ? Math.min(spec.putStrikePct, 100) : 100;
@@ -533,6 +549,10 @@ export function solveBounds(
       return { lo: 0, hi: 50, hardLo: 0, hardHi: 100, targetPct: reoffer };
     case 'strike':
       return { lo: 50, hi: 200, hardLo: 10, hardHi: 250, targetPct: reoffer };
+    // Accumulator knock-out trigger. A more distant trigger keeps the trade
+    // alive longer, so it moves the upfront monotonically.
+    case 'koTrigger':
+      return { lo: 100.5, hi: 200, hardLo: 100.1, hardHi: 400, targetPct: reoffer };
     default:
       throw new Error(`solve target ${target.kind} has no bounds`);
   }

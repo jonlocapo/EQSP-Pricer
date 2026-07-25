@@ -783,6 +783,34 @@ select.input:focus {
   padding: 2px 5px;
   border-radius: 4px;
   white-space: nowrap;
+  /* Above neighbouring cells, which are later in the DOM and would otherwise
+   * paint over the tooltip. */
+  z-index: 2;
+}
+
+/*
+ * Keep the tooltip inside the panel. A centred tooltip on the outermost
+ * columns hangs past the chart's edge, which widened the results panel and
+ * produced a horizontal scrollbar. The two columns at each end anchor their
+ * tooltip to their own edge instead.
+ */
+.bar-chart .bar-cell:first-child:hover::after,
+.bar-chart .bar-cell:nth-child(2):hover::after {
+  left: 0;
+  transform: none;
+}
+
+.bar-chart .bar-cell:last-child:hover::after,
+.bar-chart .bar-cell:nth-last-child(2):hover::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+
+/* Many-bin charts (the PV histogram has ~24) need the gap back as hover area,
+ * otherwise each column is only a few pixels wide. */
+.bar-chart.dense {
+  gap: 1px;
 }
 
 .chevron-btn {

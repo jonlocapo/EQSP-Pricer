@@ -180,7 +180,7 @@ function isoDateFromUnix(seconds: number): string {
 async function fetchYahooOptions(symbol: string, date?: number): Promise<{ result: YahooOptionsResult; proxied: boolean }> {
   const base = `https://query2.finance.yahoo.com/v7/finance/options/${encodeURIComponent(symbol)}`;
   const url = date === undefined ? base : `${base}?date=${date}`;
-  const { text, proxied } = await fetchTextWithCorsFallback(url, 10_000, (t) => t.trimStart().startsWith('{'));
+  const { text, proxied } = await fetchTextWithCorsFallback(url, 6_000, (t) => t.trimStart().startsWith('{'));
   const parsed = JSON.parse(text) as {
     optionChain?: { result?: YahooOptionsResult[]; error?: { description?: string } | null };
   };

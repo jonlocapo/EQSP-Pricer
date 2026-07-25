@@ -20,6 +20,7 @@ const SOLVE_LABELS: Record<SolveTarget['kind'], string> = {
   couponBarrier: 'Coupon Barrier',
   callBarrier: 'Call Barrier',
   kiBarrier: 'KI Barrier',
+  putStrike: 'Put Strike',
   gearing: 'Upside participation',
   upsideStrike: 'Upside strike',
   bonusLevel: 'Bonus',
@@ -28,6 +29,7 @@ const SOLVE_LABELS: Record<SolveTarget['kind'], string> = {
   upsideKoBarrier: 'KO Barrier',
   rebate: 'Rebate',
   strike: 'Strike',
+  koTrigger: 'KO Trigger',
   upfront: 'Upfront',
 };
 
@@ -47,11 +49,24 @@ function writeBackSolvedValue(
   solve: SolveTarget,
   solvedValue: number | undefined
 ): void {
-  if (solvedValue === undefined || solve.kind === 'none') return;
+  if (solvedValue === undefined) return;
   // Round to 4 decimals for display in the form. The results panel keeps
   // the raw value.
   solvedValue = Math.round(solvedValue * 1e4) / 1e4;
   const trade = useTradeStore.getState();
+
+  // Solving for the price means the REOFFER field is the output: its value is
+  // the PV just computed. Without writing it back, the greyed-out Reoffer cell
+  // kept showing whatever was typed before, so the displayed target no longer
+  // matched the computed price — and worse, the next solve of any other field
+  // used that stale reoffer as its target, which is why back-solving appeared
+  // not to work at all.
+  if (solve.kind === 'none') {
+    if (product.kind === 'accumulator') trade.setAccumulatorSpec({ upfrontPct: solvedValue });
+    else if (product.kind === 'coupon') trade.setCouponSpec({ reofferPct: solvedValue });
+    else trade.patchParticipationSpec({ reofferPct: solvedValue });
+    return;
+  }
 
   if (product.kind === 'coupon') {
     switch (solve.kind) {
@@ -69,6 +84,9 @@ function writeBackSolvedValue(
         break;
       case 'kiBarrier':
         trade.setCouponSpec({ kiBarrierPct: solvedValue });
+        break;
+      case 'putStrike':
+        trade.setCouponSpec({ putStrikePct: solvedValue });
         break;
       default:
         break;
@@ -124,6 +142,9 @@ function writeBackSolvedValue(
   switch (solve.kind) {
     case 'strike':
       trade.setAccumulatorSpec({ strikePct: solvedValue });
+      break;
+    case 'koTrigger':
+      trade.setAccumulatorSpec({ koTriggerPct: solvedValue });
       break;
     case 'upfront':
       trade.setAccumulatorSpec({ upfrontPct: solvedValue });
@@ -283,7 +304,8 @@ export async function runPricing({
       useResultsStore.getState().setProgress(p);
     });
     useResultsStore.getState().finishRun(id, result);
-    writeBackSolvedValue(product, solve, result.solvedValue);
+    // With no solve target the PV *is* the solved value for the reoffer field.
+    writeBackSolvedValue(product, solve, result.solvedValue ?? result.pvPct);
 
     if (addToHistory) {
       useHistoryStore.getState().addEntry({

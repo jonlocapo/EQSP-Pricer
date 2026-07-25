@@ -58,7 +58,7 @@ async function fetchOptionChainCboe(yahooSymbol: string): Promise<OptionChain> {
   let text: string;
   let proxied: boolean;
   try {
-    ({ text, proxied } = await fetchTextWithCorsFallback(url, 10_000, (t) => t.trimStart().startsWith('{')));
+    ({ text, proxied } = await fetchTextWithCorsFallback(url, 6_000, (t) => t.trimStart().startsWith('{')));
   } catch {
     throw new Error(`CBOE has no option chain for "${symbol}" (or the request was blocked)`);
   }

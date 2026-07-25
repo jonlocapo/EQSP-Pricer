@@ -41,7 +41,7 @@ export function AccumulatorPage() {
   // daily number of shares, which has no meaning for an index underlying.
   const indexBlocked = assetType === 'index';
   const priceDisabled = !validation.valid || indexBlocked;
-  const priceLabel = solve.kind === 'strike' ? 'Solve' : solve.kind === 'upfront' ? 'Solve' : 'Price';
+  const priceLabel = solve.kind === 'none' ? 'Price' : 'Solve';
 
   useLiveReprice({
     page: 'accumulator',
@@ -59,7 +59,7 @@ export function AccumulatorPage() {
   // Accumulator has no 'none' solve state. Exactly one of strike/upfront is
   // always the active target. Clicking the inactive chip switches to it.
   // Clicking the already-active one is a no-op.
-  function selectSolve(kind: 'strike' | 'upfront') {
+  function selectSolve(kind: 'strike' | 'upfront' | 'koTrigger') {
     setSolve({ kind });
   }
 
@@ -241,6 +241,10 @@ export function AccumulatorPage() {
           suffix="%"
           onChange={(v) => setSpec({ koTriggerPct: v })}
           error={validation.errors.koTriggerPct}
+          solved={fieldSolved('koTrigger')}
+          solveChip
+          solveActive={fieldSolved('koTrigger')}
+          onSolveClick={() => selectSolve('koTrigger')}
         />
 
         <SelectField

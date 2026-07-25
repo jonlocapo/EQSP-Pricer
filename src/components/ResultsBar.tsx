@@ -26,7 +26,7 @@ function BarChart({ values, labelPrefix }: { values: number[]; labelPrefix: stri
 function HistogramChart({ histogram }: { histogram: { binEdges: number[]; counts: number[] } }) {
   const max = Math.max(...histogram.counts, 1);
   return (
-    <div className="bar-chart">
+    <div className="bar-chart dense">
       {histogram.counts.map((c, i) => {
         const lo = histogram.binEdges[i];
         const hi = histogram.binEdges[i + 1];

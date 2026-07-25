@@ -86,19 +86,17 @@ export function useLiveReprice({ page, product, market, underlyingName, solve, d
   // that, including flipping a SOLVE chip on or off, should.
   const mounted = useRef(false);
 
-  // Signature of everything the current pass depends on. When a solve target
-  // is active, the target's own field is EXCLUDED, constant-folded to 0 via
-  // applySolveValue. That field is the solver's output. So its value
-  // changing, for example from a live-solve write-back, must never itself be
-  // treated as an "edit". With no solve target, there is no write-back at
-  // all. So the hook watches the full product.
+  // Signature of everything the current pass depends on. The active target's
+  // own field is always EXCLUDED, constant-folded to 0 via applySolveValue,
+  // because that field is the pass's OUTPUT: its value changing from a
+  // write-back must never itself count as an "edit". This holds for the
+  // no-solve case too — there the reoffer (accumulator: upfront) is the output
+  // and is written back, so folding it out is what stops an endless
+  // write-back/reprice loop.
   const signature = useMemo(() => {
     if (disabled) return null;
-    if (solve.kind === 'none') {
-      return JSON.stringify({ mode: 'price', product, market, solve });
-    }
     const watched = applySolveValue(product, solve, 0);
-    return JSON.stringify({ mode: 'solve', watched, market, solve });
+    return JSON.stringify({ mode: solve.kind === 'none' ? 'price' : 'solve', watched, market, solve });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [product, market, solve, disabled]);
 

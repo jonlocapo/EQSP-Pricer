@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMarketStore } from '../state/marketStore';
 import { fetchSpot } from '../services/spotFetch';
 import { fetchFxRealizedVolAndCorr, fetchHistVol, fetchRefRate, REF_RATE_CCYS } from '../services/marketFetch';
@@ -22,8 +22,12 @@ interface FetchLine {
  * One-shot live data fetch. Concurrently:
  *  - spot, Yahoo then Stooq — also detects the underlying's trading currency
  *  - reference rate (€STR/SOFR), when the note ccy has an open source
- *  - options-implied div yield and ATM vol (CBOE), falling back to 1Y
- *    historical vol when the chain is unavailable
+ *  - options-implied div yield and ATM vol (Yahoo, then CBOE)
+ *  - 1Y realized vol, computed from daily closes
+ * The last two run in PARALLEL, not as a fallback chain: option sources are
+ * the slowest and least reliable leg, so waiting for one to fail before
+ * computing a vol we can derive ourselves made every failure cost the full
+ * timeout. Implied supersedes realized when it arrives.
  * Applies whatever succeeded, and reports each component's outcome loudly.
  */
 async function fetchLiveData(
@@ -31,6 +35,10 @@ async function fetchLiveData(
   noteCcy: string,
   tenorYears: number,
   rate: number,
+  /** False once a newer fetch has superseded this one; every store write is
+   * gated on it so a slow leg of an abandoned fetch cannot overwrite the
+   * current underlying's data. */
+  isCurrent: () => boolean = () => true,
 ): Promise<FetchLine[]> {
   const lines: FetchLine[] = [];
   const store = useMarketStore.getState();
@@ -40,12 +48,19 @@ async function fetchLiveData(
     ? fetchRefRate(noteCcy)
     : Promise.reject(new Error(`no open rate source for ${noteCcy} — enter manually`));
   const impliedP = fetchImpliedFromOptions(ticker, tenorYears, rate);
+  // Realized vol runs ALONGSIDE the option chain rather than only as its
+  // fallback. Option sources are the slowest and least reliable leg (a chain
+  // can take the full timeout to fail), and waiting for them before even
+  // trying a vol we can compute ourselves made every failure cost the whole
+  // timeout. Whichever arrives is applied; implied then supersedes realized.
+  const histP = fetchHistVol(ticker);
 
-  const [spotR, rateR, impliedR] = await Promise.allSettled([spotP, rateP, impliedP]);
+  const [spotR, rateR, impliedR, histR] = await Promise.allSettled([spotP, rateP, impliedP, histP]);
 
   let underlyingCcy: string | undefined;
   if (spotR.status === 'fulfilled') {
     underlyingCcy = spotR.value.currency;
+    if (!isCurrent()) return lines;
     store.applyFetchedSpot(spotR.value.spot, spotR.value.source, spotR.value.asOf, spotR.value.currency);
     lines.push({ kind: 'ok', msg: `Spot ${spotR.value.spot} · ${spotR.value.source}`, short: `spot ${spotR.value.spot}` });
   } else {
@@ -53,16 +68,19 @@ async function fetchLiveData(
   }
 
   if (rateR.status === 'fulfilled') {
-    useMarketStore.setState((s) => ({ market: { ...s.market, rate: rateR.value.rate } }));
-    lines.push({
-      kind: 'ok',
-      msg: `Rate ${(rateR.value.rate * 100).toFixed(3)}% · ${rateR.value.source} ${rateR.value.asOf}`,
-      short: `rate ${(rateR.value.rate * 100).toFixed(3)}%`,
-    });
+    if (isCurrent()) {
+      useMarketStore.setState((s) => ({ market: { ...s.market, rate: rateR.value.rate } }));
+      lines.push({
+        kind: 'ok',
+        msg: `Rate ${(rateR.value.rate * 100).toFixed(3)}% · ${rateR.value.source} ${rateR.value.asOf}`,
+        short: `rate ${(rateR.value.rate * 100).toFixed(3)}%`,
+      });
+    }
   } else {
     lines.push({ kind: 'err', msg: `Rate: ${rateR.reason instanceof Error ? rateR.reason.message : 'failed'}` });
   }
 
+  if (!isCurrent()) return lines;
   if (impliedR.status === 'fulfilled') {
     const r = impliedR.value;
     // Keep the whole chain as a vol surface, not just the ATM number, so the
@@ -88,36 +106,45 @@ async function fetchLiveData(
         surfaceMsg,
       short: `vol ${(r.atmVol * 100).toFixed(1)}%`,
     });
+  } else if (histR.status === 'fulfilled') {
+    const hv = histR.value;
+    // Clear any surface from a previous fetch. A realized vol is flat, and
+    // keeping a stale surface would price this underlying on another one's
+    // skew.
+    useMarketStore.setState((s) => ({ market: { ...s.market, vol: hv.vol, volSurface: undefined } }));
+    lines.push({
+      kind: 'ok',
+      msg: `Vol ${(hv.vol * 100).toFixed(2)}% · ${hv.source} (1Y realized)`,
+      short: `vol ${(hv.vol * 100).toFixed(2)}%`,
+    });
+    // Options are an upgrade, not a requirement: say so calmly rather than as
+    // an error, since a usable vol was still produced.
+    lines.push({
+      kind: 'info',
+      msg: `No option chain, so vol is realized and div yield is left as entered (${
+        impliedR.reason instanceof Error ? impliedR.reason.message : 'options unavailable'
+      })`,
+    });
   } else {
-    const impliedMsg = impliedR.reason instanceof Error ? impliedR.reason.message : 'failed';
-    // Options chain unavailable. Fall back to realized vol; div stays manual.
-    try {
-      const hv = await fetchHistVol(ticker);
-      // Clear any surface from a previous fetch. A realized vol is flat, and
-      // keeping a stale surface would price this underlying on another one's
-      // skew.
-      useMarketStore.setState((s) => ({ market: { ...s.market, vol: hv.vol, volSurface: undefined } }));
-      lines.push({
-        kind: 'ok',
-        msg: `Vol ${(hv.vol * 100).toFixed(2)}% · ${hv.source} (realized fallback)`,
-        short: `vol ${(hv.vol * 100).toFixed(2)}%`,
-      });
-      lines.push({ kind: 'info', msg: `Options unavailable (${impliedMsg}) — div yield left as entered` });
-    } catch (hvErr) {
-      lines.push({ kind: 'err', msg: `Vol: options (${impliedMsg}); hist (${hvErr instanceof Error ? hvErr.message : 'failed'})` });
-      lines.push({ kind: 'info', msg: 'Div yield left as entered' });
-    }
+    lines.push({
+      kind: 'err',
+      msg: `Vol: options (${impliedR.reason instanceof Error ? impliedR.reason.message : 'failed'}); realized (${
+        histR.reason instanceof Error ? histR.reason.message : 'failed'
+      })`,
+    });
+    lines.push({ kind: 'info', msg: 'Div yield left as entered' });
   }
 
   // Cross-currency note: the quanto drift needs the UNDERLYING currency's
   // rate, not the note rate. Fetch it when there is a mismatch and an open
   // source exists. FX vol and Eq-FX correlation are auto-filled from Yahoo
   // 1Y realized FX/equity closes, best-effort; manual edits still override.
-  if (underlyingCcy && underlyingCcy !== noteCcy) {
+  if (underlyingCcy && underlyingCcy !== noteCcy && isCurrent()) {
     const cur = useMarketStore.getState().market.quanto;
     if ((REF_RATE_CCYS as readonly string[]).includes(underlyingCcy)) {
       try {
         const ur = await fetchRefRate(underlyingCcy);
+        if (!isCurrent()) return lines;
         const latest = useMarketStore.getState().market.quanto;
         useMarketStore.getState().setQuanto({
           rateUnderlying: ur.rate,
@@ -138,6 +165,7 @@ async function fetchLiveData(
 
     try {
       const fx = await fetchFxRealizedVolAndCorr(underlyingCcy, noteCcy, ticker);
+      if (!isCurrent()) return lines;
       const latest = useMarketStore.getState().market.quanto;
       useMarketStore.getState().setQuanto({
         rateUnderlying: latest?.rateUnderlying ?? cur?.rateUnderlying ?? 0,
@@ -175,8 +203,15 @@ export function MarketPanel() {
 
   const [fetching, setFetching] = useState(false);
   const [fetchLines, setFetchLines] = useState<FetchLine[]>([]);
+  // Monotonic token identifying the newest fetch. Picking a different
+  // underlying used to leave the previous fetch running: its slow legs (the
+  // option chain waits up to 10s) then landed afterwards and wrote the OLD
+  // underlying's vol, div yield and status lines over the new one. Only the
+  // newest token is allowed to apply its results.
+  const fetchGeneration = useRef(0);
 
   async function handleFetchLive(sym = ticker) {
+    const generation = ++fetchGeneration.current;
     setFetching(true);
     setFetchLines([]);
     const trade = useTradeStore.getState();
@@ -187,7 +222,8 @@ export function MarketPanel() {
         : page === 'participation'
           ? trade.participationSpec
           : trade.accumulatorSpec;
-    const lines = await fetchLiveData(sym, market.currency, spec.tenorYears, market.rate);
+    const lines = await fetchLiveData(sym, market.currency, spec.tenorYears, market.rate, () => fetchGeneration.current === generation);
+    if (fetchGeneration.current !== generation) return; // superseded
     setFetchLines(lines);
     setFetching(false);
   }

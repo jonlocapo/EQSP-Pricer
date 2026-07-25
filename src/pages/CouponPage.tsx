@@ -39,6 +39,11 @@ export function CouponPage() {
 
   const [greeks, setGreeks] = useState(false);
   const [leverageAuto, setLeverageAuto] = useState(true);
+  // Coupon and call (AC) observations almost always share a schedule, and a
+  // mismatch is usually a mistake rather than an intent. AUTO keeps the coupon
+  // frequency locked to the call frequency; turning it off allows a deliberate
+  // mismatch.
+  const [couponFreqAuto, setCouponFreqAuto] = useState(true);
 
   // Keep custom call schedule sized to the current number of call observations.
   useEffect(() => {
@@ -66,6 +71,16 @@ export function CouponPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leverageAuto, spec.putStrikePct]);
 
+  // Keep the coupon frequency following the call frequency while AUTO is on.
+  useEffect(() => {
+    if (!couponFreqAuto) return;
+    if (spec.callType === 'none') return; // no call schedule to follow
+    if (spec.couponFrequency !== spec.callFrequency) {
+      setSpec({ couponFrequency: spec.callFrequency });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [couponFreqAuto, spec.callFrequency, spec.callType, spec.couponFrequency]);
+
   const validation = validateCoupon(spec, market);
 
   // Per-field solve availability, mirroring the old solveOptions.ts helper.
@@ -77,6 +92,7 @@ export function CouponPage() {
   const canCouponBarrier = !issuerCallable && spec.couponType !== 'fixed';
   const canCallBarrier = !issuerCallable && (spec.callType === 'constant' || spec.callType === 'stepdown');
   const canKiBarrier = !issuerCallable && spec.barrierType !== 'none';
+  const canPutStrike = !issuerCallable;
 
   // Whenever a spec change makes the current solve target unavailable, fall
   // back to Price ('none'), so no stale solve target reaches the worker.
@@ -88,9 +104,10 @@ export function CouponPage() {
       (kind === 'acCouponPa' && canAcCoupon) ||
       (kind === 'couponBarrier' && canCouponBarrier) ||
       (kind === 'callBarrier' && canCallBarrier) ||
-      (kind === 'kiBarrier' && canKiBarrier);
+      (kind === 'kiBarrier' && canKiBarrier) ||
+      (kind === 'putStrike' && canPutStrike);
     if (!available) setSolve({ kind: 'none' });
-  }, [solve.kind, canCouponPa, canAcCoupon, canCouponBarrier, canCallBarrier, canKiBarrier, setSolve]);
+  }, [solve.kind, canCouponPa, canAcCoupon, canCouponBarrier, canCallBarrier, canKiBarrier, canPutStrike, setSolve]);
 
   const priceDisabled = !validation.valid;
   const priceLabel = solve.kind === 'none' ? 'Price' : 'Solve';
@@ -263,6 +280,10 @@ export function CouponPage() {
             step={1}
             suffix="%"
             onChange={(v) => setSpec({ putStrikePct: v })}
+            solved={fieldSolved('putStrike')}
+            solveChip={canPutStrike}
+            solveActive={fieldSolved('putStrike')}
+            onSolveClick={() => toggleSolve('putStrike')}
           />
           <NumericField
             label="Downside leverage"
@@ -410,10 +431,25 @@ export function CouponPage() {
         <div className="field">
           <div className="field-label">
             <span>Frequency</span>
+            {spec.callType !== 'none' && (
+              <button
+                type="button"
+                className={`auto-toggle ${couponFreqAuto ? 'on' : ''}`}
+                aria-pressed={couponFreqAuto}
+                title="Locked to the call (AC) frequency. Turn off to set a coupon frequency that differs from the call schedule."
+                onClick={() => setCouponFreqAuto((v) => !v)}
+              >
+                AUTO
+              </button>
+            )}
           </div>
           <Segmented<Frequency>
             value={spec.couponFrequency}
-            options={FREQ_OPTIONS}
+            options={
+              couponFreqAuto && spec.callType !== 'none'
+                ? FREQ_OPTIONS.map((o) => ({ ...o, disabled: true, tooltip: 'Following the call frequency (AUTO).' }))
+                : FREQ_OPTIONS
+            }
             onChange={(v) => setSpec({ couponFrequency: v })}
           />
         </div>

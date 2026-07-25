@@ -16,6 +16,7 @@ export type SolveTarget =
   | { kind: 'couponBarrier' }
   | { kind: 'callBarrier' }
   | { kind: 'kiBarrier' }
+  | { kind: 'putStrike' }
   // participation page
   | { kind: 'gearing' }
   | { kind: 'upsideStrike' }
@@ -26,6 +27,7 @@ export type SolveTarget =
   | { kind: 'rebate' }
   // accumulator page
   | { kind: 'strike' }
+  | { kind: 'koTrigger' }
   | { kind: 'upfront' };
 
 export interface McSettings {
