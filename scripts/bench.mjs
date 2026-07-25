@@ -100,13 +100,19 @@ async function scenario(name, product, solveTarget) {
   });
   if (solveTarget) {
     __clearPathCacheForTests();
+    let root;
     await time(`cold solve (${solveTarget})`, async () => {
       const r = await executePriceRequest(req(product, { solve: { kind: solveTarget } }), hooks);
+      root = r.solvedValue;
       return `x=${r.solvedValue.toFixed(4)} (${r.solveIterations} iters)`;
     });
+    // Seed the warm start with the value a live re-solve would actually have on
+    // hand — the previous solved value. Seeding an arbitrary number makes the
+    // tight bracket miss the root, so the solver silently cold-starts and the
+    // measurement says nothing about the warm path.
     await time(`warm solve (${solveTarget})`, async () => {
       const r = await executePriceRequest(
-        req(product, { solve: { kind: solveTarget }, warmStartValue: 8 }),
+        req(product, { solve: { kind: solveTarget }, warmStartValue: root }),
         hooks,
       );
       return `x=${r.solvedValue.toFixed(4)} (${r.solveIterations} iters, ${r.solveWarmStart ? 'warm' : 'cold'})`;
