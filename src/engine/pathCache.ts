@@ -24,7 +24,14 @@ import type { MarketData } from '../model/market';
 import { PathBatchGenerator } from './gbm';
 import { Aggregator, evaluatePathSource } from './mc';
 import type { McRunResult, PathSource } from './mc';
-import type { ObservablesEvaluator, OutcomeEvaluator, PathObservables, PayoffEvaluator, PricingGrid } from './payoffs/types';
+import type {
+  ObservablesEvaluator,
+  ObservablesRequirements,
+  OutcomeEvaluator,
+  PathObservables,
+  PayoffEvaluator,
+  PricingGrid,
+} from './payoffs/types';
 
 interface StoredSlice {
   antithetic: boolean;
@@ -70,7 +77,23 @@ export interface CacheKeyParams {
   seed: number;
   antithetic: boolean;
   nSteps: number;
-  dtYears: number;
+  /** Cheap, stable digest of the grid's per-step-time vector (see
+   * `gridTimesDigest`) — NOT just nSteps/dtYears. An adaptive (possibly
+   * non-uniform) grid can have two different `times` vectors for the same
+   * nSteps (e.g. a quarterly-coupon-only schedule vs. a merged
+   * quarterly-coupon + monthly-call schedule can happen to produce the same
+   * step count), so nSteps alone is not a safe cache key component any
+   * more — it would let two genuinely different grids collide and replay
+   * the wrong paths. */
+  timesKey: string;
+}
+
+/** Cheap, stable digest of a grid's step-time vector for use in a cache key.
+ * `times` arrays are small (at most a few hundred entries, even for the
+ * daily grid), so a full join is cheap and unambiguous — this only runs
+ * once per `priceOnce` call, never per path. */
+export function gridTimesDigest(grid: PricingGrid): string {
+  return `${grid.nSteps}:${grid.times.join(',')}`;
 }
 
 /** Cache key: market data + MC settings + grid shape — everything path
@@ -92,21 +115,29 @@ export function computeCacheKey(p: CacheKeyParams): string {
     seed: p.seed,
     antithetic: p.antithetic,
     nSteps: p.nSteps,
-    dtYears: p.dtYears,
+    times: p.timesKey,
   });
 }
 
 /**
  * Observables depend on the raw paths (already covered by `computeCacheKey`)
- * plus the observation index sets (grid.couponObs / grid.callObs) — NOT on
- * any numeric spec parameter. During a typical solve the schedule is fixed
- * (only barrier/coupon levels change) so this key stays constant and
- * observables hit on every iteration after the first; if the schedule itself
- * changes (e.g. couponFrequency changes mid live-solve), this key changes,
- * the raw paths still hit (unaffected), and observables recompute from them.
+ * plus the observation index sets (grid.couponObs / grid.callObs) and the
+ * requirements descriptor (which of minPerf/maxPerf Phase A actually tracks
+ * — see `ObservablesRequirements`) — NOT on any numeric spec parameter
+ * (barrier/coupon LEVELS). During a typical solve the schedule and
+ * monitoring MODE are fixed (only levels change) so this key stays constant
+ * and observables hit on every iteration after the first; if the schedule
+ * or monitoring mode itself changes (e.g. couponFrequency, or barrierType
+ * flips european->american, mid live-solve), this key changes, the raw
+ * paths still hit (unaffected), and observables recompute from them.
  */
-export function computeObservablesKey(pathKey: string, grid: PricingGrid): string {
-  return `${pathKey}|obs:${stableStringify({ couponObs: grid.couponObs, callObs: grid.callObs })}`;
+export function computeObservablesKey(pathKey: string, grid: PricingGrid, requirements: ObservablesRequirements): string {
+  return `${pathKey}|obs:${stableStringify({
+    couponObs: grid.couponObs,
+    callObs: grid.callObs,
+    needsMin: requirements.needsMin,
+    needsMax: requirements.needsMax,
+  })}`;
 }
 
 /** Replays a previously-stored slice in the exact order it was recorded. */
@@ -168,7 +199,7 @@ export function evaluateCachedSlice(
   slicePaths: number,
   antithetic: boolean,
   nSteps: number,
-  dtYears: number,
+  stepDt: Float64Array,
   s0: number,
   market: MarketData,
   evaluator: PayoffEvaluator,
@@ -185,7 +216,7 @@ export function evaluateCachedSlice(
     return agg.finalize(false, referenceLevelPct);
   }
 
-  const gen = new PathBatchGenerator(sliceSeed, nSteps, s0, market, dtYears);
+  const gen = new PathBatchGenerator(sliceSeed, nSteps, s0, market, stepDt);
   const recorder = new RecordingPathSource(gen);
   evaluatePathSource(recorder, slicePaths, antithetic, evaluator, agg);
   entry.slices[sliceIndex] = recorder.toStoredSlice(antithetic);
@@ -246,7 +277,7 @@ export function evaluateCachedSliceSplit(
   slicePaths: number,
   antithetic: boolean,
   nSteps: number,
-  dtYears: number,
+  stepDt: Float64Array,
   s0: number,
   market: MarketData,
   observablesKey: string,
@@ -282,7 +313,7 @@ export function evaluateCachedSliceSplit(
   // composition (outcome ∘ observables) proven equivalent to the monolithic
   // evaluator, so this branch is byte-identical to evaluateCachedSlice's
   // miss path with the monolithic evaluator.
-  const gen = new PathBatchGenerator(sliceSeed, nSteps, s0, market, dtYears);
+  const gen = new PathBatchGenerator(sliceSeed, nSteps, s0, market, stepDt);
   const recorder = new RecordingPathSource(gen);
   const evaluator: PayoffEvaluator = (spots: Float64Array) => outcome(observables(spots));
   evaluatePathSource(recorder, slicePaths, antithetic, evaluator, agg);

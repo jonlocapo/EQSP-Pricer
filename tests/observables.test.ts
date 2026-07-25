@@ -5,6 +5,7 @@ import { buildGrid } from '../src/engine/schedule';
 import { makeDf } from '../src/engine/discount';
 import { PathBatchGenerator } from '../src/engine/gbm';
 import {
+  couponObservablesRequirements,
   makeCouponEvaluator,
   makeCouponObservables,
   makeCouponOutcome,
@@ -13,6 +14,7 @@ import {
   makeParticipationEvaluator,
   makeParticipationObservables,
   makeParticipationOutcome,
+  participationObservablesRequirements,
 } from '../src/engine/payoffs/participation';
 
 /**
@@ -194,7 +196,7 @@ describe('observables split — phaseB(phaseA(path)) === monolithic evaluator', 
       const grid = buildGrid(spec);
       const ctx: EvaluatorContext = { market, grid, df: makeDf(market.rate) };
       const monolithic = makeCouponEvaluator(spec, ctx);
-      const phaseA = makeCouponObservables(ctx);
+      const phaseA = makeCouponObservables(ctx, couponObservablesRequirements(spec));
       const phaseB = makeCouponOutcome(spec, ctx);
 
       for (const paths of pathSets) {
@@ -212,7 +214,7 @@ describe('observables split — phaseB(phaseA(path)) === monolithic evaluator', 
       const grid = buildGrid(spec);
       const ctx: EvaluatorContext = { market, grid, df: makeDf(market.rate) };
       const monolithic = makeParticipationEvaluator(spec, ctx);
-      const phaseA = makeParticipationObservables();
+      const phaseA = makeParticipationObservables(participationObservablesRequirements(spec));
       const phaseB = makeParticipationOutcome(spec, ctx);
 
       for (const paths of pathSets) {

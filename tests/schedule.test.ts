@@ -31,17 +31,23 @@ function baseCoupon(overrides: Partial<CouponProductSpec>): CouponProductSpec {
   };
 }
 
-describe('buildGrid — coupon products', () => {
-  it('1Y quarterly coupon observations land on [63,126,189,252]', () => {
+describe('buildGrid — coupon products (European/none monitoring => COMPACT grid)', () => {
+  // barrierType 'none' (this suite's default) never needs a running min, so
+  // buildGrid uses the compact grid: one step per actual observation date,
+  // not 252/yr. See needsDailyPath in schedule.ts.
+
+  it('1Y quarterly coupon observations land on grid indices [1,2,3,4] at quarter-year times', () => {
     const grid = buildGrid(baseCoupon({ tenorYears: 1, couponFrequency: 'quarterly' }));
-    expect(grid.nSteps).toBe(252);
-    expect(grid.couponObs).toEqual([63, 126, 189, 252]);
+    expect(grid.nSteps).toBe(4);
+    expect(grid.couponObs).toEqual([1, 2, 3, 4]);
+    expect(grid.times).toEqual([0, 0.25, 0.5, 0.75, 1]);
   });
 
   it('6M monthly coupon observations produce 6 obs ending at nSteps', () => {
     const grid = buildGrid(baseCoupon({ tenorYears: 0.5, couponFrequency: 'monthly' }));
     expect(grid.couponObs).toHaveLength(6);
     expect(grid.couponObs[grid.couponObs.length - 1]).toBe(grid.nSteps);
+    expect(grid.times[grid.nSteps]).toBe(0.5);
   });
 
   it('callObs is empty when callType is none', () => {
@@ -49,16 +55,60 @@ describe('buildGrid — coupon products', () => {
     expect(grid.callObs).toEqual([]);
   });
 
-  it('callObs mirrors the periodic construction when callable', () => {
+  it('callObs mirrors the periodic construction when callable, merged into the same compact grid as couponObs', () => {
     const grid = buildGrid(
       baseCoupon({ tenorYears: 1, callType: 'constant', callFrequency: 'quarterly' }),
     );
-    expect(grid.callObs).toEqual([63, 126, 189, 252]);
+    expect(grid.callObs).toEqual([1, 2, 3, 4]);
+    expect(grid.callObs).toEqual(grid.couponObs);
+  });
+
+  it('a merged quarterly-coupon + monthly-call schedule produces a non-uniform compact grid (more steps than either alone)', () => {
+    const grid = buildGrid(
+      baseCoupon({ tenorYears: 1, couponFrequency: 'quarterly', callType: 'constant', callFrequency: 'monthly' }),
+    );
+    expect(grid.nSteps).toBe(12); // monthly dates subsume the quarterly ones
+    expect(grid.callObs).toHaveLength(12);
+    expect(grid.couponObs).toEqual([3, 6, 9, 12]);
+    // Non-uniform: stepDt is a real difference between consecutive months,
+    // not a single repeated scalar.
+    expect(grid.stepDt.length).toBe(12);
   });
 
   it('dtYears * nSteps equals tenorYears', () => {
     const grid = buildGrid(baseCoupon({ tenorYears: 1.5 }));
     expect(grid.dtYears * grid.nSteps).toBeCloseTo(1.5, 10);
+  });
+
+  it('last grid time is always exactly tenorYears', () => {
+    const grid = buildGrid(baseCoupon({ tenorYears: 1.5, couponFrequency: 'quarterly' }));
+    expect(grid.times[grid.nSteps]).toBe(1.5);
+  });
+});
+
+describe('buildGrid — American monitoring stays on the DAILY grid (mispricing guard)', () => {
+  // A future refactor that accidentally coarsens American barrier
+  // monitoring would silently mis-price knock-in probability — pin the
+  // daily-grid invariant explicitly.
+  it('coupon with barrierType american builds the full 252/yr daily grid', () => {
+    const grid = buildGrid(baseCoupon({ tenorYears: 1, barrierType: 'american', couponFrequency: 'quarterly' }));
+    expect(grid.nSteps).toBe(Math.round(1 * 252));
+    expect(grid.times.length).toBe(grid.nSteps + 1);
+    // Coupon observations still land at their real dates, now expressed as
+    // daily-grid indices (not 1..4).
+    expect(grid.couponObs).toEqual([63, 126, 189, 252]);
+  });
+
+  it('coupon with callType issuerCallable (LSMC) stays on the daily grid even with european KI', () => {
+    const grid = buildGrid(
+      baseCoupon({ tenorYears: 1, barrierType: 'european', callType: 'issuerCallable', couponFrequency: 'quarterly' }),
+    );
+    expect(grid.nSteps).toBe(252);
+  });
+
+  it('european-only monitoring (the default) does NOT build the daily grid', () => {
+    const grid = buildGrid(baseCoupon({ tenorYears: 1, barrierType: 'european', couponFrequency: 'quarterly' }));
+    expect(grid.nSteps).toBeLessThan(252);
   });
 });
 

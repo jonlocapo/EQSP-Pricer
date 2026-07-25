@@ -15,10 +15,16 @@ import type { Diagnostics, PriceRequest, PriceResult, SolveTarget } from '../mod
 import { buildGrid } from '../engine/schedule';
 import { makeDf } from '../engine/discount';
 import { priceIssuerCallable } from '../engine/lsmc';
-import { makeEvaluator, makeSplitEvaluator } from '../engine/payoffs';
+import { makeEvaluator, makeSplitEvaluator, observablesRequirementsOf } from '../engine/payoffs';
 import { makeCouponCashflowExtractor } from '../engine/payoffs/couponProducts';
 import type { EvaluatorContext } from '../engine/payoffs/types';
-import { computeCacheKey, computeObservablesKey, evaluateCachedSlice, evaluateCachedSliceSplit } from '../engine/pathCache';
+import {
+  computeCacheKey,
+  computeObservablesKey,
+  evaluateCachedSlice,
+  evaluateCachedSliceSplit,
+  gridTimesDigest,
+} from '../engine/pathCache';
 import { computeExpectedShortfall, computeHistogram, computePLoss } from '../engine/distribution';
 import type { PricingPhase } from './protocol';
 
@@ -83,6 +89,8 @@ async function priceOnce(
       redemptionCostPct,
       callObs: grid.callObs,
       callFromPeriod: spec.callFromPeriod,
+      // issuerCallable/LSMC always runs on the daily grid (needsDailyPath),
+      // so grid.dtYears here is the real uniform step.
       dtYears: grid.dtYears,
     });
     hooks.onProgress(progressBase + numPaths, progressTotal ?? numPaths, phase, solveIteration);
@@ -121,13 +129,16 @@ async function priceOnce(
     seed,
     antithetic,
     nSteps: grid.nSteps,
-    dtYears: grid.dtYears,
+    timesKey: gridTimesDigest(grid),
   });
   // Observables (Phase A output) need an additional key component: a
-  // signature of the observation index sets (couponObs/callObs). The raw
-  // path cache stays valid across a schedule change (e.g. couponFrequency
-  // mid live-solve); only the cached observables must recompute.
-  const observablesKey = split ? computeObservablesKey(cacheKey, grid) : '';
+  // signature of the observation index sets (couponObs/callObs) plus the
+  // monitoring-mode requirements descriptor (which of minPerf/maxPerf Phase
+  // A tracks). The raw path cache stays valid across a schedule or
+  // monitoring-mode change (e.g. couponFrequency, or barrierType
+  // european->american, mid live-solve); only the cached observables must
+  // recompute.
+  const observablesKey = split ? computeObservablesKey(cacheKey, grid, observablesRequirementsOf(spec)) : '';
   // Reference level for pLoss/ES: what the investor paid (coupon/
   // participation), or 0 for accumulator (its PV is already a P&L-style
   // value in % of estimated notional, not a price paid — see Diagnostics.pLoss doc).
@@ -158,7 +169,7 @@ async function priceOnce(
           slicePaths,
           antithetic,
           grid.nSteps,
-          grid.dtYears,
+          grid.stepDt,
           market.spot,
           market,
           observablesKey,
@@ -172,7 +183,7 @@ async function priceOnce(
           slicePaths,
           antithetic,
           grid.nSteps,
-          grid.dtYears,
+          grid.stepDt,
           market.spot,
           market,
           evaluator!,

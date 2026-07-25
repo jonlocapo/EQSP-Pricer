@@ -9,11 +9,15 @@ export interface McOptions {
   seed: number;
   antithetic: boolean;
   nSteps: number;
-  /** Year fraction of one grid step (grid.dtYears). Not listed in the
-   * original spec's option set but required for correct GBM stepping when
-   * tenorYears/nSteps deviates from 1/252 (e.g. sub-daily tenors clamped to
-   * nSteps=1). Defaults to 1/252 if omitted. */
-  dtYears?: number;
+  /**
+   * Year fraction of one grid step. Either a single scalar (uniform grid —
+   * required for correct GBM stepping when tenorYears/nSteps deviates from
+   * 1/252, e.g. sub-daily tenors clamped to nSteps=1) or a per-step
+   * Float64Array/number[] of length nSteps (a compact/adaptive, possibly
+   * non-uniform grid — see schedule.ts's buildGrid). Defaults to 1/252 if
+   * omitted.
+   */
+  dtYears?: number | Float64Array | number[];
   s0: number;
   market: MarketData;
   evaluator: PayoffEvaluator;
