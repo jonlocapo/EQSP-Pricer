@@ -8,7 +8,7 @@ import { NumericField } from './NumericField';
 import { SelectField } from './SelectField';
 import { Segmented } from './Segmented';
 import { TickerSearch } from './TickerSearch';
-import { SUPPORTED_CURRENCIES as CURRENCIES } from '../model/market';
+import { NO_COSTS, SUPPORTED_CURRENCIES as CURRENCIES, type CostParams } from '../model/market';
 
 interface FetchLine {
   kind: 'ok' | 'err' | 'info';
@@ -175,6 +175,12 @@ export function MarketPanel() {
 
   const quantoMismatch = !!underlyingCurrency && underlyingCurrency !== market.currency;
 
+  // Costs default to zero (a pure risk-neutral fair value); the badge makes it
+  // obvious when a quoted level is no longer the fair value.
+  const costs = market.costs ?? NO_COSTS;
+  const costsActive = costs.fundingSpreadBp !== 0 || costs.borrowCostBp !== 0 || costs.feePct !== 0;
+  const setCosts = (patch: Partial<CostParams>) => setMarket({ costs: { ...costs, ...patch } });
+
   // When a currency mismatch first appears, seed quanto params from the
   // current note rate; when it resolves (or the underlying ccy is unknown),
   // clear them so single-currency pricing is untouched.
@@ -317,6 +323,42 @@ export function MarketPanel() {
             </div>
           </div>
         )}
+
+        {/* Issuer/desk costs. A pure risk-neutral price ignores these, which is
+         * why a fair value looks more aggressive than a bank's quote. Their
+         * signs deliberately differ — see CostParams in model/market.ts. */}
+        <div className="field-group">
+          <div className="field-label">
+            <span>Costs</span>
+            {costsActive && <span className="solved-badge">ON</span>}
+          </div>
+          <div className="field-row">
+            <NumericField
+              label="Funding spread"
+              value={costs.fundingSpreadBp}
+              step={5}
+              suffix="bp"
+              title="Issuer funding spread over the risk-free rate. A note is a funded liability, so a wider spread cheapens the bond component and lets the issuer pay MORE."
+              onChange={(v) => setCosts({ fundingSpreadBp: v })}
+            />
+            <NumericField
+              label="Borrow cost"
+              value={costs.borrowCostBp}
+              step={5}
+              suffix="bp"
+              title="Stock borrow / repo carried by the hedge. Lowers the forward, making the short puts dearer, so it REDUCES the coupon."
+              onChange={(v) => setCosts({ borrowCostBp: v })}
+            />
+          </div>
+          <NumericField
+            label="Fee / margin"
+            value={costs.feePct}
+            step={0.1}
+            suffix="%"
+            title="Distribution fee retained upfront. The main reason a bank's quote is less aggressive than fair value."
+            onChange={(v) => setCosts({ feePct: v })}
+          />
+        </div>
       </div>
     </div>
   );
