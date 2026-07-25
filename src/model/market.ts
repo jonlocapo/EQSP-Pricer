@@ -27,8 +27,11 @@ export interface QuantoParams {
  *    funding curve (rate + spread), which makes the bond component cheaper and
  *    frees cash to buy optionality — that is why a wide-funding issuer can pay
  *    a higher coupon.
- *  - `borrowCostBp` lowers the forward, making the puts these notes are short
- *    dearer, so it REDUCES the coupon.
+ *  - `borrowCostBp` is a market CARRY input, not a desk charge: it lowers the
+ *    forward, which makes the put the investor is short worth more, lowers the
+ *    note's value, and so RAISES the solved coupon (measured: +0.13 coupon
+ *    points per 100bp on a 1y 60%-barrier note). If you want a borrow charge
+ *    that reduces what is payable instead, model it as fee, not as carry.
  *  - `feePct` is the distribution fee / margin the bank retains. It reduces the
  *    value put into the structure and is the dominant reason a bank's quote is
  *    less aggressive than fair value.

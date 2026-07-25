@@ -11,9 +11,12 @@ import type {
   ParticipationSpec,
   ProductSpec,
 } from '../model/product';
-import type { Diagnostics, PriceRequest, PriceResult, SolveTarget } from '../model/request';
+import type { Diagnostics, PriceRequest, PriceResult, PricingBasis, SolveTarget } from '../model/request';
 import { buildGrid } from '../engine/schedule';
 import { makeDf } from '../engine/discount';
+import { discountRate } from '../model/market';
+import { volAtPctOfSpot } from '../model/volSurface';
+import { riskStrikeFor } from '../engine/riskStrike';
 import { priceIssuerCallable } from '../engine/lsmc';
 import { makeEvaluator, makeSplitEvaluator, observablesRequirementsOf } from '../engine/payoffs';
 import { makeCouponCashflowExtractor } from '../engine/payoffs/couponProducts';
@@ -116,7 +119,7 @@ async function priceOnce(
   wantDistribution = false,
 ): Promise<CoreResult> {
   const grid = buildGrid(spec);
-  const ctx: EvaluatorContext = { market, grid, df: makeDf(market.rate) };
+  const ctx: EvaluatorContext = { market, grid, df: makeDf(discountRate(market)) };
 
   if (spec.kind === 'coupon' && spec.callType === 'issuerCallable') {
     // LSMC runs in one synchronous shot (no mid-run cancellation in v1).
@@ -363,7 +366,7 @@ export function evaluatePriceSlice(
   sliceIndex: number,
 ): McRunResult {
   const grid = buildGrid(spec);
-  const ctx: EvaluatorContext = { market, grid, df: makeDf(market.rate) };
+  const ctx: EvaluatorContext = { market, grid, df: makeDf(discountRate(market)) };
   const split = makeSplitEvaluator(spec, ctx);
   const evaluator = split ? undefined : makeEvaluator(spec, ctx);
   const nSlices = Math.max(1, Math.ceil(numPaths / SLICE_PATHS));
@@ -480,12 +483,20 @@ export function applySolveValue(spec: ProductSpec, target: SolveTarget, x: numbe
   }
 }
 
-/** Bracket + PV target for each solve variable. */
+/**
+ * Bracket + PV target for each solve variable.
+ *
+ * `feePct` is the fee the issuer retains out of the reoffer, so the STRUCTURE
+ * only has to be worth `reoffer − fee`. Lowering the target is what makes a
+ * fee-bearing quote less aggressive than a fair value — it is the dominant
+ * reason a bank's coupon sits below the risk-neutral one.
+ */
 export function solveBounds(
   spec: ProductSpec,
   target: SolveTarget,
+  feePct = 0,
 ): { lo: number; hi: number; hardLo: number; hardHi: number; targetPct: number } {
-  const reoffer = spec.kind === 'accumulator' ? spec.upfrontPct : spec.reofferPct;
+  const reoffer = (spec.kind === 'accumulator' ? spec.upfrontPct : spec.reofferPct) - feePct;
   switch (target.kind) {
     case 'couponPa':
     case 'acCouponPa':
@@ -531,9 +542,56 @@ function notionalOf(spec: ProductSpec, market: MarketData): number {
   return spec.notional;
 }
 
+/**
+ * Resolves the market the Monte Carlo should actually run on, plus the basis
+ * describing that choice. With no surface this returns the market unchanged and
+ * reports flat-vol pricing, so behavior is identical to before.
+ */
+function effectiveMarketFor(
+  spec: ProductSpec,
+  market: MarketData,
+): { market: MarketData; basis: PricingBasis } {
+  const feePct = market.costs?.feePct ?? 0;
+  const dr = discountRate(market);
+  if (!market.volSurface) {
+    return {
+      market,
+      basis: { volUsed: market.vol, volSource: 'flat', discountRate: dr, feePct },
+    };
+  }
+  const { strikePct, reason } = riskStrikeFor(spec);
+  const volUsed = volAtPctOfSpot(market.volSurface, strikePct, spec.tenorYears);
+  return {
+    market: { ...market, vol: volUsed },
+    basis: {
+      volUsed,
+      volSource: 'surface',
+      riskStrikePct: strikePct,
+      riskStrikeReason: reason,
+      discountRate: dr,
+      feePct,
+    },
+  };
+}
+
 export async function executePriceRequest(req: PriceRequest, hooks: PricingHooks): Promise<PriceResult | null> {
   const start = Date.now();
-  const { market, mc } = req;
+  const { mc } = req;
+  // Skew: when a surface is available, price the product at the vol of ITS OWN
+  // risk strike rather than at the flat/ATM vol. These payoffs live away from
+  // the money, so that choice moves the price materially — see
+  // engine/riskStrike for which strike governs each family.
+  //
+  // The effective vol is fixed ONCE here, from the spec as submitted, and held
+  // for every pass of a solve. Recomputing it per iteration (which matters
+  // only when solving the barrier itself) would change `vol` on each trial and
+  // therefore change the path-cache key, evicting the cache and undoing the
+  // interactive solve speed. The vol is a modelling choice, not a payoff term,
+  // so holding it constant across the solve is the right trade; it does mean a
+  // solved barrier is priced at the vol of the STARTING barrier.
+  const basis = effectiveMarketFor(req.product, req.market);
+  const market = basis.market;
+  const feePct = market.costs?.feePct ?? 0;
   // A `preview` request runs at a reduced path count for fast, transient
   // pricing during live typing; the trailing-edge "settle" request uses the
   // full mc.numPaths and is the authoritative result. Both the solve loop
@@ -549,7 +607,7 @@ export async function executePriceRequest(req: PriceRequest, hooks: PricingHooks
     req.solve.kind === 'none' || req.solve.kind === 'upfront';
 
   if (!isDirect) {
-    const { lo, hi, hardLo, hardHi, targetPct } = solveBounds(spec, req.solve);
+    const { lo, hi, hardLo, hardHi, targetPct } = solveBounds(spec, req.solve, feePct);
     let iter = 0;
     const evalF = async (x: number): Promise<number> => {
       iter += 1;
@@ -654,6 +712,9 @@ export async function executePriceRequest(req: PriceRequest, hooks: PricingHooks
     diagnostics: final.diagnostics,
     elapsedMs: Date.now() - start,
     preview: req.preview,
+    // What the number was actually built on: which point of the vol surface,
+    // the discount rate including any funding spread, and the fee retained.
+    basis: { ...basis.basis, fairValuePct: final.pvPct },
   };
 }
 

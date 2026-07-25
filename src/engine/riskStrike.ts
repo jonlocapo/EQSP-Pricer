@@ -12,6 +12,15 @@
  * product, not a consistent surface — and the direction it moves prices is
  * economically meaningful: for downside-bearing notes it raises the vol used,
  * which makes the short put dearer and therefore RAISES the fair coupon.
+ *
+ * KNOWN OVERSTATEMENT. The chosen vol is applied to the WHOLE product, not just
+ * the leg that justified it, so a tail vol also inflates unrelated legs (for a
+ * conditional coupon it raises the barrier-breach probability too). On a 1y note
+ * with a 60% barrier, moving from 25% flat to the 37% barrier vol moved the
+ * solved coupon by about +4.7 points — far more than a consistent local-vol
+ * model would give. Treat the skew-on number as an upper bound on the
+ * correction, not as the correct price, until a local-vol Monte Carlo replaces
+ * this shortcut.
  */
 import type { ProductSpec } from '../model/product';
 
