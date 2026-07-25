@@ -121,9 +121,20 @@ export function buildRealizedSurface(
   if (!(spot > 0)) throw new Error('Cannot build a realized surface without a positive spot');
   if (moments.terms.length === 0) throw new Error('Not enough price history for a realized vol surface');
 
+  // Never let a measured POSITIVE skew invert the smile.
+  //
+  // Implied equity skew is negative essentially always, but realized skew over
+  // a single window is noisy and can come out positive — EURO STOXX 50 measured
+  // +0.37 daily skew over one recent year. Honoring that would put LOWER vol at
+  // the knock-in barrier than at the money, understating the short put and so
+  // understating the coupon: the exact error this surface exists to correct,
+  // with the sign flipped. Clamping at zero degrades such a sample to a flat
+  // smile instead of an actively wrong one.
+  const skewDailyUsed = Math.min(0, moments.skewDaily);
+
   const slices = moments.terms.map(({ tYears, vol }) => {
     const n = Math.max(1, tYears * DAYS_PER_YEAR);
-    const skewT = moments.skewDaily / Math.sqrt(n);
+    const skewT = skewDailyUsed / Math.sqrt(n);
     const exKurtT = moments.excessKurtDaily / n;
     const sqrtT = Math.sqrt(tYears);
 

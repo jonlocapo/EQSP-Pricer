@@ -117,6 +117,21 @@ describe('buildRealizedSurface', () => {
     expect(skewPoints(s, 0.25, 80)).toBeGreaterThan(skewPoints(s, 1, 80));
   });
 
+  it('never inverts the smile, even when the measured skew is POSITIVE', () => {
+    // Realized skew over one window is noisy and can come out positive — EURO
+    // STOXX 50 measured +0.37 over a recent year. Honoring that would put lower
+    // vol at the barrier than at the money, understating the short put and so
+    // the coupon: this surface's own error, sign-flipped. It must degrade to
+    // flat, never invert.
+    const s = buildRealizedSurface(
+      spot,
+      { terms: [{ tYears: 1, vol: 0.2 }], skewDaily: +1.5, excessKurtDaily: 2 },
+      'test',
+    );
+    expect(volAtPctOfSpot(s, 70, 1)).toBeGreaterThanOrEqual(volAtPctOfSpot(s, 100, 1) - 1e-9);
+    expect(skewPoints(s, 1, 80)).toBeGreaterThanOrEqual(-1e-9);
+  });
+
   it('clamps wings instead of letting a fat-tailed sample produce nonsense', () => {
     const s = buildRealizedSurface(
       spot,
