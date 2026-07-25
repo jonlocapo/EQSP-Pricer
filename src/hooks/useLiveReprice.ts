@@ -27,6 +27,20 @@ const DEBOUNCE: Record<'type' | 'step', { preview: number | null; settle: number
   type: { preview: null, settle: 600 },
 };
 
+/**
+ * Debounce for a CACHED reprice driven by a stepper click: only product terms
+ * changed, so the Monte Carlo paths are reused and a full-precision pass costs
+ * roughly as much as a preview would.
+ *
+ * The preview pass exists to put *something* on screen while a slow run
+ * finishes. When the run itself is already fast, that extra pass is pure added
+ * latency — it spends a whole round trip to show a noisier version of a number
+ * the full pass would have delivered almost as quickly. So a cached step goes
+ * straight to full precision on a short wait, which is what makes arrow-holding
+ * feel like the value is tracking the click.
+ */
+const CACHED_STEP_DEBOUNCE = { preview: null, settle: 70 } as const;
+
 export interface UseLiveRepriceParams {
   page: PageId;
   product: ProductSpec;
@@ -115,9 +129,11 @@ export function useLiveReprice({ page, product, market, underlyingName, solve, d
     // Show loading feedback the instant this edit is detected, before either
     // debounce elapses. This keeps the previous value from sitting frozen
     // while waiting for a pass to actually start.
-    useResultsStore.getState().beginPending(peekRepriceScope(market, product));
+    const scope = peekRepriceScope(market, product);
+    useResultsStore.getState().beginPending(scope);
 
-    const timing = DEBOUNCE[peekEditSource()];
+    const source = peekEditSource();
+    const timing = source === 'step' && scope === 'cached' ? CACHED_STEP_DEBOUNCE : DEBOUNCE[source];
 
     if (timing.preview !== null) {
       previewTimer.current = setTimeout(() => {
