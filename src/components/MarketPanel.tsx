@@ -1,16 +1,20 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMarketStore } from '../state/marketStore';
 import { fetchSpot } from '../services/spotFetch';
-import { fetchFxRealizedVolAndCorr, fetchRealizedStats, fetchRefRate, REF_RATE_CCYS } from '../services/marketFetch';
-import { fetchImpliedFromOptions } from '../services/impliedFetch';
+import { fetchFxRealizedVolAndCorr, fetchRefRate, REF_RATE_CCYS } from '../services/marketFetch';
+import { fetchVolPipeline, type VolSourceKind } from '../services/volPipeline';
 import { useTradeStore } from '../state/tradeStore';
 import { NumericField } from './NumericField';
 import { SelectField } from './SelectField';
 import { Segmented } from './Segmented';
+import { TextField } from './TextField';
 import { TickerSearch } from './TickerSearch';
 import { NO_COSTS, SUPPORTED_CURRENCIES as CURRENCIES, type CostParams } from '../model/market';
-import { buildVolSurface, skewPoints, type VolSurface } from '../model/volSurface';
-import { buildRealizedSurface } from '../model/realizedSurface';
+import { skewPoints } from '../model/volSurface';
+
+/** localStorage key for the user's own, optional, Alpha Vantage API key. It
+ * never leaves the browser except in a request to alphavantage.co itself. */
+const ALPHA_VANTAGE_KEY_STORAGE = 'eqsp.alphaVantageKey';
 
 interface FetchLine {
   kind: 'ok' | 'err' | 'info';
@@ -19,28 +23,35 @@ interface FetchLine {
   short?: string;
 }
 
+/** Reported alongside the fetch lines, so the vol field can show which rung
+ * of the ladder produced the current number without re-deriving it. */
+export interface VolSourceInfo {
+  kind: VolSourceKind;
+  label: string;
+  note?: string;
+}
+
 /**
  * One-shot live data fetch. Concurrently:
  *  - spot, Yahoo then Stooq — also detects the underlying's trading currency
  *  - reference rate (€STR/SOFR), when the note ccy has an open source
- *  - options-implied div yield and ATM vol (Yahoo, then CBOE)
- *  - 1Y realized vol, computed from daily closes
- * The last two run in PARALLEL, not as a fallback chain: option sources are
- * the slowest and least reliable leg, so waiting for one to fail before
- * computing a vol we can derive ourselves made every failure cost the full
- * timeout. Implied supersedes realized when it arrives.
- * Applies whatever succeeded, and reports each component's outcome loudly.
+ * Then the volatility source ladder runs (see services/volPipeline.ts):
+ * Alpha Vantage chain (if a key is set), the keyless chain path (Yahoo v7,
+ * then CBOE), a listed vol-index anchor, a market-wide VIX-scaled ratio, and
+ * finally plain realized vol as the last resort. Applies whatever the
+ * ladder produced, and reports each component's outcome loudly.
  */
 async function fetchLiveData(
   ticker: string,
   noteCcy: string,
   tenorYears: number,
   rate: number,
+  apiKey: string,
   /** False once a newer fetch has superseded this one; every store write is
    * gated on it so a slow leg of an abandoned fetch cannot overwrite the
    * current underlying's data. */
   isCurrent: () => boolean = () => true,
-): Promise<FetchLine[]> {
+): Promise<{ lines: FetchLine[]; volSource?: VolSourceInfo }> {
   const lines: FetchLine[] = [];
   const store = useMarketStore.getState();
 
@@ -48,20 +59,18 @@ async function fetchLiveData(
   const rateP = (REF_RATE_CCYS as readonly string[]).includes(noteCcy)
     ? fetchRefRate(noteCcy)
     : Promise.reject(new Error(`no open rate source for ${noteCcy} — enter manually`));
-  const impliedP = fetchImpliedFromOptions(ticker, tenorYears, rate);
-  // Realized vol runs ALONGSIDE the option chain rather than only as its
-  // fallback. Option sources are the slowest and least reliable leg (a chain
-  // can take the full timeout to fail), and waiting for them before even
-  // trying a vol we can compute ourselves made every failure cost the whole
-  // timeout. Whichever arrives is applied; implied then supersedes realized.
-  const histP = fetchRealizedStats(ticker);
 
-  const [spotR, rateR, impliedR, histR] = await Promise.allSettled([spotP, rateP, impliedP, histP]);
+  const [spotR, rateR] = await Promise.allSettled([spotP, rateP]);
 
   let underlyingCcy: string | undefined;
+  // The vol pipeline needs a spot even when the live spot fetch failed —
+  // fall back to whatever is already in the store (a manual entry, or a
+  // previous fetch), same as the realized-surface builder always did.
+  let spotForVol = store.market.spot;
   if (spotR.status === 'fulfilled') {
     underlyingCcy = spotR.value.currency;
-    if (!isCurrent()) return lines;
+    spotForVol = spotR.value.spot;
+    if (!isCurrent()) return { lines };
     store.applyFetchedSpot(spotR.value.spot, spotR.value.source, spotR.value.asOf, spotR.value.currency);
     lines.push({ kind: 'ok', msg: `Spot ${spotR.value.spot} · ${spotR.value.source}`, short: `spot ${spotR.value.spot}` });
   } else {
@@ -81,70 +90,47 @@ async function fetchLiveData(
     lines.push({ kind: 'err', msg: `Rate: ${rateR.reason instanceof Error ? rateR.reason.message : 'failed'}` });
   }
 
-  if (!isCurrent()) return lines;
-  if (impliedR.status === 'fulfilled') {
-    const r = impliedR.value;
-    // Keep the whole chain as a vol surface, not just the ATM number, so the
-    // engine can price each product at its own risk strike. A chain too thin
-    // to build a surface from is not an error. The ATM vol is still good.
-    let surface: VolSurface | undefined;
-    let surfaceMsg = '';
+  if (!isCurrent()) return { lines };
+
+  let volSource: VolSourceInfo | undefined;
+  try {
+    const vp = await fetchVolPipeline({ symbol: ticker, spot: spotForVol, tenorYears, rate, apiKey });
+    if (!isCurrent()) return { lines };
+
+    let skewMsg = '';
     try {
-      surface = buildVolSurface(r.chain);
-      const skew = skewPoints(surface, r.tYears, 80);
-      surfaceMsg = ` · skew ${skew >= 0 ? '+' : ''}${(skew * 100).toFixed(1)}pt (80% vs ATM)`;
+      const skew = skewPoints(vp.surface, tenorYears, 80);
+      skewMsg = ` · skew ${skew >= 0 ? '+' : ''}${(skew * 100).toFixed(1)}pt (80% vs ATM)`;
     } catch {
-      surfaceMsg = ' · flat vol (chain too thin for a surface)';
+      skewMsg = '';
     }
+
     useMarketStore.setState((s) => ({
-      market: { ...s.market, vol: r.atmVol, divYield: r.divYield, volSurface: surface },
+      market: {
+        ...s.market,
+        vol: vp.atmVol,
+        divYield: vp.divYield ?? s.market.divYield,
+        volSurface: vp.surface,
+      },
     }));
+    volSource = { kind: vp.kind, label: vp.label, note: vp.note };
     lines.push({
       kind: 'ok',
       msg:
-        `Vol ${(r.atmVol * 100).toFixed(1)}%, div ${(r.divYield * 100).toFixed(2)}% · options ${r.expiry} K=${r.strike}` +
-        (r.approximate ? ' (approx, American-style)' : '') +
-        surfaceMsg,
-      short: `vol ${(r.atmVol * 100).toFixed(1)}%`,
+        `Vol ${(vp.atmVol * 100).toFixed(2)}% · ${vp.label}` +
+        (vp.divYield !== undefined ? `, div ${(vp.divYield * 100).toFixed(2)}%` : '') +
+        skewMsg +
+        (vp.note ? ` · ${vp.note}` : ''),
+      short: `vol ${(vp.atmVol * 100).toFixed(2)}%`,
     });
-  } else if (histR.status === 'fulfilled') {
-    const hv = histR.value;
-    // No chain, but the price history still supports a term structure AND a
-    // skew (from measured return moments), so build a surface rather than
-    // dropping to a single flat number. Any surface from a previous underlying
-    // is replaced, never kept.
-    let surface: VolSurface | undefined;
-    let surfaceMsg = '';
-    try {
-      const spotNow = useMarketStore.getState().market.spot;
-      surface = buildRealizedSurface(spotNow, hv, `${hv.source} surface`);
-      const skew = skewPoints(surface, tenorYears, 80);
-      surfaceMsg = ` · realized skew ${skew >= 0 ? '+' : ''}${(skew * 100).toFixed(1)}pt (80% vs ATM), ${hv.terms.length} tenors`;
-    } catch {
-      surfaceMsg = ' · flat (history too short for a surface)';
+    if (vp.kind === 'realized' || vp.kind === 'realized-scaled' || vp.kind === 'vol-index') {
+      lines.push({
+        kind: 'info',
+        msg: 'No option chain — vol/skew are realized-derived, not directly quoted implied vol.',
+      });
     }
-    useMarketStore.setState((s) => ({ market: { ...s.market, vol: hv.vol, volSurface: surface } }));
-    lines.push({
-      kind: 'ok',
-      msg: `Vol ${(hv.vol * 100).toFixed(2)}% · ${hv.source}${surfaceMsg}`,
-      short: `vol ${(hv.vol * 100).toFixed(2)}%`,
-    });
-    // Options are an upgrade, not a requirement: say so calmly rather than as
-    // an error, since a usable vol and skew were still produced. Realized
-    // levels carry no volatility risk premium, so they sit below traded implied.
-    lines.push({
-      kind: 'info',
-      msg: `No option chain — vol/skew are REALIZED (typically below implied) and div yield is left as entered (${
-        impliedR.reason instanceof Error ? impliedR.reason.message : 'options unavailable'
-      })`,
-    });
-  } else {
-    lines.push({
-      kind: 'err',
-      msg: `Vol: options (${impliedR.reason instanceof Error ? impliedR.reason.message : 'failed'}); realized (${
-        histR.reason instanceof Error ? histR.reason.message : 'failed'
-      })`,
-    });
+  } catch (e) {
+    lines.push({ kind: 'err', msg: `Vol: ${e instanceof Error ? e.message : 'all sources failed'}` });
     lines.push({ kind: 'info', msg: 'Div yield left as entered' });
   }
 
@@ -157,7 +143,7 @@ async function fetchLiveData(
     if ((REF_RATE_CCYS as readonly string[]).includes(underlyingCcy)) {
       try {
         const ur = await fetchRefRate(underlyingCcy);
-        if (!isCurrent()) return lines;
+        if (!isCurrent()) return { lines, volSource };
         const latest = useMarketStore.getState().market.quanto;
         useMarketStore.getState().setQuanto({
           rateUnderlying: ur.rate,
@@ -178,7 +164,7 @@ async function fetchLiveData(
 
     try {
       const fx = await fetchFxRealizedVolAndCorr(underlyingCcy, noteCcy, ticker);
-      if (!isCurrent()) return lines;
+      if (!isCurrent()) return { lines, volSource };
       const latest = useMarketStore.getState().market.quanto;
       useMarketStore.getState().setQuanto({
         rateUnderlying: latest?.rateUnderlying ?? cur?.rateUnderlying ?? 0,
@@ -198,7 +184,7 @@ async function fetchLiveData(
     }
   }
 
-  return lines;
+  return { lines, volSource };
 }
 
 export function MarketPanel() {
@@ -216,6 +202,28 @@ export function MarketPanel() {
 
   const [fetching, setFetching] = useState(false);
   const [fetchLines, setFetchLines] = useState<FetchLine[]>([]);
+  const [volSource, setVolSource] = useState<VolSourceInfo | undefined>(undefined);
+  // The Alpha Vantage key never travels with the trade state — it is a
+  // per-browser credential, not deal data — so it lives in localStorage,
+  // read once at mount. It is sent to alphavantage.co only, inside
+  // services/alphaVantage.ts, and is never logged.
+  const [apiKey, setApiKey] = useState(() => {
+    try {
+      return localStorage.getItem(ALPHA_VANTAGE_KEY_STORAGE) ?? '';
+    } catch {
+      return '';
+    }
+  });
+  function handleApiKeyChange(v: string) {
+    setApiKey(v);
+    try {
+      if (v.trim()) localStorage.setItem(ALPHA_VANTAGE_KEY_STORAGE, v.trim());
+      else localStorage.removeItem(ALPHA_VANTAGE_KEY_STORAGE);
+    } catch {
+      // Private browsing or a full quota — the key still works for this
+      // session from React state, it just will not persist across reloads.
+    }
+  }
   // Monotonic token identifying the newest fetch. Picking a different
   // underlying used to leave the previous fetch running: its slow legs (the
   // option chain waits up to 10s) then landed afterwards and wrote the OLD
@@ -227,6 +235,7 @@ export function MarketPanel() {
     const generation = ++fetchGeneration.current;
     setFetching(true);
     setFetchLines([]);
+    setVolSource(undefined);
     const trade = useTradeStore.getState();
     const page = trade.activePage;
     const spec =
@@ -235,9 +244,17 @@ export function MarketPanel() {
         : page === 'participation'
           ? trade.participationSpec
           : trade.accumulatorSpec;
-    const lines = await fetchLiveData(sym, market.currency, spec.tenorYears, market.rate, () => fetchGeneration.current === generation);
+    const { lines, volSource: vs } = await fetchLiveData(
+      sym,
+      market.currency,
+      spec.tenorYears,
+      market.rate,
+      apiKey,
+      () => fetchGeneration.current === generation,
+    );
     if (fetchGeneration.current !== generation) return; // superseded
     setFetchLines(lines);
+    setVolSource(vs);
     setFetching(false);
   }
 
@@ -345,6 +362,25 @@ export function MarketPanel() {
           suffix="%"
           onChange={(v) => setMarket({ vol: v / 100 })}
         />
+        {volSource && (
+          <div className="status-line" title={volSource.note ?? volSource.label}>
+            Source: {volSource.label}
+            {volSource.note ? ` — ${volSource.note}` : ''}
+          </div>
+        )}
+        <div className="field">
+          <TextField
+            label="Alpha Vantage key (optional)"
+            value={apiKey}
+            placeholder="e.g. ABCD1234EFGH5678"
+            onChange={handleApiKeyChange}
+          />
+          <span className="text-muted" style={{ fontSize: 11 }}>
+            Unlocks a real end-of-day option chain instead of a realized-vol estimate. Free, under a
+            minute to claim: alphavantage.co/support/#api-key. Stored only in this browser, sent only to
+            alphavantage.co.
+          </span>
+        </div>
         <NumericField
           label="Rate"
           value={Number((market.rate * 100).toFixed(4))}
