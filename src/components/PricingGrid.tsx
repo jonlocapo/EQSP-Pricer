@@ -3,7 +3,7 @@ import type { ProductSpec } from '../model/product';
 import type { MarketData } from '../model/market';
 import type { SolveTarget } from '../model/request';
 import type { PageId } from '../state/tradeStore';
-import { gridParamsFor } from '../model/paramRegistry';
+import { gridParamsFor, type GridParam } from '../model/paramRegistry';
 import {
   axisValues,
   betterDirection,
@@ -19,7 +19,12 @@ import { pricerClient } from '../worker/client';
 import { NumericField } from './NumericField';
 import { SelectField } from './SelectField';
 import { nextStepValue } from './numericStep';
-import { accumulatorTermsSummary, couponTermsSummary, marketSummary, participationTermsSummary } from '../services/summaries';
+import {
+  accumulatorTermsSummary,
+  couponTermsSummary,
+  marketSummary,
+  participationTermsSummary,
+} from '../services/summaries';
 
 /** Solve targets offered per product kind, mirroring each page's own
  * per-field availability but flattened to one list for the setup dropdown.
@@ -29,6 +34,24 @@ const SOLVE_KINDS_BY_PAGE: Record<PageId, SolveTarget['kind'][]> = {
   coupon: ['none', 'couponPa', 'acCouponPa', 'couponBarrier', 'callBarrier', 'kiBarrier', 'putStrike'],
   participation: ['gearing', 'upsideStrike', 'bonusLevel', 'twinWin', 'upperStrike', 'upsideKoBarrier', 'rebate'],
   accumulator: ['strike', 'koTrigger', 'upfront'],
+};
+
+/**
+ * Stands in for an axis the user left blank, so the grid can be a ONE parameter
+ * table: five KI barriers against nothing, rather than a forced 5x5.
+ *
+ * `write` is the identity, so the unused dimension applies no field at all, and
+ * its single value is never read. Keeping the shape of a GridParam means runGrid
+ * and the render need no special case for a missing axis.
+ */
+const NO_AXIS_KEY = '';
+const NO_AXIS_PARAM: GridParam = {
+  key: NO_AXIS_KEY,
+  label: '',
+  unit: '',
+  step: 1,
+  read: () => 0,
+  write: (spec) => spec,
 };
 
 const DEFAULT_AXIS_COUNT = 5;
@@ -80,7 +103,10 @@ export function PricingGrid({ page, spec, market, underlyingName }: PricingGridP
   const builtFromRef = useRef<{ spec: ProductSpec; market: MarketData; underlyingName: string } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  const isStale = hasGenerated && builtFromRef.current !== null && (builtFromRef.current.spec !== spec || builtFromRef.current.market !== market);
+  const isStale =
+    hasGenerated &&
+    builtFromRef.current !== null &&
+    (builtFromRef.current.spec !== spec || builtFromRef.current.market !== market);
 
   // A change of product page/kind invalidates any grid on screen; reseed the
   // param pickers and clear the built grid rather than show a mismatched one.
@@ -101,9 +127,13 @@ export function PricingGrid({ page, spec, market, underlyingName }: PricingGridP
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spec.kind]);
 
-  const xParam = params.find((p) => p.key === xKey);
-  const yParam = params.find((p) => p.key === yKey);
-  const sameAxis = !!xKey && xKey === yKey;
+  const xBlank = xKey === NO_AXIS_KEY;
+  const yBlank = yKey === NO_AXIS_KEY;
+  const xParam = xBlank ? NO_AXIS_PARAM : params.find((p) => p.key === xKey);
+  const yParam = yBlank ? NO_AXIS_PARAM : params.find((p) => p.key === yKey);
+  const sameAxis = !xBlank && !yBlank && xKey === yKey;
+  // At least one axis has to vary, or there is nothing to tabulate.
+  const bothBlank = xBlank && yBlank;
   const solveTarget: SolveTarget = { kind: solveKind } as SolveTarget;
   const direction = betterDirection(solveTarget, spec);
 
@@ -117,10 +147,13 @@ export function PricingGrid({ page, spec, market, underlyingName }: PricingGridP
    * merely discouraged.
    */
   function paramOptions(otherKey: string) {
-    return params
-      .filter((p) => p.key !== otherKey)
-      .filter((p) => !p.solveKind || p.solveKind !== solveKind)
-      .map((p) => ({ value: p.key, label: p.label }));
+    return [
+      { value: NO_AXIS_KEY, label: '(none)' },
+      ...params
+        .filter((p) => p.key !== otherKey)
+        .filter((p) => !p.solveKind || p.solveKind !== solveKind)
+        .map((p) => ({ value: p.key, label: p.label })),
+    ];
   }
 
   const axisSolveKinds = [xParam?.solveKind, yParam?.solveKind].filter(Boolean);
@@ -142,14 +175,21 @@ export function PricingGrid({ page, spec, market, underlyingName }: PricingGridP
   }
 
   async function generate() {
-    if (!xParam || !yParam || sameAxis) return;
+    if (!xParam || !yParam || sameAxis || bothBlank) return;
     setErrorMessage(null);
-    const nextX = axisValues(xParam.read(spec), xParam.step, xValues.length || DEFAULT_AXIS_COUNT);
-    const nextY = axisValues(yParam.read(spec), yParam.step, yValues.length || DEFAULT_AXIS_COUNT);
+    // A blank axis contributes exactly one value, which no field ever reads, so
+    // the grid collapses to a single column or a single row.
+    // Reuse the axis's current length so a regenerate keeps the size the user
+    // chose, but never inherit the length of a BLANK axis. A blank axis holds a
+    // single placeholder value, and carrying that 1 across to a real parameter
+    // produced a one-row grid instead of the default five.
+    const keptCount = (n: number) => (n >= MIN_AXIS_COUNT ? n : DEFAULT_AXIS_COUNT);
+    const nextX = xBlank ? [0] : axisValues(xParam.read(spec), xParam.step, keptCount(xValues.length));
+    const nextY = yBlank ? [0] : axisValues(yParam.read(spec), yParam.step, keptCount(yValues.length));
     setXValues(nextX);
     setYValues(nextY);
     const pending: GridCell[][] = nextY.map((yValue, r) =>
-      nextX.map((xValue, c) => ({ rowIndex: r, colIndex: c, xValue, yValue, state: { status: 'pending' as const } }))
+      nextX.map((xValue, c) => ({ rowIndex: r, colIndex: c, xValue, yValue, state: { status: 'pending' as const } })),
     );
     setCells(pending);
     setHasGenerated(true);
@@ -333,7 +373,18 @@ export function PricingGrid({ page, spec, market, underlyingName }: PricingGridP
     const next = nextStepValue(last, xParam.step, 1);
     setXValues((prev) => [...prev, next]);
     if (hasGenerated) {
-      setCells((prev) => prev.map((row, r) => [...row, { rowIndex: r, colIndex: row.length, xValue: next, yValue: yValues[r], state: { status: 'pending' as const } }]));
+      setCells((prev) =>
+        prev.map((row, r) => [
+          ...row,
+          {
+            rowIndex: r,
+            colIndex: row.length,
+            xValue: next,
+            yValue: yValues[r],
+            state: { status: 'pending' as const },
+          },
+        ]),
+      );
       void resolveSlice('col', xValues.length, next);
     }
   }
@@ -346,7 +397,13 @@ export function PricingGrid({ page, spec, market, underlyingName }: PricingGridP
     if (hasGenerated) {
       setCells((prev) => [
         ...prev,
-        xValues.map((x, c) => ({ rowIndex: prev.length, colIndex: c, xValue: x, yValue: next, state: { status: 'pending' as const } })),
+        xValues.map((x, c) => ({
+          rowIndex: prev.length,
+          colIndex: c,
+          xValue: x,
+          yValue: next,
+          state: { status: 'pending' as const },
+        })),
       ]);
       void resolveSlice('row', yValues.length, next);
     }
@@ -410,8 +467,14 @@ export function PricingGrid({ page, spec, market, underlyingName }: PricingGridP
           <button
             type="button"
             className="btn btn-primary has-tooltip"
-            disabled={running || sameAxis || !xParam || !yParam}
-            data-tooltip={sameAxis ? 'X and Y must be different parameters.' : undefined}
+            disabled={running || sameAxis || bothBlank || !xParam || !yParam}
+            data-tooltip={
+              sameAxis
+                ? 'X and Y must be different parameters.'
+                : bothBlank
+                  ? 'Pick at least one parameter to vary.'
+                  : undefined
+            }
             onClick={generate}
           >
             Generate
@@ -430,6 +493,7 @@ export function PricingGrid({ page, spec, market, underlyingName }: PricingGridP
       </div>
 
       {sameAxis && <div className="page-banner error">X and Y axis must be different parameters.</div>}
+      {bothBlank && <div className="page-banner error">Pick at least one parameter to vary.</div>}
 
       {running && (
         <div className="pricing-grid-progress">
@@ -449,55 +513,81 @@ export function PricingGrid({ page, spec, market, underlyingName }: PricingGridP
         </div>
       )}
 
-      {!hasGenerated && !sameAxis && <div className="pricing-grid-empty">Pick two parameters and press Generate.</div>}
+      {!hasGenerated && !sameAxis && !bothBlank && (
+        <div className="pricing-grid-empty">Pick one or two parameters and press Generate.</div>
+      )}
 
       {hasGenerated && (
         <div className="schedule-scroll pricing-grid-scroll">
           <table className="schedule-table pricing-grid-table">
             <thead>
               <tr>
-                <th>
-                  {yParam?.label} \ {xParam?.label}
-                </th>
+                <th>{[yParam?.label, xParam?.label].filter(Boolean).join(' \\ ')}</th>
                 {xValues.map((x, c) => (
                   <th key={c}>
-                    <div className="pricing-grid-header">
-                      <NumericField label="" value={x} step={xParam?.step ?? 1} suffix={xParam?.unit} onChange={(v) => editColumnHeader(c, v)} />
-                      <button
-                        type="button"
-                        className="pricing-grid-remove"
-                        aria-label="Remove column"
-                        disabled={xValues.length <= MIN_AXIS_COUNT}
-                        onClick={() => removeColumn(c)}
-                      >
-                        ×
-                      </button>
-                    </div>
+                    {/* A blank X axis has one column that stands for "no second
+                     * parameter". There is no value to edit and nothing to
+                     * remove, so it renders as an empty heading. */}
+                    {xBlank ? null : (
+                      <div className="pricing-grid-header">
+                        <NumericField
+                          label=""
+                          value={x}
+                          step={xParam?.step ?? 1}
+                          suffix={xParam?.unit}
+                          onChange={(v) => editColumnHeader(c, v)}
+                        />
+                        <button
+                          type="button"
+                          className="pricing-grid-remove"
+                          aria-label="Remove column"
+                          disabled={xValues.length <= MIN_AXIS_COUNT}
+                          onClick={() => removeColumn(c)}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    )}
                   </th>
                 ))}
-                <th>
-                  <button type="button" className="btn btn-sm" onClick={addColumn} disabled={running || xValues.length >= MAX_AXIS_COUNT}>
-                    + col
-                  </button>
-                </th>
+                {!xBlank && (
+                  <th>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={addColumn}
+                      disabled={running || xValues.length >= MAX_AXIS_COUNT}
+                    >
+                      + col
+                    </button>
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody>
               {yValues.map((y, r) => (
                 <tr key={r}>
                   <th>
-                    <div className="pricing-grid-header">
-                      <NumericField label="" value={y} step={yParam?.step ?? 1} suffix={yParam?.unit} onChange={(v) => editRowHeader(r, v)} />
-                      <button
-                        type="button"
-                        className="pricing-grid-remove"
-                        aria-label="Remove row"
-                        disabled={yValues.length <= MIN_AXIS_COUNT}
-                        onClick={() => removeRow(r)}
-                      >
-                        ×
-                      </button>
-                    </div>
+                    {yBlank ? null : (
+                      <div className="pricing-grid-header">
+                        <NumericField
+                          label=""
+                          value={y}
+                          step={yParam?.step ?? 1}
+                          suffix={yParam?.unit}
+                          onChange={(v) => editRowHeader(r, v)}
+                        />
+                        <button
+                          type="button"
+                          className="pricing-grid-remove"
+                          aria-label="Remove row"
+                          disabled={yValues.length <= MIN_AXIS_COUNT}
+                          onClick={() => removeRow(r)}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    )}
                   </th>
                   {xValues.map((_, c) => {
                     const cell = cells[r]?.[c];
@@ -531,17 +621,24 @@ export function PricingGrid({ page, spec, market, underlyingName }: PricingGridP
                   })}
                 </tr>
               ))}
-              <tr>
-                <th>
-                  <button type="button" className="btn btn-sm" onClick={addRow} disabled={running || yValues.length >= MAX_AXIS_COUNT}>
-                    + row
-                  </button>
-                </th>
-                {xValues.map((_, c) => (
-                  <td key={c} />
-                ))}
-                <td />
-              </tr>
+              {!yBlank && (
+                <tr>
+                  <th>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={addRow}
+                      disabled={running || yValues.length >= MAX_AXIS_COUNT}
+                    >
+                      + row
+                    </button>
+                  </th>
+                  {xValues.map((_, c) => (
+                    <td key={c} />
+                  ))}
+                  {!xBlank && <td />}
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
