@@ -8,6 +8,7 @@ import { NumericField } from '../components/NumericField';
 import { nextStepValue } from '../components/numericStep';
 import { TenorField } from '../components/TenorField';
 import { ActionRow } from '../components/ActionRow';
+import { PricingGrid } from '../components/PricingGrid';
 import { noteEditSource } from '../state/editSource';
 import { validateCoupon } from '../services/validation';
 import { runPricing } from '../services/runPricing';
@@ -40,6 +41,7 @@ export function CouponPage() {
   const running = useResultsStore((s) => s.running);
 
   const [greeks, setGreeks] = useState(false);
+  const [gridOpen, setGridOpen] = useState(false);
   const [leverageAuto, setLeverageAuto] = useState(true);
   // Coupon and call (AC) observations almost always share a schedule, and a
   // mismatch is usually a mistake rather than an intent. AUTO keeps the coupon
@@ -541,8 +543,16 @@ export function CouponPage() {
           greeks={greeks}
           onGreeksChange={setGreeks}
           running={running}
+          onToggleGrid={() => setGridOpen((v) => !v)}
+          gridOpen={gridOpen}
         />
       </div>
+
+      {gridOpen && (
+        <div style={{ gridColumn: '1 / -1' }}>
+          <PricingGrid page="coupon" spec={spec} market={market} underlyingName={underlyingName} />
+        </div>
+      )}
     </div>
   );
 }

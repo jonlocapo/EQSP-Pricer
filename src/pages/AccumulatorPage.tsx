@@ -7,6 +7,7 @@ import { Segmented } from '../components/Segmented';
 import { NumericField } from '../components/NumericField';
 import { SelectField } from '../components/SelectField';
 import { ActionRow } from '../components/ActionRow';
+import { PricingGrid } from '../components/PricingGrid';
 import { validateAccumulator } from '../services/validation';
 import { runPricing } from '../services/runPricing';
 import { useLiveReprice } from '../hooks/useLiveReprice';
@@ -32,6 +33,7 @@ export function AccumulatorPage() {
   const running = useResultsStore((s) => s.running);
 
   const [greeks, setGreeks] = useState(false);
+  const [gridOpen, setGridOpen] = useState(false);
   const [tenorUnit, setTenorUnit] = useState<TenorUnit>('months');
   const [tenorValue, setTenorValue] = useState<number>(6);
 
@@ -267,8 +269,16 @@ export function AccumulatorPage() {
           greeks={greeks}
           onGreeksChange={setGreeks}
           running={running}
+          onToggleGrid={() => setGridOpen((v) => !v)}
+          gridOpen={gridOpen}
         />
       </div>
+
+      {gridOpen && (
+        <div style={{ gridColumn: '1 / -1' }}>
+          <PricingGrid page="accumulator" spec={spec} market={market} underlyingName={underlyingName} />
+        </div>
+      )}
     </div>
   );
 }
