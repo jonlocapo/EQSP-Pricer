@@ -156,7 +156,10 @@ export async function fetchVolPipeline(args: VolPipelineArgs): Promise<VolPipeli
       atmVol: volAtPctOfSpot(surface, 100, tenorYears),
       kind: 'realized-scaled',
       label: 'VIX-scaled realized',
-      note: `No listed vol index for "${symbol}" — applied the broad-market ${marketRatio.toFixed(2)}x VIX/realized premium instead`,
+      // Rung 3 either found no index for this name or could not fetch the
+      // one it found. Both land here, so the note names the substitute
+      // rather than claiming a reason it cannot know.
+      note: `Applied the broad-market ${marketRatio.toFixed(2)}x VIX/realized premium, because no vol index reading was available for "${symbol}"`,
     };
   } catch {
     // Fall through to plain realized — the last resort.
