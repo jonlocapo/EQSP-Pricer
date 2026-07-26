@@ -10,6 +10,7 @@ import {
   gridToTsv,
   runGrid,
   shadeIntensity,
+  solvableKinds,
   type GridCell,
   type GridCellState,
 } from '../services/gridRun';
@@ -86,7 +87,12 @@ export function PricingGrid({ page, spec, market, underlyingName }: PricingGridP
   useEffect(() => {
     setXKey(params[0]?.key ?? '');
     setYKey(params[1]?.key ?? params[0]?.key ?? '');
-    setSolveKind(solveKinds[0] ?? 'none');
+    // Pick a solve target the two default axes do not already occupy. The
+    // accumulator would otherwise open with Strike on the X axis AND Strike as
+    // the solve target, which is the exact contradiction the pickers exist to
+    // prevent.
+    const takenByDefaultAxes = [params[0]?.solveKind, params[1]?.solveKind].filter(Boolean);
+    setSolveKind(solveKinds.find((k) => !takenByDefaultAxes.includes(k)) ?? solveKinds[0] ?? 'none');
     setHasGenerated(false);
     setCells([]);
     setXValues([]);
@@ -101,9 +107,35 @@ export function PricingGrid({ page, spec, market, underlyingName }: PricingGridP
   const solveTarget: SolveTarget = { kind: solveKind } as SolveTarget;
   const direction = betterDirection(solveTarget, spec);
 
-  function paramOptions() {
-    return params.map((p) => ({ value: p.key, label: p.label }));
+  /**
+   * The axis pickers and the solve-for picker must stay mutually exclusive.
+   *
+   * A field cannot be both an axis and the solve target. The solver WRITES the
+   * target field, so it would overwrite the axis value that cell was supposed
+   * to be priced at, and the header would name a level that never reached the
+   * engine. Filtering both pickers makes that state unreachable rather than
+   * merely discouraged.
+   */
+  function paramOptions(otherKey: string) {
+    return params
+      .filter((p) => p.key !== otherKey)
+      .filter((p) => !p.solveKind || p.solveKind !== solveKind)
+      .map((p) => ({ value: p.key, label: p.label }));
   }
+
+  const axisSolveKinds = [xParam?.solveKind, yParam?.solveKind].filter(Boolean);
+  const supported = solvableKinds(spec);
+  const availableSolveKinds = solveKinds.filter((k) => supported.includes(k) && !axisSolveKinds.includes(k));
+
+  // Belt and braces. The filtered pickers should make a conflicting selection
+  // unreachable, but if any path ever lands on one, move off it rather than
+  // solve for a field an axis is driving.
+  useEffect(() => {
+    if (availableSolveKinds.length > 0 && !availableSolveKinds.includes(solveKind)) {
+      setSolveKind(availableSolveKinds[0]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availableSolveKinds.join('|'), solveKind]);
 
   function cancel() {
     abortRef.current?.abort();
@@ -268,6 +300,23 @@ export function PricingGrid({ page, spec, market, underlyingName }: PricingGridP
     };
   }, []);
 
+  /**
+   * Re-solves the whole grid when the question changes.
+   *
+   * Changing the solve target changes what EVERY cell means, so the old numbers
+   * are answers to a question nobody is asking any more. Changing an axis
+   * parameter is worse: the headers still hold values of the parameter the user
+   * just moved away from. Re-shading alone would leave both cases showing a
+   * confidently wrong table, so regenerate instead.
+   *
+   * This cannot loop: generate() never writes xKey, yKey or solveKind.
+   */
+  useEffect(() => {
+    if (!hasGenerated) return;
+    void generate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [solveKind, xKey, yKey]);
+
   function editColumnHeader(index: number, value: number) {
     setXValues((prev) => prev.map((v, i) => (i === index ? value : v)));
     scheduleSlice('col', index, value);
@@ -349,12 +398,12 @@ export function PricingGrid({ page, spec, market, underlyingName }: PricingGridP
       <h3 className="card-title">Pricing grid</h3>
 
       <div className="pricing-grid-setup">
-        <SelectField label="X axis" value={xKey} options={paramOptions()} onChange={setXKey} />
-        <SelectField label="Y axis" value={yKey} options={paramOptions()} onChange={setYKey} />
+        <SelectField label="X axis" value={xKey} options={paramOptions(yKey)} onChange={setXKey} />
+        <SelectField label="Y axis" value={yKey} options={paramOptions(xKey)} onChange={setYKey} />
         <SelectField
           label="Solve for"
           value={solveKind}
-          options={solveKinds.map((k) => ({ value: k, label: SOLVE_LABELS[k] }))}
+          options={availableSolveKinds.map((k) => ({ value: k, label: SOLVE_LABELS[k] }))}
           onChange={(v) => setSolveKind(v as SolveTarget['kind'])}
         />
         <div className="pricing-grid-actions">
@@ -463,7 +512,11 @@ export function PricingGrid({ page, spec, market, underlyingName }: PricingGridP
                         title={title}
                         className={`pricing-grid-cell ${state.status}`}
                         style={
-                          state.status === 'solved'
+                          // An unshaded target (direction 'none') must leave the
+                          // cell on the table's own background. Painting every
+                          // cell the same accent-soft fill reads as a heatmap
+                          // that failed, not as one deliberately withheld.
+                          state.status === 'solved' && direction !== 'none'
                             ? {
                                 backgroundColor: `color-mix(in srgb, var(--accent) ${pct}%, var(--accent-soft))`,
                                 color: intensity > 0.55 ? 'var(--accent-contrast)' : undefined,

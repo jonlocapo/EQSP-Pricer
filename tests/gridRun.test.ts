@@ -7,6 +7,7 @@ import {
   runGrid,
   type GridCell,
   type GridCellState,
+  solvableKinds,
 } from '../src/services/gridRun';
 import { gridParamsFor } from '../src/model/paramRegistry';
 import { DEFAULT_COUPON_SPEC, DEFAULT_ACCUMULATOR } from '../src/state/tradeStore';
@@ -42,6 +43,9 @@ describe('betterDirection', () => {
 
   it('callBarrier is never shaded: a lower autocall trigger has no single correct direction', () => {
     expect(betterDirection({ kind: 'callBarrier' }, DEFAULT_COUPON_SPEC)).toBe('none');
+    // Price is not a solve target, but its cells still carry a PV, and a
+    // higher PV is better for the client. It must be shaded.
+    expect(betterDirection({ kind: 'none' }, DEFAULT_COUPON_SPEC)).toBe('higher');
   });
 
   it('strike flips with accumulator direction: lower-is-better accumulating, higher-is-better decumulating', () => {
@@ -273,5 +277,35 @@ describe('runGrid', () => {
     expect(shadeIntensity(10, min, max, 'higher')).toBe(0);
     expect(shadeIntensity(14, min, max, 'higher')).toBe(1);
     expect(shadeIntensity(12, min, max, 'higher')).toBeCloseTo(0.5);
+  });
+});
+
+describe('solvableKinds', () => {
+  it('offers only what the coupon terms can actually reach', () => {
+    const base = DEFAULT_COUPON_SPEC;
+    // A note with no call schedule cannot solve for a call barrier.
+    const noCall = { ...base, callType: 'none' as const };
+    expect(solvableKinds(noCall)).not.toContain('callBarrier');
+    const stepdown = { ...base, callType: 'stepdown' as const };
+    expect(solvableKinds(stepdown)).toContain('callBarrier');
+
+    // A fixed coupon has no coupon barrier to solve for.
+    expect(solvableKinds({ ...base, couponType: 'fixed' as const })).not.toContain('couponBarrier');
+    expect(solvableKinds({ ...base, couponType: 'conditional' as const })).toContain('couponBarrier');
+
+    // No knock-in condition means no KI barrier to solve for.
+    expect(solvableKinds({ ...base, barrierType: 'none' as const })).not.toContain('kiBarrier');
+    expect(solvableKinds({ ...base, barrierType: 'european' as const })).toContain('kiBarrier');
+
+    // No AC coupon configured means no AC coupon to solve for.
+    expect(solvableKinds({ ...base, acCouponType: 'none' as const })).not.toContain('acCouponPa');
+  });
+
+  it('leaves an issuer-callable note with Price only, since LSMC solves for nothing', () => {
+    expect(solvableKinds({ ...DEFAULT_COUPON_SPEC, callType: 'issuerCallable' as const })).toEqual(['none']);
+  });
+
+  it('always offers Price on a coupon note', () => {
+    expect(solvableKinds(DEFAULT_COUPON_SPEC)).toContain('none');
   });
 });

@@ -18,6 +18,7 @@ import type {
   ParticipationSpec,
   ProductSpec,
 } from './product';
+import type { SolveTarget } from './request';
 
 export interface GridParam {
   /** Stable id, for example 'coupon.kiBarrierPct'. Unique within a family. */
@@ -30,6 +31,19 @@ export interface GridParam {
   step: number;
   read: (spec: ProductSpec) => number;
   write: (spec: ProductSpec, v: number) => ProductSpec;
+  /**
+   * The solve target that WRITES this same field, when one exists.
+   *
+   * The grid must never put a field on an axis and solve for it at the same
+   * time: the solver would overwrite the axis value, so the header would
+   * claim a level the cell was not priced at. The setup row uses this to keep
+   * the axis pickers and the solve-for picker mutually exclusive.
+   *
+   * Note that the 'none' target, plain Price, writes its answer into the
+   * REOFFER (into the upfront for an accumulator), so those fields carry a
+   * solveKind too even though Price is not a field solve.
+   */
+  solveKind?: SolveTarget['kind'];
 }
 
 function asCoupon(spec: ProductSpec, key: string): CouponProductSpec {
@@ -56,6 +70,7 @@ function asAccumulator(spec: ProductSpec, key: string): AccumulatorSpec {
 const COUPON_PARAMS: GridParam[] = [
   {
     key: 'coupon.kiBarrierPct',
+    solveKind: 'kiBarrier',
     label: 'KI barrier',
     unit: '%',
     step: 1,
@@ -64,6 +79,7 @@ const COUPON_PARAMS: GridParam[] = [
   },
   {
     key: 'coupon.putStrikePct',
+    solveKind: 'putStrike',
     label: 'Put strike',
     unit: '%',
     step: 1,
@@ -72,6 +88,7 @@ const COUPON_PARAMS: GridParam[] = [
   },
   {
     key: 'coupon.couponPaPct',
+    solveKind: 'couponPa',
     label: 'Coupon p.a.',
     unit: '%',
     step: 0.1,
@@ -80,6 +97,7 @@ const COUPON_PARAMS: GridParam[] = [
   },
   {
     key: 'coupon.couponBarrierPct',
+    solveKind: 'couponBarrier',
     label: 'Coupon barrier',
     unit: '%',
     step: 1,
@@ -88,6 +106,7 @@ const COUPON_PARAMS: GridParam[] = [
   },
   {
     key: 'coupon.callBarrierPct',
+    solveKind: 'callBarrier',
     label: 'Call barrier',
     unit: '%',
     step: 1,
@@ -104,6 +123,7 @@ const COUPON_PARAMS: GridParam[] = [
   },
   {
     key: 'coupon.acCouponPct',
+    solveKind: 'acCouponPa',
     label: 'AC coupon',
     unit: '%',
     step: 0.1,
@@ -112,6 +132,7 @@ const COUPON_PARAMS: GridParam[] = [
   },
   {
     key: 'coupon.reofferPct',
+    solveKind: 'none',
     label: 'Reoffer',
     unit: '%',
     step: 0.1,
@@ -131,6 +152,7 @@ const COUPON_PARAMS: GridParam[] = [
 const PARTICIPATION_PARAMS: GridParam[] = [
   {
     key: 'participation.upsideStrikePct',
+    solveKind: 'upsideStrike',
     label: 'Upside strike',
     unit: '%',
     step: 1,
@@ -142,6 +164,7 @@ const PARTICIPATION_PARAMS: GridParam[] = [
   },
   {
     key: 'participation.participationPct',
+    solveKind: 'gearing',
     label: 'Participation',
     unit: '%',
     step: 5,
@@ -156,6 +179,7 @@ const PARTICIPATION_PARAMS: GridParam[] = [
     // writing it also switches the variant to 'callSpread'. Any other variant
     // has no upper strike field at all.
     key: 'participation.upperStrikePct',
+    solveKind: 'upperStrike',
     label: 'Cap',
     unit: '%',
     step: 1,
@@ -194,6 +218,7 @@ const PARTICIPATION_PARAMS: GridParam[] = [
   },
   {
     key: 'participation.bonusPct',
+    solveKind: 'bonusLevel',
     label: 'Bonus',
     unit: '%',
     step: 1,
@@ -210,6 +235,7 @@ const PARTICIPATION_PARAMS: GridParam[] = [
   },
   {
     key: 'participation.twinWinPct',
+    solveKind: 'twinWin',
     label: 'Twin-win',
     unit: '%',
     step: 5,
@@ -221,6 +247,7 @@ const PARTICIPATION_PARAMS: GridParam[] = [
   },
   {
     key: 'participation.reofferPct',
+    solveKind: 'none',
     label: 'Reoffer',
     unit: '%',
     step: 0.1,
@@ -232,6 +259,7 @@ const PARTICIPATION_PARAMS: GridParam[] = [
 const ACCUMULATOR_PARAMS: GridParam[] = [
   {
     key: 'accumulator.strikePct',
+    solveKind: 'strike',
     label: 'Strike',
     unit: '%',
     step: 1,
@@ -240,6 +268,7 @@ const ACCUMULATOR_PARAMS: GridParam[] = [
   },
   {
     key: 'accumulator.koTriggerPct',
+    solveKind: 'koTrigger',
     label: 'KO trigger',
     unit: '%',
     step: 1,
@@ -248,6 +277,7 @@ const ACCUMULATOR_PARAMS: GridParam[] = [
   },
   {
     key: 'accumulator.upfrontPct',
+    solveKind: 'upfront',
     label: 'Upfront',
     unit: '%',
     step: 0.1,
