@@ -602,6 +602,15 @@ function effectiveMarketFor(
 export async function executePriceRequest(req: PriceRequest, hooks: PricingHooks): Promise<PriceResult | null> {
   const start = Date.now();
   const { mc } = req;
+  // The Contract Lab is a pricing sandbox for now, not a solver surface —
+  // see model/lab.ts and engine/combinators/lab.ts. Solve targets are
+  // defined per hand-written product family (couponPa, kiBarrier, strike,
+  // ...) and applySolveValue/solveBounds have no Lab cases. LabModal never
+  // offers solve controls, so this should never fire from the UI; it exists
+  // so a Lab request built any other way fails clearly, not by mispricing.
+  if (req.product.kind === 'lab' && req.solve.kind !== 'none') {
+    throw new Error('Lab contracts price directly; solving for a Lab term is not supported yet.');
+  }
   // Skew: when a surface is available, price the product at the vol of ITS OWN
   // risk strike, rather than at the flat/ATM vol. These payoffs live away from
   // the money. So that choice moves the price materially. See

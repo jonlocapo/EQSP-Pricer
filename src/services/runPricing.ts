@@ -36,7 +36,11 @@ const SOLVE_LABELS: Record<SolveTarget['kind'], string> = {
 function termsSummaryFor(product: ProductSpec): string {
   if (product.kind === 'coupon') return couponTermsSummary(product);
   if (product.kind === 'participation') return participationTermsSummary(product);
-  return accumulatorTermsSummary(product);
+  if (product.kind === 'accumulator') return accumulatorTermsSummary(product);
+  // Lab specs never reach runPricing — LabModal prices directly through
+  // pricerClient (see LabModal.tsx) and never records to history. This
+  // branch only satisfies exhaustiveness.
+  return 'lab contract';
 }
 
 /**

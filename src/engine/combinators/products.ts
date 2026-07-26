@@ -205,8 +205,14 @@ export interface CatapultTerms {
  * favoring the earlier index, clamped to [1, grid.nSteps]. Generalizes the
  * old `Math.round(t / dtYears)` snapping to any grid, uniform or not, by
  * searching the grid's actual time vector instead of assuming a constant
- * step size, which a merged or adaptive grid does not have. */
-function nearestGridIndex(t: number, grid: PricingGrid): number {
+ * step size, which a merged or adaptive grid does not have. Takes only the
+ * two fields it needs, not a full `PricingGrid`, so callers building a
+ * schedule (engine/schedule.ts, engine/combinators/lab.ts) can call it
+ * before the rest of a PricingGrid exists yet. Exported: the Lab combinator
+ * (lab.ts) reuses this exact snapping, so a Lab block's own observation
+ * dates land on the identical grid index a hand-written product's schedule
+ * would produce for the same frequency and tenor. */
+export function nearestGridIndex(t: number, grid: Pick<PricingGrid, 'times' | 'nSteps'>): number {
   const { times, nSteps } = grid;
   let lo = 0;
   let hi = nSteps;

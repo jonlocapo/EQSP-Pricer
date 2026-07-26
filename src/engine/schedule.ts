@@ -1,5 +1,5 @@
 import { PERIODS_PER_YEAR } from '../model/product';
-import type { ProductSpec } from '../model/product';
+import type { Frequency, ProductSpec } from '../model/product';
 import type { PricingGrid } from './payoffs/types';
 import { STEPS_PER_YEAR } from './gbm';
 
@@ -97,7 +97,40 @@ function needsDailyPath(spec: ProductSpec): boolean {
       // Every step feeds three strike-dependent loops: accrual, gearing, and
       // KO/cutoff detection. This is inherently a daily walk.
       return true;
+    case 'lab':
+      // A daily walk is needed only if some shortPut block monitors the
+      // barrier American-style (running minimum). No other Lab block reads
+      // a running extremum.
+      return spec.blocks.some((b) => b.t === 'shortPut' && b.barrierType === 'american');
   }
+}
+
+/** Ascending, deduplicated union of every coupon or autocall Lab block's own
+ * periodic observation grid indices, on the DAILY grid. Mirrors
+ * `periodicObs` per block, then merges — the same construction the 'coupon'
+ * spec uses for its single couponFrequency/callFrequency, generalized to
+ * however many blocks of one role the Lab spec carries. */
+function labBlockObsUnion(
+  blocks: { frequency: Frequency }[],
+  tenorYears: number,
+  nSteps: number,
+  dtYears: number,
+): number[] {
+  const set = new Set<number>();
+  for (const b of blocks) {
+    for (const gi of periodicObs(tenorYears, PERIODS_PER_YEAR[b.frequency], nSteps, dtYears)) set.add(gi);
+  }
+  return Array.from(set).sort((a, b) => a - b);
+}
+
+/** Same union as `labBlockObsUnion`, but in continuous time (for the compact
+ * grid's step set) — mirrors `periodicTimes` per block, then merges. */
+function labBlockTimesUnion(blocks: { frequency: Frequency }[], tenorYears: number): number[] {
+  const set = new Set<number>();
+  for (const b of blocks) {
+    for (const t of periodicTimes(tenorYears, PERIODS_PER_YEAR[b.frequency])) set.add(t);
+  }
+  return Array.from(set).sort((a, b) => a - b);
 }
 
 /**
@@ -180,6 +213,24 @@ export function buildDailyGrid(spec: ProductSpec): PricingGrid {
     const stepInterval =
       spec.settlementFrequency === 'weekly' ? 5 : spec.settlementFrequency === 'biweekly' ? 10 : 21;
     settlementObs = settlementSchedule(nSteps, stepInterval);
+  } else if (spec.kind === 'lab') {
+    // couponObs/callObs here are the UNION of every coupon/autocall block's
+    // own schedule, not one product's single frequency. buildLabContract
+    // (engine/combinators/lab.ts) re-derives each block's own gridIndex set
+    // against this same grid, via nearestGridIndex, to know which merged
+    // event carries which block's leg.
+    couponObs = labBlockObsUnion(
+      spec.blocks.filter((b): b is Extract<typeof spec.blocks[number], { t: 'coupon' }> => b.t === 'coupon'),
+      spec.tenorYears,
+      nSteps,
+      dtYears,
+    );
+    callObs = labBlockObsUnion(
+      spec.blocks.filter((b): b is Extract<typeof spec.blocks[number], { t: 'autocall' }> => b.t === 'autocall'),
+      spec.tenorYears,
+      nSteps,
+      dtYears,
+    );
   }
 
   return { nSteps, dtYears, tenorYears: spec.tenorYears, times, stepDt, couponObs, callObs, settlementObs };
@@ -197,6 +248,23 @@ export function buildGrid(spec: ProductSpec): PricingGrid {
     const couponTimes = periodicTimes(spec.tenorYears, PERIODS_PER_YEAR[spec.couponFrequency]);
     const callTimes =
       spec.callType !== 'none' ? periodicTimes(spec.tenorYears, PERIODS_PER_YEAR[spec.callFrequency]) : [];
+    const { nSteps, times, stepDt, dtYears } = buildCompactGrid([...couponTimes, ...callTimes], spec.tenorYears);
+    const indexOf = new Map<number, number>();
+    times.forEach((t, i) => indexOf.set(t, i));
+    const couponObs = couponTimes.map((t) => indexOf.get(t)!);
+    const callObs = callTimes.map((t) => indexOf.get(t)!);
+    return { nSteps, dtYears, tenorYears: spec.tenorYears, times, stepDt, couponObs, callObs, settlementObs: [] };
+  }
+
+  if (spec.kind === 'lab') {
+    const couponTimes = labBlockTimesUnion(
+      spec.blocks.filter((b): b is Extract<typeof spec.blocks[number], { t: 'coupon' }> => b.t === 'coupon'),
+      spec.tenorYears,
+    );
+    const callTimes = labBlockTimesUnion(
+      spec.blocks.filter((b): b is Extract<typeof spec.blocks[number], { t: 'autocall' }> => b.t === 'autocall'),
+      spec.tenorYears,
+    );
     const { nSteps, times, stepDt, dtYears } = buildCompactGrid([...couponTimes, ...callTimes], spec.tenorYears);
     const indexOf = new Map<number, number>();
     times.forEach((t, i) => indexOf.set(t, i));
