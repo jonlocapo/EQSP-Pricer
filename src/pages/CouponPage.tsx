@@ -5,8 +5,11 @@ import { useResultsStore } from '../state/resultsStore';
 import { Card } from '../components/Card';
 import { Segmented } from '../components/Segmented';
 import { NumericField } from '../components/NumericField';
+import { nextStepValue } from '../components/numericStep';
 import { TenorField } from '../components/TenorField';
 import { ActionRow } from '../components/ActionRow';
+import { PricingGrid } from '../components/PricingGrid';
+import { noteEditSource } from '../state/editSource';
 import { validateCoupon } from '../services/validation';
 import { runPricing } from '../services/runPricing';
 import { useLiveReprice } from '../hooks/useLiveReprice';
@@ -38,12 +41,22 @@ export function CouponPage() {
   const running = useResultsStore((s) => s.running);
 
   const [greeks, setGreeks] = useState(false);
+  const [gridOpen, setGridOpen] = useState(false);
   const [leverageAuto, setLeverageAuto] = useState(true);
   // Coupon and call (AC) observations almost always share a schedule, and a
   // mismatch is usually a mistake rather than an intent. AUTO keeps the coupon
   // frequency locked to the call frequency; turning it off allows a deliberate
   // mismatch.
   const [couponFreqAuto, setCouponFreqAuto] = useState(true);
+
+  /** Writes one cell of the custom call barrier schedule, tagging the edit so
+   * it gets the debounce its source deserves. */
+  function setBarrierAt(index: number, value: number, source: 'type' | 'step'): void {
+    noteEditSource(source);
+    const next = [...spec.customCallBarriersPct];
+    next[index] = value;
+    setSpec({ customCallBarriersPct: next });
+  }
 
   // Keep custom call schedule sized to the current number of call observations.
   useEffect(() => {
@@ -386,6 +399,11 @@ export function CouponPage() {
                             <td>{i + 1}</td>
                             <td>{periodYears.toFixed(2)}y</td>
                             <td>
+                              {/* A raw input, not a NumericField, because a table
+                               * cell has no room for a label row or a stepper
+                               * column. The keyboard arrows still snap to a
+                               * multiple, and still count as a step edit, so
+                               * they match every other field in the app. */}
                               <input
                                 className={`input ${validation.rowErrors?.[i] ? 'invalid' : ''}`}
                                 type="number"
@@ -395,9 +413,12 @@ export function CouponPage() {
                                   // Ignore a cleared cell mid-retype, rather than
                                   // writing NaN into the barrier schedule.
                                   if (!Number.isFinite(e.target.valueAsNumber)) return;
-                                  const next = [...spec.customCallBarriersPct];
-                                  next[i] = e.target.valueAsNumber;
-                                  setSpec({ customCallBarriersPct: next });
+                                  setBarrierAt(i, e.target.valueAsNumber, 'type');
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+                                  e.preventDefault();
+                                  setBarrierAt(i, nextStepValue(v, 1, e.key === 'ArrowUp' ? 1 : -1), 'step');
                                 }}
                               />
                             </td>
@@ -522,8 +543,16 @@ export function CouponPage() {
           greeks={greeks}
           onGreeksChange={setGreeks}
           running={running}
+          onToggleGrid={() => setGridOpen((v) => !v)}
+          gridOpen={gridOpen}
         />
       </div>
+
+      {gridOpen && (
+        <div style={{ gridColumn: '1 / -1' }}>
+          <PricingGrid page="coupon" spec={spec} market={market} underlyingName={underlyingName} />
+        </div>
+      )}
     </div>
   );
 }

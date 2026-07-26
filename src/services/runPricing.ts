@@ -13,7 +13,7 @@ import {
   participationTermsSummary,
 } from './summaries';
 
-const SOLVE_LABELS: Record<SolveTarget['kind'], string> = {
+export const SOLVE_LABELS: Record<SolveTarget['kind'], string> = {
   none: 'Price',
   couponPa: 'Coupon p.a.',
   acCouponPa: 'AC Coupon',
@@ -190,8 +190,10 @@ export interface RunPricingParams {
 
 /** Matches the asyncRootFind "bracket doesn't contain a root" message
  * (src/worker/pricing.ts). This is the one failure mode that is an
- * expected, calm outcome during live editing, not a real error. */
-const NO_SOLUTION_RE = /no solution .* not reachable/i;
+ * expected, calm outcome during live editing, not a real error. Exported so
+ * gridRun.ts can classify a per-cell no-solution failure the same way,
+ * instead of duplicating the pattern. */
+export const NO_SOLUTION_RE = /no solution .* not reachable/i;
 
 /**
  * The pricing "environment": everything that determines whether the MC

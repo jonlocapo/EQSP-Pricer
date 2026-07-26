@@ -1354,3 +1354,129 @@ select.input:focus {
   text-align: center;
   white-space: nowrap;
 }
+
+/* ---------- Pricing grid ---------- */
+
+.pricing-grid-panel {
+  margin-top: 4px;
+}
+
+.pricing-grid-setup {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(140px, 1fr)) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.pricing-grid-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pricing-grid-progress {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  margin-top: 6px;
+}
+
+.pricing-grid-empty {
+  padding: 28px 12px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.pricing-grid-basis {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 8px;
+}
+
+.pricing-grid-stale-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: color-mix(in srgb, #dc2626 15%, var(--bg-elevated));
+  color: var(--danger, #dc2626);
+}
+
+/* Wide grids must scroll inside their own container, never the page body. */
+.pricing-grid-scroll {
+  max-height: none;
+  overflow-x: auto;
+  margin-top: 10px;
+}
+
+.pricing-grid-table {
+  min-width: 100%;
+}
+
+.pricing-grid-table th,
+.pricing-grid-table td {
+  white-space: nowrap;
+}
+
+.pricing-grid-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 110px;
+}
+
+.pricing-grid-header .field {
+  min-width: 78px;
+}
+
+.pricing-grid-remove {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.pricing-grid-remove:hover:not(:disabled) {
+  background: var(--bg-sunken);
+  color: var(--text);
+}
+
+.pricing-grid-remove:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* Solved cell background comes from an inline style computed per-cell (see
+ * PricingGrid.tsx), a color-mix between --accent and --accent-soft, so the
+ * heatmap follows the app's selected accent instead of a hardcoded hue, and
+ * reads correctly in both themes. This rule only covers layout and the
+ * unsolved/invalid states. */
+.pricing-grid-cell {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  padding: 6px 10px;
+  cursor: pointer;
+  min-width: 64px;
+}
+
+.pricing-grid-cell.pending {
+  color: var(--text-muted);
+}
+
+.pricing-grid-cell.invalid {
+  color: var(--text-muted);
+  background: var(--bg-sunken);
+}
+
+.pricing-grid-cell.no-solution {
+  color: var(--danger, #dc2626);
+  background: color-mix(in srgb, #dc2626 8%, var(--bg-elevated));
+}

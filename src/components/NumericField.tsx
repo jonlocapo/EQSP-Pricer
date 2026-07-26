@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { noteEditSource } from '../state/editSource';
+import { nextStepValue } from './numericStep';
 
 interface NumericFieldProps {
   label: string;
@@ -40,14 +41,6 @@ interface NumericFieldProps {
   solveChip?: boolean;
   solveActive?: boolean;
   onSolveClick?: () => void;
-}
-
-/** Decimal places implied by a step, so stepping 0.1 from 98.5 gives 98.6,
- * not 98.60000000000001. */
-function decimalsOf(step: number): number {
-  const s = String(step);
-  const dot = s.indexOf('.');
-  return dot === -1 ? 0 : s.length - dot - 1;
 }
 
 export function NumericField({
@@ -106,30 +99,32 @@ export function NumericField({
     if (Number.isFinite(parsed)) commit(parsed, 'type');
   }
 
-  /**
-   * Steps to the next multiple of `step`, not just `value ± step`.
-   *
-   * A value left by a solve is rarely on a round increment (3.0456 with a 0.1
-   * step). Adding the increment blindly keeps that untidy tail forever
-   * (3.1456, 3.2456, ...). Snapping to the next multiple in the direction of
-   * travel gives 3.1, then 3.2, so the first click also tidies the number.
-   * A value already on a multiple just moves one full increment.
-   */
+  /** Steps to the next multiple of `step`, not just `value ± step`. See
+   * nextStepValue in ./numericStep for why. */
   function stepBy(direction: 1 | -1): void {
-    const base = Number.isFinite(value) ? value : 0;
-    const dp = decimalsOf(step);
-    const units = base / step;
-    // Guard against a value that is only a floating-point hair off a multiple
-    // (0.1 * 30 !== 3 exactly): treat it as already on the multiple.
-    const onMultiple = Math.abs(units - Math.round(units)) < 1e-9;
-    const nextUnits = onMultiple
-      ? Math.round(units) + direction
-      : direction === 1
-        ? Math.ceil(units)
-        : Math.floor(units);
-    const next = Number((nextUnits * step).toFixed(dp));
     setDraft(null);
-    commit(next, 'step');
+    commit(nextStepValue(value, step, direction), 'step');
+  }
+
+  /**
+   * Sends the keyboard Up and Down arrows through `stepBy`, so they behave
+   * exactly like the ▲▼ buttons.
+   *
+   * Do not remove this. A native `<input type="number">` steps ITSELF on an
+   * arrow key, and that native step is wrong twice over. It adds a raw
+   * `value ± step` with no snapping to a multiple, and it reaches the app as an
+   * ordinary `onChange`, indistinguishable from typing, so the edit gets the
+   * long typing debounce instead of the short step debounce. `preventDefault`
+   * is what suppresses the native step. Without it the value moves twice.
+   */
+  function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>): void {
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      stepBy(1);
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      stepBy(-1);
+    }
   }
 
   const shown = draft !== null ? draft : Number.isFinite(value) ? String(value) : '';
@@ -177,6 +172,7 @@ export function NumericField({
           max={max}
           disabled={readOnly}
           onChange={(e) => handleType(e.target.value)}
+          onKeyDown={onKeyDown}
           onBlur={() => setDraft(null)}
         />
         {suffix && <span className="suffix">{suffix}</span>}
