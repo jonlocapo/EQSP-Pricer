@@ -78,7 +78,7 @@ export function toCboeSymbol(symbol: string): string {
   // foreign listings and genuinely have no CBOE chain.
   if (US_CLASS_SHARE_RE.test(s)) return s.replace('.', '');
   if (s.includes('.')) {
-    throw new Error(`CBOE only lists US options — no chain for "${s}"`);
+    throw new Error(`CBOE only lists US options, so there is no chain for "${s}"`);
   }
   return s;
 }

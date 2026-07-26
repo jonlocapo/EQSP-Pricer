@@ -260,10 +260,9 @@ export function LabModal({ onClose }: LabModalProps) {
         </div>
         <div className="modal-body lab-body">
           <div className="lab-guide">
-            A block is one leg of a structured product's payoff — a coupon, an autocall, a short put, upside
+            A block is one leg of a structured product's payoff: a coupon, an autocall, a short put, upside
             participation, a bonus, or a protection floor. Drag blocks from the palette onto the canvas, or use their
-            add buttons, to assemble a contract. This lab is experimental: it prices the assembled contract only, and
-            does not support solving for a term yet.
+            add buttons, to assemble a contract. Set each block's terms, then price the result.
           </div>
 
           <div className="lab-toolbar">

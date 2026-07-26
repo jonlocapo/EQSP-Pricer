@@ -79,7 +79,7 @@ live('marketFetch (live network)', () => {
 // Always-on tests: no network required.
 describe('marketFetch (offline)', () => {
   it('throws for currencies without an open source', async () => {
-    await expect(fetchRefRate('CHF')).rejects.toThrow(/enter the rate manually/);
+    await expect(fetchRefRate('CHF')).rejects.toThrow(/Enter the rate manually/i);
   });
 
   it('computes annualized vol from synthetic closes', () => {

@@ -81,7 +81,7 @@ export function buildVolSurface(chain: ChainLike): VolSurface {
 
   slices.sort((a, b) => a.tYears - b.tYears);
   if (slices.length === 0) {
-    throw new Error('Option chain had no usable implied vols — cannot build a surface');
+    throw new Error('Option chain had no usable implied vols, so no surface can be built');
   }
   return { spotRef: chain.spot, slices, source: chain.source };
 }

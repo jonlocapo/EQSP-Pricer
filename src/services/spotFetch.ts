@@ -7,7 +7,12 @@ export interface SpotFetchResult {
   currency?: string;
 }
 
-async function fetchWithTimeout(url: string, ms: number): Promise<string> {
+/**
+ * Fetch text with a hard timeout. Shared by every source that does not need
+ * a CORS proxy, such as marketdata.app, which already sends
+ * `access-control-allow-origin: *`.
+ */
+export async function fetchWithTimeout(url: string, ms: number): Promise<string> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
   try {
@@ -121,7 +126,7 @@ export async function fetchSpot(symbol: string): Promise<SpotFetchResult> {
     try {
       return await fetchSpotStooq(symbol);
     } catch {
-      throw yahooErr instanceof Error ? yahooErr : new Error('Spot fetch failed — enter manually');
+      throw yahooErr instanceof Error ? yahooErr : new Error('Spot fetch failed. Enter the spot manually.');
     }
   }
 }

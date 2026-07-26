@@ -382,7 +382,7 @@ export function ParticipationPage() {
           suffix="%"
           onChange={(v) => patchSpec({ bonusPct: v })}
           disabled={!kiOn}
-          title={!kiOn ? 'Bonus needs a KI barrier to apply — enable KI Barrier below to activate it.' : undefined}
+          title={!kiOn ? 'Bonus needs a KI barrier to apply. Enable KI Barrier below to activate it.' : undefined}
           solved={fieldSolved('bonusLevel')}
           solveChip={kiOn}
           solveActive={fieldSolved('bonusLevel')}
