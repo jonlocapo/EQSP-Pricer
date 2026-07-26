@@ -1117,6 +1117,163 @@ select.input:focus {
   text-overflow: ellipsis;
 }
 
+/* ---------- Contract Lab ---------- */
+
+.lab-launch-btn {
+  opacity: 0.85;
+}
+
+.lab-modal {
+  width: min(1080px, 94vw);
+}
+
+.lab-body {
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.lab-guide {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+}
+
+.lab-toolbar {
+  max-width: 320px;
+}
+
+.lab-layout {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 16px;
+  min-height: 320px;
+}
+
+.lab-palette {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-right: 1px solid var(--border);
+  padding-right: 14px;
+}
+
+.lab-palette-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  cursor: grab;
+  font-size: 12.5px;
+}
+
+.lab-palette-item:hover {
+  border-color: var(--accent);
+}
+
+.lab-palette-item span:nth-child(2) {
+  flex: 1;
+}
+
+.lab-add-btn {
+  padding: 2px 7px;
+}
+
+.lab-block-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.lab-canvas {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 280px;
+}
+
+.lab-canvas-block {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  cursor: grab;
+}
+
+.lab-canvas-block.drag-over {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.lab-canvas-block-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.lab-canvas-block-title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.lab-canvas-block-title span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lab-canvas-block-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.lab-canvas-block-actions .btn {
+  padding: 3px 7px;
+}
+
+.lab-canvas-block-body {
+  padding: 4px 12px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.lab-price-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.lab-price-bar .field-row {
+  flex: 1;
+  max-width: 380px;
+}
+
+.lab-result {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .ticker-meta {
   font-size: 10.5px;
   color: var(--text-faint);

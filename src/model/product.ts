@@ -8,6 +8,8 @@
  * can be added later without reshaping the contract.
  */
 
+import type { LabSpec } from './lab';
+
 export type BarrierMonitoring = 'none' | 'european' | 'american';
 export type Frequency = 'monthly' | 'quarterly' | 'semiannual' | 'annual';
 
@@ -172,4 +174,11 @@ export interface AccumulatorSpec {
   guaranteePeriods: number;
 }
 
-export type ProductSpec = CouponProductSpec | ParticipationSpec | AccumulatorSpec;
+// ---------------------------------------------------------------------------
+// Contract Lab: a drag-and-drop block spec. See model/lab.ts for the block
+// shapes. Imported here only as a type, so product.ts stays the single
+// place ProductSpec is assembled, without owning the Lab's block-shape
+// detail itself.
+// ---------------------------------------------------------------------------
+
+export type ProductSpec = CouponProductSpec | ParticipationSpec | AccumulatorSpec | LabSpec;

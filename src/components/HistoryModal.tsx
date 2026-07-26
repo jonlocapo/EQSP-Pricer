@@ -59,9 +59,14 @@ export function HistoryModal({ onClose }: HistoryModalProps) {
     } else if (entry.product.kind === 'participation') {
       replaceParticipationSpec(entry.product);
       setParticipationSolve(entry.solve);
-    } else {
+    } else if (entry.product.kind === 'accumulator') {
       replaceAccumulatorSpec(entry.product);
       setAccumulatorSolve(entry.solve);
+    } else {
+      // The Contract Lab prices through its own modal, never through the
+      // three history-tracked pages (see LabModal.tsx). A Lab entry never
+      // actually reaches history — this branch only satisfies exhaustiveness.
+      return;
     }
     setActivePage(entry.page);
     onClose();

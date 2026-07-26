@@ -13,7 +13,16 @@ import {
   participationObservablesRequirements,
 } from './participation';
 import { makeAccumulatorEvaluator } from './accumulator';
+import { buildLabContract, labObservablesRequirements } from '../combinators/lab';
+import { compileContract } from '../combinators/compile';
 
+/** No monolithic PayoffEvaluator exists for the Lab family — it always goes
+ * through the combinator compiler (see makeSplitEvaluator below), the same
+ * way every other product's split path does not fall back to a second,
+ * independent implementation. `makeEvaluator` composes outcome(observables(spots))
+ * from the compiled SplitEvaluator, so a caller that only knows the
+ * monolithic PayoffEvaluator interface still gets a correct, if slightly
+ * less cache-friendly, evaluator. */
 export function makeEvaluator(spec: ProductSpec, ctx: EvaluatorContext): PayoffEvaluator {
   switch (spec.kind) {
     case 'coupon':
@@ -22,6 +31,10 @@ export function makeEvaluator(spec: ProductSpec, ctx: EvaluatorContext): PayoffE
       return makeParticipationEvaluator(spec, ctx);
     case 'accumulator':
       return makeAccumulatorEvaluator(spec, ctx);
+    case 'lab': {
+      const compiled = compileContract(buildLabContract(spec, ctx.grid), ctx);
+      return (spots) => compiled.outcome(compiled.observables(spots));
+    }
   }
 }
 
@@ -48,6 +61,10 @@ export function makeSplitEvaluator(spec: ProductSpec, ctx: EvaluatorContext): Sp
       };
     case 'accumulator':
       return null;
+    case 'lab': {
+      const compiled = compileContract(buildLabContract(spec, ctx.grid), ctx);
+      return compiled;
+    }
   }
 }
 
@@ -67,5 +84,7 @@ export function observablesRequirementsOf(spec: ProductSpec): ObservablesRequire
       return participationObservablesRequirements(spec);
     case 'accumulator':
       return { needsMin: false, needsMax: false };
+    case 'lab':
+      return labObservablesRequirements(spec);
   }
 }

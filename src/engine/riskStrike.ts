@@ -75,6 +75,26 @@ export function riskStrikeFor(spec: ProductSpec): RiskStrikeChoice {
     };
   }
 
+  if (spec.kind === 'lab') {
+    // Same rule as the coupon family, generalized over however many
+    // shortPut blocks the Lab contract carries: the deepest knock-in
+    // barrier (or, lacking one, the lowest put strike) governs the
+    // downside, and so the skew. With no shortPut block at all, there is no
+    // downside optionality to speak of — fall back to ATM.
+    const shortPuts = spec.blocks.filter((b): b is Extract<typeof spec.blocks[number], { t: 'shortPut' }> => b.t === 'shortPut');
+    const monitored = shortPuts.filter((b) => b.barrierType !== 'none');
+    if (monitored.length > 0) {
+      const strikePct = Math.min(...monitored.map((b) => b.kiBarrierPct));
+      return { strikePct, reason: `knock-in barrier at ${strikePct}% governs the downside` };
+    }
+    const puts = shortPuts;
+    if (puts.length > 0) {
+      const strikePct = Math.min(...puts.map((b) => b.strikePct));
+      return { strikePct, reason: `put strike at ${strikePct}% (no barrier)` };
+    }
+    return { strikePct: 100, reason: 'no downside leg (ATM)' };
+  }
+
   // Accumulator: the daily decision is whether spot is below the strike, and
   // the knock-out sits above it. The strike is where the optionality lives.
   return {
