@@ -4,6 +4,7 @@ import { useResultsStore } from './state/resultsStore';
 import { MarketPanel } from './components/MarketPanel';
 import { ResultsBar } from './components/ResultsBar';
 import { HistoryModal } from './components/HistoryModal';
+import { LabModal } from './components/LabModal';
 import { CouponPage } from './pages/CouponPage';
 import { ParticipationPage } from './pages/ParticipationPage';
 import { AccumulatorPage } from './pages/AccumulatorPage';
@@ -18,6 +19,7 @@ export default function App() {
   const activePage = useTradeStore((s) => s.activePage);
   const setActivePage = useTradeStore((s) => s.setActivePage);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [labOpen, setLabOpen] = useState(false);
 
   return (
     <div className="app-shell">
@@ -42,6 +44,14 @@ export default function App() {
           ))}
         </nav>
         <div className="header-actions">
+          <button
+            className="btn btn-sm lab-launch-btn"
+            type="button"
+            onClick={() => setLabOpen(true)}
+            title="Contract Lab — experimental drag-and-drop pricing sandbox"
+          >
+            🧪 Lab
+          </button>
           <button className="btn btn-sm" type="button" onClick={() => setHistoryOpen(true)}>
             History
           </button>
@@ -61,6 +71,7 @@ export default function App() {
 
       <ResultsBar />
       {historyOpen && <HistoryModal onClose={() => setHistoryOpen(false)} />}
+      {labOpen && <LabModal onClose={() => setLabOpen(false)} />}
     </div>
   );
 }
