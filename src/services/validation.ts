@@ -34,8 +34,12 @@ export function validateCoupon(spec: CouponProductSpec, market: MarketData): Val
   if (spec.reofferPct < 0) errors.reofferPct = 'Must be ≥ 0.';
   if (spec.issuePricePct < 0) errors.issuePricePct = 'Must be ≥ 0.';
 
-  if (spec.barrierType !== 'none' && !(spec.kiBarrierPct < spec.putStrikePct)) {
-    errors.kiBarrierPct = 'KI barrier must be below put strike.';
+  // At or below, not strictly below: a one-star / airbag note sets the put
+  // strike EQUAL to the barrier on purpose, so that the loss is measured from
+  // the barrier rather than from par. Requiring a strict inequality rejected a
+  // legitimate and common structure.
+  if (spec.barrierType !== 'none' && !(spec.kiBarrierPct <= spec.putStrikePct)) {
+    errors.kiBarrierPct = 'KI barrier cannot be above the put strike.';
   }
 
   if (spec.callType === 'custom') {
@@ -69,8 +73,10 @@ export function validateParticipation(spec: ParticipationSpec, market: MarketDat
     }
   }
 
-  if (spec.downside.barrierType !== 'none' && !(spec.downside.kiBarrierPct < spec.downside.strikePct)) {
-    errors.kiBarrierPct = 'KI barrier must be below downside strike.';
+  // At or below, not strictly below — see the coupon note above: an airbag
+  // deliberately puts the barrier and the downside strike at the same level.
+  if (spec.downside.barrierType !== 'none' && !(spec.downside.kiBarrierPct <= spec.downside.strikePct)) {
+    errors.kiBarrierPct = 'KI barrier cannot be above the downside strike.';
   }
 
   if (spec.downside.putSpread) {

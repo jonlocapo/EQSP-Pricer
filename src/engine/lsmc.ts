@@ -12,8 +12,8 @@ export interface LsmcOptions {
   market: MarketData;
   grid: PricingGrid;
   cashflows: CashflowExtractor;
-  /** Cost (% of notional) the issuer pays to call at the given 1-based
-   * call-observation period. Includes accrued/AC coupon; supersedes any
+  /** Cost, % of notional, the issuer pays to call at the given 1-based
+   * call-observation period. Includes accrued or AC coupon. Supersedes any
    * base cashflow scheduled at that same date. */
   redemptionCostPct: (period: number) => number;
   /** Grid indices of call observation dates, ascending. */
@@ -101,12 +101,12 @@ function evalQuadratic(coeffs: [number, number, number], x: number): number {
 }
 
 /**
- * Discounted-to-tRef value of cashflow entries with idx > fromIdx — i.e. the
- * value of the note strictly *after* a call date. Any flow scheduled exactly
- * at the call date (e.g. the periodic coupon accrued for the just-completed
- * period) is paid regardless of the call decision, so it is excluded from
- * this "continuing to hold" comparison and added back separately by the
- * caller.
+ * Discounted-to-tRef value of cashflow entries with idx > fromIdx. This is
+ * the value of the note strictly *after* a call date. Any flow scheduled
+ * exactly at the call date, for example the periodic coupon accrued for
+ * the just-completed period, is paid regardless of the call decision. So
+ * it is excluded from this "continuing to hold" comparison, and added back
+ * separately by the caller.
  */
 function valueFrom(entries: CfEntry[], fromIdx: number, df: (t: number) => number, times: number[]): number {
   let pv = 0;
@@ -118,17 +118,18 @@ function valueFrom(entries: CfEntry[], fromIdx: number, df: (t: number) => numbe
 }
 
 /**
- * Longstaff-Schwartz pricing of an issuer-callable note. The issuer calls to
- * MINIMIZE holder value: it exercises at date j whenever the redemption cost
- * is cheaper than the fitted continuation value of the note.
+ * Longstaff-Schwartz pricing of an issuer-callable note. The issuer calls
+ * to MINIMIZE holder value. It exercises at date j whenever the
+ * redemption cost is cheaper than the fitted continuation value of the
+ * note.
  */
 export function priceIssuerCallable(opts: LsmcOptions): LsmcResult {
   const { numPaths, seed, nSteps, s0, market, cashflows, redemptionCostPct, callObs, callFromPeriod, dtYears } =
     opts;
-  // LSMC always runs on the daily grid (see schedule.ts's needsDailyPath),
-  // so `times[idx]` is bit-identical to the legacy `idx * dtYears` — using
-  // the grid's times keeps this correct if that ever changes, and matches
-  // the rest of the engine's timeOf(gridIndex, grid) convention.
+  // LSMC always runs on the daily grid (see schedule.ts's needsDailyPath). So
+  // `times[idx]` is bit-identical to the legacy `idx * dtYears`. Using the
+  // grid's times keeps this correct if that ever changes, and matches the
+  // rest of the engine's timeOf(gridIndex, grid) convention.
   const { times } = opts.grid;
 
   const df = makeDf(discountRate(market));
@@ -169,8 +170,8 @@ export function priceIssuerCallable(opts: LsmcOptions): LsmcResult {
       for (let p = 0; p < numPaths; p++) {
         const fitted = evalQuadratic(coeffs, xs[p]);
         if (cost < fitted) {
-          // Flows at or before the call date are paid regardless (already
-          // accrued); everything strictly after is replaced by the
+          // Flows at or before the call date are paid regardless, already
+          // accrued. Everything strictly after is replaced by the
           // redemption cost paid at the call date.
           pathFutureCf[p] = pathFutureCf[p]
             .filter((e) => e.idx <= gridIdx)

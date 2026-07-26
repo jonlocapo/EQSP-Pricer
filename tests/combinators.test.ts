@@ -20,14 +20,14 @@ import {
  * For the reverse-convertible and participation-booster families, this
  * proves per-path, field-by-field equivalence between:
  *   - the hand-written monolithic evaluator (makeCouponEvaluator /
- *     makeParticipationEvaluator) — the production path and correctness
+ *     makeParticipationEvaluator), the production path and correctness
  *     oracle, untouched by this PR, and
- *   - `compileContract(buildX(spec, grid), ctx).outcome(observables(spots))`
- *     — the combinator tree lowered through the exact same
+ *   - `compileContract(buildX(spec, grid), ctx).outcome(observables(spots))`,
+ *     the combinator tree lowered through the exact same
  *     ObservablesEvaluator/OutcomeEvaluator split pathCache.ts consumes.
  *
- * The Catapult has no hand-written oracle, so it is instead checked for
- * sane, directionally-correct pricing behavior (monotonicity, floors).
+ * The Catapult has no hand-written oracle. So it is instead checked for
+ * sane, directionally correct pricing behavior: monotonicity, floors.
  */
 
 const market = { spot: 100, vol: 0.25, rate: 0.03, divYield: 0.01, currency: 'EUR' };
@@ -258,13 +258,13 @@ function baseCatapult(overrides: Partial<CatapultTerms> = {}): CatapultTerms {
 
 function priceAll(terms: CatapultTerms, paths: Float64Array[][]): PathOutcome[] {
   // A minimal participation spec is a convenient vehicle to get a grid for
-  // this tenor — the Catapult's own event grid indices come from
+  // this tenor. The Catapult's own event grid indices come from
   // buildCatapult's own schedule builder (catapultObs), independent of this
   // spec's terms. That schedule snaps its own observation times onto
-  // whatever grid it's given (see catapultObs/nearestGridIndex in
-  // products.ts), so the vehicle grid needs enough resolution to actually
-  // contain points near the Catapult's quarterly call dates — force the
-  // daily grid (American downside) rather than the default compact
+  // whatever grid it is given (see catapultObs/nearestGridIndex in
+  // products.ts). So the vehicle grid needs enough resolution to actually
+  // contain points near the Catapult's quarterly call dates. Force the
+  // daily grid (American downside), rather than the default compact
   // maturity-only participation grid, which would collapse every call date
   // onto the single available point.
   const grid = buildGrid(
@@ -300,7 +300,8 @@ describe('combinator engine — Catapult (autocall + geared upside + protection 
     const high = priceAll(baseCatapult({ callBarrierPct: 130 }), pathSets);
     const callProb = (outs: PathOutcome[]) => outs.filter((o) => o.calledAtPeriod !== undefined).length / outs.length;
     expect(callProb(high)).toBeLessThanOrEqual(callProb(low));
-    // and it should be a meaningfully different distribution for this vol/tenor, not a no-op
+    // It should also be a meaningfully different distribution for this vol
+    // and tenor, not a no-op.
     expect(callProb(low)).toBeGreaterThan(callProb(high));
   });
 

@@ -16,33 +16,34 @@ interface NumericFieldProps {
   /** Extra badge rendered next to the label, e.g. an "AUTO" indicator. */
   badge?: string;
   /**
-   * When set, `badge` is rendered as a clickable toggle button instead of a
-   * passive label (e.g. the AUTO leverage toggle). `badgeOn` controls its
-   * active/inactive visual state.
+   * When set, `badge` is rendered as a clickable toggle button, instead of
+   * a passive label, for example the AUTO leverage toggle. `badgeOn`
+   * controls its active or inactive visual state.
    */
   onBadgeClick?: () => void;
   badgeOn?: boolean;
-  /** Styling for a passive (non-clickable) `badge`. Defaults to the accent
-   * `solved-badge`; the market panel passes `manual-badge` so its amber
+  /** Styling for a passive, non-clickable, `badge`. Defaults to the accent
+   * `solved-badge`. The market panel passes `manual-badge`, so its amber
    * "you have overridden fetched data" meaning survives. */
   badgeClassName?: string;
   hint?: string;
   /**
-   * Renders a clickable "SOLVE" chip next to the label — the per-field
-   * analogue of the AUTO toggle, used to pick this field as the active solve
-   * target (radio semantics across a page's fields). Reuses the exact
-   * `.auto-toggle` chip styling; only the label text ("SOLVE" vs "AUTO")
-   * differentiates it. Renders alongside the `solved` dimming style — the
-   * chip itself is the indicator of "this field is the active solve target",
-   * so it stays visible (and active) even while the field is dimmed/read-only.
+   * Renders a clickable "SOLVE" chip next to the label. This is the
+   * per-field analogue of the AUTO toggle, used to pick this field as the
+   * active solve target, with radio semantics across a page's fields.
+   * Reuses the exact `.auto-toggle` chip styling; only the label text,
+   * "SOLVE" versus "AUTO", differentiates it. Renders alongside the
+   * `solved` dimming style. The chip itself is the indicator that this
+   * field is the active solve target, so it stays visible and active even
+   * while the field is dimmed and read-only.
    */
   solveChip?: boolean;
   solveActive?: boolean;
   onSolveClick?: () => void;
 }
 
-/** Decimal places implied by a step, so stepping 0.1 from 98.5 gives 98.6
- * rather than 98.60000000000001. */
+/** Decimal places implied by a step, so stepping 0.1 from 98.5 gives 98.6,
+ * not 98.60000000000001. */
 function decimalsOf(step: number): number {
   const s = String(step);
   const dot = s.indexOf('.');
@@ -72,13 +73,14 @@ export function NumericField({
 }: NumericFieldProps) {
   const readOnly = solved || disabled;
 
-  // The raw text being typed, held locally so a transient non-numeric state
-  // (an empty field mid-retype) never propagates upward. Without this, an
-  // input.valueAsNumber of NaN reaches the spec and a live reprice fires on
-  // it. null means "not editing — show the committed value".
+  // The raw text being typed, held locally, so a transient non-numeric state,
+  // an empty field mid-retype, never propagates upward. Without this, an
+  // input.valueAsNumber of NaN reaches the spec, and a live reprice fires on
+  // it. null means "not editing, show the committed value".
   const [draft, setDraft] = useState<string | null>(null);
-  // A committed value arriving from outside (a solve writing its result back,
-  // a preset, a live market fetch) supersedes whatever was being typed.
+  // A committed value arriving from outside — a solve writing its result
+  // back, a preset, a live market fetch — supersedes whatever was being
+  // typed.
   const lastValue = useRef(value);
   useEffect(() => {
     if (value !== lastValue.current) {
@@ -97,16 +99,35 @@ export function NumericField({
 
   function handleType(raw: string): void {
     setDraft(raw);
-    // An empty (or otherwise unparseable) field is a normal intermediate
-    // state while retyping — keep it on screen but don't publish it.
+    // An empty, or otherwise unparseable, field is a normal intermediate
+    // state while retyping. Keep it on screen, but do not publish it.
     if (raw.trim() === '') return;
     const parsed = Number(raw);
     if (Number.isFinite(parsed)) commit(parsed, 'type');
   }
 
+  /**
+   * Steps to the next multiple of `step`, not just `value ± step`.
+   *
+   * A value left by a solve is rarely on a round increment (3.0456 with a 0.1
+   * step). Adding the increment blindly keeps that untidy tail forever
+   * (3.1456, 3.2456, ...). Snapping to the next multiple in the direction of
+   * travel gives 3.1, then 3.2, so the first click also tidies the number.
+   * A value already on a multiple just moves one full increment.
+   */
   function stepBy(direction: 1 | -1): void {
     const base = Number.isFinite(value) ? value : 0;
-    const next = Number((base + direction * step).toFixed(decimalsOf(step)));
+    const dp = decimalsOf(step);
+    const units = base / step;
+    // Guard against a value that is only a floating-point hair off a multiple
+    // (0.1 * 30 !== 3 exactly): treat it as already on the multiple.
+    const onMultiple = Math.abs(units - Math.round(units)) < 1e-9;
+    const nextUnits = onMultiple
+      ? Math.round(units) + direction
+      : direction === 1
+        ? Math.ceil(units)
+        : Math.floor(units);
+    const next = Number((nextUnits * step).toFixed(dp));
     setDraft(null);
     commit(next, 'step');
   }
@@ -147,7 +168,7 @@ export function NumericField({
           className={`input ${error ? 'invalid' : ''}`}
           type="number"
           // Reserve room for the stepper column PLUS this field's own suffix.
-          // A single fixed padding cannot serve both "%" and "EUR" — a long
+          // A single fixed padding cannot serve both "%" and "EUR"; a long
           // suffix collided with a long value (1000000EUR).
           style={{ paddingRight: suffix ? Math.max(46, Math.ceil(30 + suffix.length * 9)) : 26 }}
           value={shown}
@@ -159,12 +180,12 @@ export function NumericField({
           onBlur={() => setDraft(null)}
         />
         {suffix && <span className="suffix">{suffix}</span>}
-        {/* Own stepper buttons rather than the browser's native spin buttons:
-         * the native ones only appear on hover/focus, are a tiny hit target,
-         * and — decisively — their input events are indistinguishable from
-         * typing, so they can't be given the shorter step-style debounce that
-         * makes arrow bursts feel instant. Native spinners are hidden in CSS
-         * so there's only ever one set of arrows. */}
+        {/* Own stepper buttons, rather than the browser's native spin buttons.
+         * The native ones only appear on hover or focus, are a tiny hit
+         * target, and, decisively, their input events are indistinguishable
+         * from typing. So they cannot get the shorter step-style debounce
+         * that makes arrow bursts feel instant. Native spinners are hidden
+         * in CSS, so there is only ever one set of arrows. */}
         {!readOnly && (
           <span className="field-steppers">
             <button type="button" tabIndex={-1} aria-label={`Increase ${label}`} onClick={() => stepBy(1)}>

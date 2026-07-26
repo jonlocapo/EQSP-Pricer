@@ -1,7 +1,7 @@
 /**
  * Pure distribution-statistics helpers over a flat array of per-sample PV%
- * outcomes (one float per path, or per antithetic pair — whatever unit
- * Aggregator.addSample was fed). Kept free of MC/worker types so they're
+ * outcomes: one float per path, or per antithetic pair, whatever unit
+ * Aggregator.addSample was fed. Kept free of MC/worker types, so they are
  * testable with hand-built literal arrays.
  */
 
@@ -24,8 +24,8 @@ export function computeHistogram(samples: number[], nBins = DEFAULT_BINS): Histo
     if (s > max) max = s;
   }
   if (min === max) {
-    // Degenerate (all samples identical): center a unit-wide range so bins
-    // are well-defined rather than dividing by zero.
+    // Degenerate case, all samples identical. Center a unit-wide range so
+    // bins are well-defined, rather than dividing by zero.
     min -= 0.5;
     max += 0.5;
   }
@@ -51,9 +51,9 @@ export function computePLoss(samples: number[], referenceLevelPct: number): numb
 }
 
 /**
- * Mean of the worst `alpha` fraction of samples (e.g. alpha = 0.05 for
- * Expected Shortfall at the 5% level). At least one sample is always
- * included so ES is well-defined even for tiny sample sets.
+ * Mean of the worst `alpha` fraction of samples, for example alpha = 0.05
+ * for Expected Shortfall at the 5% level. At least one sample is always
+ * included, so ES is well-defined even for tiny sample sets.
  */
 export function computeExpectedShortfall(samples: number[], alpha: number): number {
   if (samples.length === 0) return 0;

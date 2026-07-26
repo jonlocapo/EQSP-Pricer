@@ -39,6 +39,11 @@ export function CouponPage() {
 
   const [greeks, setGreeks] = useState(false);
   const [leverageAuto, setLeverageAuto] = useState(true);
+  // Coupon and call (AC) observations almost always share a schedule, and a
+  // mismatch is usually a mistake rather than an intent. AUTO keeps the coupon
+  // frequency locked to the call frequency; turning it off allows a deliberate
+  // mismatch.
+  const [couponFreqAuto, setCouponFreqAuto] = useState(true);
 
   // Keep custom call schedule sized to the current number of call observations.
   useEffect(() => {
@@ -53,8 +58,8 @@ export function CouponPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spec.callType, spec.tenorYears, spec.callFrequency]);
 
-  // When AUTO is on, downside leverage is locked to 1/putStrike (the
-  // industry-standard geared put) and recomputed whenever the put strike
+  // When AUTO is on, downside leverage is locked to 1/putStrike, the
+  // industry-standard geared put, and recomputed whenever the put strike
   // changes or AUTO is toggled on. Guarded so it only writes when the value
   // actually differs, to avoid redundant re-renders.
   useEffect(() => {
@@ -66,20 +71,31 @@ export function CouponPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leverageAuto, spec.putStrikePct]);
 
+  // Keep the coupon frequency following the call frequency while AUTO is on.
+  useEffect(() => {
+    if (!couponFreqAuto) return;
+    if (spec.callType === 'none') return; // no call schedule to follow
+    if (spec.couponFrequency !== spec.callFrequency) {
+      setSpec({ couponFrequency: spec.callFrequency });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [couponFreqAuto, spec.callFrequency, spec.callType, spec.couponFrequency]);
+
   const validation = validateCoupon(spec, market);
 
   // Per-field solve availability, mirroring the old solveOptions.ts helper.
-  // Under issuerCallable (LSMC pricing, v1 supports Price only) nothing else
-  // is solvable.
+  // Under issuerCallable (LSMC pricing; v1 supports Price only), nothing
+  // else is solvable.
   const issuerCallable = spec.callType === 'issuerCallable';
   const canCouponPa = !issuerCallable;
   const canAcCoupon = !issuerCallable && spec.acCouponType !== 'none';
   const canCouponBarrier = !issuerCallable && spec.couponType !== 'fixed';
   const canCallBarrier = !issuerCallable && (spec.callType === 'constant' || spec.callType === 'stepdown');
   const canKiBarrier = !issuerCallable && spec.barrierType !== 'none';
+  const canPutStrike = !issuerCallable;
 
   // Whenever a spec change makes the current solve target unavailable, fall
-  // back to Price ('none') so no stale solve target reaches the worker.
+  // back to Price ('none'), so no stale solve target reaches the worker.
   useEffect(() => {
     const kind = solve.kind;
     if (kind === 'none') return;
@@ -88,9 +104,10 @@ export function CouponPage() {
       (kind === 'acCouponPa' && canAcCoupon) ||
       (kind === 'couponBarrier' && canCouponBarrier) ||
       (kind === 'callBarrier' && canCallBarrier) ||
-      (kind === 'kiBarrier' && canKiBarrier);
+      (kind === 'kiBarrier' && canKiBarrier) ||
+      (kind === 'putStrike' && canPutStrike);
     if (!available) setSolve({ kind: 'none' });
-  }, [solve.kind, canCouponPa, canAcCoupon, canCouponBarrier, canCallBarrier, canKiBarrier, setSolve]);
+  }, [solve.kind, canCouponPa, canAcCoupon, canCouponBarrier, canCallBarrier, canKiBarrier, canPutStrike, setSolve]);
 
   const priceDisabled = !validation.valid;
   const priceLabel = solve.kind === 'none' ? 'Price' : 'Solve';
@@ -109,19 +126,19 @@ export function CouponPage() {
   }
 
   // Radio semantics: clicking a chip activates that target and deactivates
-  // all others; clicking the already-active chip falls back to Price.
+  // all others. Clicking the already-active chip falls back to Price.
   function toggleSolve(kind: Exclude<SolveTarget['kind'], 'none'>) {
     setSolve(solve.kind === kind ? { kind: 'none' } : ({ kind } as SolveTarget));
   }
 
-  // "Price (reoffer)" is solve kind 'none' — its output is the price shown in
+  // "Price (reoffer)" is solve kind 'none'. Its output is the price shown in
   // the results panel, not a spec field. The Reoffer field is the closest
-  // analogue of that output (the target price the solve engine matches), so
+  // analogue of that output, the target price the solve engine matches. So
   // dim it the same way the other solve targets dim their own field.
   const priceIsSolveTarget = solve.kind === 'none';
 
-  // Detected, not stored: an airbag is a *combination* of existing fields
-  // (put strike at the barrier with matching raw-shortfall leverage), so the
+  // Detected, not stored. An airbag is a *combination* of existing fields —
+  // put strike at the barrier with matching raw-shortfall leverage. So the
   // hint follows whatever the user has actually set.
   const isAirbag =
     spec.barrierType !== 'none' &&
@@ -221,9 +238,9 @@ export function CouponPage() {
             <div className="field-label">
               <span>Downside style</span>
             </div>
-            {/* One-shot actions, not sticky states (same convention as the
-             * participation templates). A one-star / airbag note measures the
-             * loss from the BARRIER instead of par, which in this model is just
+            {/* One-shot actions, not sticky states, the same convention as the
+             * participation templates. A one-star / airbag note measures the
+             * loss from the BARRIER instead of par. In this model, that is just
              * put strike = barrier with the raw-shortfall AUTO leverage — no
              * separate payoff mode. See tests/composedProducts.test.ts. */}
             <div style={{ display: 'flex', gap: 6 }}>
@@ -263,6 +280,10 @@ export function CouponPage() {
             step={1}
             suffix="%"
             onChange={(v) => setSpec({ putStrikePct: v })}
+            solved={fieldSolved('putStrike')}
+            solveChip={canPutStrike}
+            solveActive={fieldSolved('putStrike')}
+            onSolveClick={() => toggleSolve('putStrike')}
           />
           <NumericField
             label="Downside leverage"
@@ -371,7 +392,7 @@ export function CouponPage() {
                                 step={1}
                                 value={v}
                                 onChange={(e) => {
-                                  // Ignore a cleared cell mid-retype rather than
+                                  // Ignore a cleared cell mid-retype, rather than
                                   // writing NaN into the barrier schedule.
                                   if (!Number.isFinite(e.target.valueAsNumber)) return;
                                   const next = [...spec.customCallBarriersPct];
@@ -410,10 +431,25 @@ export function CouponPage() {
         <div className="field">
           <div className="field-label">
             <span>Frequency</span>
+            {spec.callType !== 'none' && (
+              <button
+                type="button"
+                className={`auto-toggle ${couponFreqAuto ? 'on' : ''}`}
+                aria-pressed={couponFreqAuto}
+                title="Locked to the call (AC) frequency. Turn off to set a coupon frequency that differs from the call schedule."
+                onClick={() => setCouponFreqAuto((v) => !v)}
+              >
+                AUTO
+              </button>
+            )}
           </div>
           <Segmented<Frequency>
             value={spec.couponFrequency}
-            options={FREQ_OPTIONS}
+            options={
+              couponFreqAuto && spec.callType !== 'none'
+                ? FREQ_OPTIONS.map((o) => ({ ...o, disabled: true, tooltip: 'Following the call frequency (AUTO).' }))
+                : FREQ_OPTIONS
+            }
             onChange={(v) => setSpec({ couponFrequency: v })}
           />
         </div>

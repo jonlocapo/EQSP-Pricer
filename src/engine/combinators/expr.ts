@@ -1,17 +1,18 @@
 /**
  * Primitive scalar-expression algebra for the contract-combinator DSL.
  *
- * `Expr` nodes evaluate to a number given a path's `PathObservables` (see
- * ../payoffs/types.ts): terminal/running performance leaves, arithmetic
+ * `Expr` nodes evaluate to a number, given a path's `PathObservables` (see
+ * ../payoffs/types.ts): terminal and running performance leaves, arithmetic
  * combinators, and a boolean sub-language (`Cmp`) used for indicators and
  * if/then/else branching. Discounting is deliberately NOT part of this
- * algebra — it lives in the outcome/aggregation layer (compile.ts), applied
- * once per schedule event using a discount factor computed at compile time
- * (event times are path-independent).
+ * algebra. It lives in the outcome/aggregation layer (compile.ts), applied
+ * once per schedule event using a discount factor computed at compile
+ * time, because event times are path-independent.
  *
- * These are plain, immutable data objects (no builder/interning state) so a
- * product's tree can be assembled with ordinary function composition. The
- * compiler (compile.ts) hash-conses this tree into a DAG at compile time.
+ * These are plain, immutable data objects, with no builder or interning
+ * state, so a product's tree can be assembled with ordinary function
+ * composition. The compiler (compile.ts) hash-conses this tree into a DAG
+ * at compile time.
  */
 
 export type Expr =

@@ -36,12 +36,12 @@ export function ParticipationPage() {
   const [greeks, setGreeks] = useState(false);
   const [leverageAuto, setLeverageAuto] = useState(true);
 
-  // Downside feature toggles (KI Barrier / Put Spread / Twin Win / KG) are
-  // DERIVED from the spec, not duplicated state — a toggle is "on" iff its
-  // underlying field is in its non-default state. Refs remember the last
-  // non-default value for each feature purely so re-enabling restores what
-  // the user had before (reset on page reload is fine; nothing here is
-  // persisted).
+  // Downside feature toggles — KI Barrier, Put Spread, Twin Win, KG — are
+  // DERIVED from the spec, not duplicated state. A toggle is "on" only when
+  // its underlying field is in its non-default state. Refs remember the
+  // last non-default value for each feature, purely so re-enabling
+  // restores what the user had before. Reset on page reload is fine;
+  // nothing here is persisted.
   const lastBarrierType = useRef<'european' | 'american'>('american');
   const lastKiLevel = useRef(65);
   const lastLowerStrike = useRef(50);
@@ -64,10 +64,11 @@ export function ParticipationPage() {
     if (spec.protectionPct > 0) lastProtectionPct.current = spec.protectionPct;
   }, [spec.protectionPct]);
 
-  // When AUTO is on, downside leverage is locked to 1/downsideStrike and
-  // recomputed whenever the downside strike changes or AUTO is toggled on
-  // (mirrors the RC/AC coupon page's put-strike tracking). Guarded so it only
-  // writes when the value actually differs, to avoid redundant re-renders.
+  // When AUTO is on, downside leverage is locked to 1/downsideStrike, and
+  // recomputed whenever the downside strike changes or AUTO is toggled on.
+  // This mirrors the RC/AC coupon page's put-strike tracking. Guarded so it
+  // only writes when the value actually differs, to avoid redundant
+  // re-renders.
   useEffect(() => {
     if (!leverageAuto) return;
     const auto = autoDownsideLeverage(spec.downside.strikePct);
@@ -84,7 +85,7 @@ export function ParticipationPage() {
   const hasBarrier = spec.downside.barrierType !== 'none';
 
   // Whenever a spec change makes the current solve target unavailable, fall
-  // back to Price ('none') so no stale solve target reaches the worker.
+  // back to Price ('none'), so no stale solve target reaches the worker.
   useEffect(() => {
     const kind = solve.kind;
     if (kind === 'none') return;
@@ -117,14 +118,14 @@ export function ParticipationPage() {
   }
 
   // Radio semantics: clicking a chip activates that target and deactivates
-  // all others; clicking the already-active chip falls back to Price.
+  // all others. Clicking the already-active chip falls back to Price.
   function toggleSolve(kind: Exclude<SolveTarget['kind'], 'none'>) {
     setSolve(solve.kind === kind ? { kind: 'none' } : ({ kind } as SolveTarget));
   }
 
-  // "Price (reoffer)" is solve kind 'none' — its output is the price shown in
+  // "Price (reoffer)" is solve kind 'none'. Its output is the price shown in
   // the results panel, not a spec field. The Reoffer field is the closest
-  // analogue of that output (the target price the solve engine matches), so
+  // analogue of that output, the target price the solve engine matches. So
   // dim it the same way the other solve targets dim their own field.
   const priceIsSolveTarget = solve.kind === 'none';
 
@@ -146,11 +147,11 @@ export function ParticipationPage() {
   const kgOn = spec.protectionPct > 0;
 
   // KI Barrier and KG (capital protection) are mutually exclusive UNLESS
-  // Twin Win is active (TWKG = twin-win + KG + KI can coexist) — a plain KI
-  // barrier and a capital-guarantee floor describe contradictory downside
-  // shapes, but twin-win's "not knocked-in" branch never touches the KG
-  // floor at all (it's always >= 100), so once twin-win is live there's no
-  // actual conflict between the three.
+  // Twin Win is active — TWKG means twin-win, KG, and KI can coexist. A
+  // plain KI barrier and a capital-guarantee floor describe contradictory
+  // downside shapes. But twin-win's "not knocked-in" branch never touches
+  // the KG floor at all; it is always >= 100. So once twin-win is live,
+  // there is no actual conflict between the three.
   function toggleKI() {
     if (kiOn) {
       const patch: Partial<typeof spec.downside> = { barrierType: 'none' };
@@ -159,8 +160,8 @@ export function ParticipationPage() {
       patchDownside(patch);
       if (spec.bonusPct > 0) patchSpec({ bonusPct: 0 });
     } else {
-      // Enabling KI while off implies twin-win was already off (it requires
-      // KI), so the only conflict to resolve is a bare KG floor.
+      // Enabling KI while off implies twin-win was already off, because it
+      // requires KI. So the only conflict to resolve is a bare KG floor.
       patchDownside({ barrierType: lastBarrierType.current, kiBarrierPct: lastKiLevel.current });
       if (kgOn) patchSpec({ protectionPct: 0 });
     }
@@ -177,13 +178,13 @@ export function ParticipationPage() {
   function toggleTwinWin() {
     if (twOn) {
       patchDownside({ twinWinPct: 0 });
-      // The KI+KG exception only holds while twin-win is live — once it
-      // drops, resolve the now-reinstated conflict by clearing KG (the KI
-      // barrier is the more structural of the two).
+      // The KI+KG exception only holds while twin-win is live. Once it drops,
+      // resolve the now-reinstated conflict by clearing KG. The KI barrier is
+      // the more structural of the two.
       if (kgOn) patchSpec({ protectionPct: 0 });
     } else if (!kiOn) {
-      // Twin Win requires a KI barrier. Most user-friendly behavior:
-      // auto-enable KI with a sensible default rather than leaving the
+      // Twin Win requires a KI barrier. The most user-friendly behavior is to
+      // auto-enable KI with a sensible default, rather than leaving the
       // control inert or blocking the click with an error.
       patchDownside({
         barrierType: lastBarrierType.current,
@@ -200,8 +201,8 @@ export function ParticipationPage() {
       patchSpec({ protectionPct: 0 });
     } else {
       patchSpec({ protectionPct: lastProtectionPct.current });
-      // Enabling KG while a bare KI barrier (no twin-win) is live: the two
-      // are mutually exclusive outside of TWKG, so drop the KI barrier.
+      // Enabling KG while a bare KI barrier, with no twin-win, is live. The
+      // two are mutually exclusive outside of TWKG. So drop the KI barrier.
       if (kiOn && !twOn) {
         const patch: Partial<typeof spec.downside> = { barrierType: 'none' };
         if (spec.downside.twinWinPct > 0) patch.twinWinPct = 0;
@@ -224,10 +225,10 @@ export function ParticipationPage() {
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {PRESET_OPTIONS.map((p) => (
-            // Templates are one-shot ACTIONS, not persistent states: clicking
+            // Templates are one-shot ACTIONS, not persistent states. Clicking
             // applies the preset config immediately, but the button never
-            // shows a "selected" state afterwards — the user is free to edit
-            // any field post-apply without the button lying about it.
+            // shows a "selected" state afterward. The user is free to edit
+            // any field after applying, without the button lying about it.
             <button key={p} type="button" className="btn btn-sm" onClick={() => applyPreset(p)}>
               {PARTICIPATION_PRESET_LABELS[p]}
             </button>

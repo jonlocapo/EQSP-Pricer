@@ -28,10 +28,10 @@ import type { Cmp, Expr } from './expr';
 
 /**
  * Worked examples: the same three product families the hand-written
- * evaluators cover (reverse convertible / participation booster), plus a
- * Catapult (autocall + geared participation + protection) with no
- * hand-written oracle, all expressed as `Contract` trees built from the
- * primitive algebra in expr.ts. See tests/combinators.test.ts for the
+ * evaluators cover — reverse convertible and participation booster — plus
+ * a Catapult (autocall, geared participation, and protection) with no
+ * hand-written oracle. All are expressed as `Contract` trees built from
+ * the primitive algebra in expr.ts. See tests/combinators.test.ts for the
  * per-path equivalence proof against makeCouponEvaluator/
  * makeParticipationEvaluator.
  */
@@ -41,15 +41,15 @@ import type { Cmp, Expr } from './expr';
 // ---------------------------------------------------------------------------
 
 /** Builds the same contract shape makeCouponEvaluator/makeCouponOutcome
- * implement monolithically: autocall schedule with per-period barrier and
- * redemption cost, a periodic coupon leg (fixed/conditional/memory), and a
- * KI-conditional geared-put maturity leg. Barrier levels, coupon amounts,
- * and redemption costs are *numbers*, computed with the exact same pure
- * helpers couponProducts.ts uses (thin exports — no logic duplicated for
- * those), but the per-path decision logic (which barrier to compare
- * against, whether to autocall, how the payoff composes) is rebuilt
- * independently here from the Expr/Cmp primitives — that reconstruction is
- * what tests/combinators.test.ts proves equivalent. */
+ * implement monolithically: an autocall schedule with per-period barrier
+ * and redemption cost, a periodic coupon leg (fixed, conditional, or
+ * memory), and a KI-conditional geared-put maturity leg. Barrier levels,
+ * coupon amounts, and redemption costs are *numbers*, computed with the
+ * exact same pure helpers couponProducts.ts uses — thin exports, with no
+ * logic duplicated for those. But the per-path decision logic — which
+ * barrier to compare against, whether to autocall, how the payoff
+ * composes — is rebuilt independently here from the Expr/Cmp primitives.
+ * tests/combinators.test.ts proves that reconstruction equivalent. */
 export function buildReverseConvertible(spec: CouponProductSpec, grid: PricingGrid): Contract {
   const mergedEvents = mergeEvents(grid);
   const couponAmt = couponAmountPct(spec);
@@ -117,9 +117,10 @@ export function buildParticipationBooster(spec: ParticipationSpec): Contract {
   const effUpsidePerf: Expr =
     spec.upside.variant.variant === 'callSpread' ? cap(perfTNode, spec.upside.variant.upperStrikePct / 100) : perfTNode;
   // Matches makeParticipationEvaluator's exact op order — (participationPct/100)
-  // * max(...) * 100 — rather than the mathematically-equivalent single
-  // multiply by participationPct, to stay bit-for-bit identical (a single
-  // fused multiply rounds differently in the last ULP).
+  // * max(...) * 100 — rather than the mathematically equivalent single
+  // multiply by participationPct. This keeps the result bit-for-bit
+  // identical, because a single fused multiply rounds differently in the
+  // last ULP.
   const upsideRaw = scale(
     scale(max(konst(0), sub(effUpsidePerf, konst(upStrike))), spec.upside.participationPct / 100),
     100,
@@ -167,20 +168,21 @@ export function buildParticipationBooster(spec: ParticipationSpec): Contract {
   };
 }
 
-/** `buildParticipationBooster` doesn't need the grid to build the payoff
- * expression (participation only ever observes at nSteps), but discounting
- * needs to know that index — this wraps it in given the grid. */
+/** `buildParticipationBooster` does not need the grid to build the payoff
+ * expression, because participation only ever observes at nSteps. But
+ * discounting needs to know that index. This function wraps the contract
+ * with the grid supplied. */
 export function buildParticipation(spec: ParticipationSpec, grid: PricingGrid): Contract {
   const c = buildParticipationBooster(spec);
   return { ...c, maturityGridIndex: grid.nSteps };
 }
 
 // ---------------------------------------------------------------------------
-// Catapult: autocall schedule + geared upside participation (if never
-// called) + downside protection floor. No hand-written oracle exists for
-// this shape — tests/combinators.test.ts asserts sanity properties
-// (monotonicity in the call barrier, protection floor holding) rather than
-// per-path equivalence.
+// Catapult: an autocall schedule, plus geared upside participation if never
+// called, plus a downside protection floor. No hand-written oracle exists
+// for this shape. tests/combinators.test.ts asserts sanity properties —
+// monotonicity in the call barrier, the protection floor holding — rather
+// than per-path equivalence.
 // ---------------------------------------------------------------------------
 
 export interface CatapultTerms {
@@ -199,11 +201,11 @@ export interface CatapultTerms {
   kiBarrierPct: number;
 }
 
-/** Index of the grid point in `grid.times` closest to `t` (ties favor the
- * earlier index), clamped to [1, grid.nSteps]. Generalizes the old
- * `Math.round(t / dtYears)` snapping to any grid — uniform or not — by
+/** Index of the grid point in `grid.times` closest to `t`, with ties
+ * favoring the earlier index, clamped to [1, grid.nSteps]. Generalizes the
+ * old `Math.round(t / dtYears)` snapping to any grid, uniform or not, by
  * searching the grid's actual time vector instead of assuming a constant
- * step size (which a merged/adaptive grid doesn't have). */
+ * step size, which a merged or adaptive grid does not have. */
 function nearestGridIndex(t: number, grid: PricingGrid): number {
   const { times, nSteps } = grid;
   let lo = 0;
@@ -213,7 +215,7 @@ function nearestGridIndex(t: number, grid: PricingGrid): number {
     if (times[mid] < t) lo = mid + 1;
     else hi = mid;
   }
-  // `lo` is the first index with times[lo] >= t; compare against its
+  // `lo` is the first index with times[lo] >= t. Compare against its
   // predecessor to find the closer of the two.
   let idx = lo;
   if (idx > 0 && (idx > nSteps || t - times[idx - 1] <= times[idx] - t)) {

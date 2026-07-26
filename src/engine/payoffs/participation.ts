@@ -11,10 +11,10 @@ import type {
 import { timeOf } from './types';
 
 /**
- * Generic participation payoff: one upside leg + one downside leg + optional
- * bonus floor + optional protection floor. The four classic subtypes
- * (Booster, Bonus, Capital Guaranteed, Twin Win) are just presets of this
- * one shape (see tradeStore's participationPreset).
+ * Generic participation payoff: one upside leg, plus one downside leg, plus
+ * an optional bonus floor, plus an optional protection floor. The four
+ * classic subtypes — Booster, Bonus, Capital Guaranteed, Twin Win — are
+ * just presets of this one shape (see tradeStore's participationPreset).
  *
  *   effPerf   = callSpread ? min(perf, upperStrike/100) : perf
  *   upsideAmt = participationPct/100 * max(0, effPerf - upStrike/100) * 100
@@ -89,12 +89,13 @@ export function makeParticipationEvaluator(
 
   return (spots: Float64Array): PathOutcome => {
     const S0 = spots[0];
-    // Terminal spot is always the path's own last element (matches
+    // Terminal spot is always the path's own last element. This matches
     // evalKi/evalKo and makeParticipationObservables below, which all use
-    // spots.length-1): in production spots.length-1 === grid.nSteps always
-    // (paths are generated for exactly this grid), so this is a no-op
-    // there; it only matters for tests that hand-build paths of a fixed
-    // length against a grid of a different (e.g. compact) step count.
+    // spots.length-1. In production, spots.length-1 === grid.nSteps always,
+    // because paths are generated for exactly this grid. So this is a no-op
+    // there. It only matters for tests that hand-build paths of a fixed
+    // length against a grid of a different, for example compact, step
+    // count.
     const nSteps = spots.length - 1;
     const perfT = spots[nSteps] / S0;
 
@@ -135,26 +136,28 @@ export function makeParticipationEvaluator(
 
 // ---------------------------------------------------------------------------
 // Observables split (Phase A / Phase B). Participation only ever observes at
-// nSteps (couponObs = [nSteps], no call schedule), so Phase A is just the
-// terminal/running perf functionals — no per-event array is needed (eventPerf
-// stays empty). Mirrors makeParticipationEvaluator's arithmetic exactly; see
-// tests/observables.test.ts for the per-path equivalence proof.
+// nSteps (couponObs = [nSteps], no call schedule). So Phase A is just the
+// terminal and running perf functionals. No per-event array is needed;
+// eventPerf stays empty. This mirrors makeParticipationEvaluator's
+// arithmetic exactly. See tests/observables.test.ts for the per-path
+// equivalence proof.
 // ---------------------------------------------------------------------------
 
-/** Which of minPerf (downside American KI)/maxPerf (koRebate American KO)
- * this spec's monitoring MODE actually needs — never depends on barrier
- * LEVELS, so it stays constant (and the observables cache keeps hitting)
- * across a barrier-level solve. */
+/** Which of minPerf (downside American KI) or maxPerf (koRebate American
+ * KO) this spec's monitoring MODE actually needs. This never depends on
+ * barrier LEVELS. So it stays constant, and the observables cache keeps
+ * hitting, across a barrier-level solve. */
 export function participationObservablesRequirements(spec: ParticipationSpec): ObservablesRequirements {
   const needsMin = spec.downside.barrierType === 'american';
   const needsMax = spec.upside.variant.variant === 'koRebate' && spec.upside.variant.koMonitoring === 'american';
   return { needsMin, needsMax };
 }
 
-/** Phase A: terminal perf + running min/max perf, once per path. Does not
- * depend on `spec` numerically — only on the path itself and `req` (the
- * monitoring-mode-derived requirements descriptor above), so skipping the
- * unused extremum doesn't reintroduce a per-solve-iteration recompute. */
+/** Phase A: terminal perf plus running min/max perf, once per path. This
+ * does not depend on `spec` numerically. It depends only on the path
+ * itself and `req`, the monitoring-mode-derived requirements descriptor
+ * above. So skipping the unused extremum does not reintroduce a
+ * per-solve-iteration recompute. */
 export function makeParticipationObservables(req: ObservablesRequirements): ObservablesEvaluator {
   const { needsMin, needsMax } = req;
   return (spots: Float64Array): PathObservables => {
@@ -184,7 +187,7 @@ function evalKiFromObs(barrierType: BarrierMonitoring, kiBarrierPct: number, obs
 }
 
 /** Phase B: apply spec terms to precomputed observables. Identical
- * arithmetic/order to makeParticipationEvaluator's per-path closure. */
+ * arithmetic and order to makeParticipationEvaluator's per-path closure. */
 export function makeParticipationOutcome(spec: ParticipationSpec, ctx: EvaluatorContext): OutcomeEvaluator {
   const { grid } = ctx;
 

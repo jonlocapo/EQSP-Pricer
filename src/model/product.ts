@@ -1,10 +1,11 @@
 /**
- * Product specifications. Percent-valued fields carry a `Pct` suffix and are
- * expressed as % of initial fixing (100 = at-the-money / par). Everything in
- * these specs affects pricing; there are deliberately no cosmetic fields.
+ * Product specifications. Percent-valued fields carry a `Pct` suffix. They
+ * are expressed as % of initial fixing, where 100 = at-the-money / par.
+ * Everything in these specs affects pricing. There are deliberately no
+ * cosmetic fields.
  *
- * Single underlying in v1. `underlyings` is an array so worst-of baskets can
- * be added later without reshaping the contract.
+ * Single underlying in v1. `underlyings` is an array, so worst-of baskets
+ * can be added later without reshaping the contract.
  */
 
 export type BarrierMonitoring = 'none' | 'european' | 'american';
@@ -60,9 +61,9 @@ export interface CouponProductSpec extends CommonTerms {
   /** Subtracted per observation after the first callable one ('stepdown'). */
   stepDownPct: number;
   /**
-   * For callType 'custom': one autocall barrier per call observation date
-   * (index 0 = first observation, including non-callable ones before
-   * callFromPeriod, which are ignored). Coupon terms stay global.
+   * For callType 'custom': one autocall barrier per call observation date.
+   * Index 0 is the first observation, including non-callable ones before
+   * callFromPeriod, which are ignored. Coupon terms stay global.
    */
   customCallBarriersPct: number[];
 
@@ -74,10 +75,11 @@ export interface CouponProductSpec extends CommonTerms {
   couponPaPct: number;
 
   /**
-   * Additional coupon paid on redemption at call. 'none' => no AC coupon.
-   * 'flat' => acCouponPct paid once, in full, at whichever period the note
-   * is called. 'snowball' => acCouponPct is % p.a.; pays acCouponPct × j /
-   * PERIODS_PER_YEAR[callFrequency] at call period j (accrues with time).
+   * Additional coupon paid on redemption at call. 'none' means no AC
+   * coupon. 'flat' means acCouponPct is paid once, in full, at whichever
+   * period the note is called. 'snowball' means acCouponPct is % p.a.; it
+   * pays acCouponPct × j / PERIODS_PER_YEAR[callFrequency] at call period
+   * j, accruing with time.
    */
   acCouponType: AcCouponType;
   acCouponPct: number;
@@ -85,10 +87,11 @@ export interface CouponProductSpec extends CommonTerms {
 
 // ---------------------------------------------------------------------------
 // Page 2: participation products.
-// Every participation payoff = one upside leg + one downside leg + optional
-// bonus + optional protection floor. The four classic subtypes (Booster,
-// Bonus, Capital Guaranteed, Twin Win) are UI presets that prefill this one
-// generic spec — they are not separate model shapes.
+// Every participation payoff equals one upside leg, plus one downside leg,
+// plus an optional bonus, plus an optional protection floor. The four
+// classic subtypes — Booster, Bonus, Capital Guaranteed, Twin Win — are UI
+// presets that prefill this one generic spec. They are not separate model
+// shapes.
 // ---------------------------------------------------------------------------
 
 export type UpsideVariant =
@@ -124,8 +127,8 @@ export interface ParticipationSpec extends CommonTerms {
     kiBarrierPct: number;
     putSpread?: PutSpread;
     /**
-     * Positive participation in the downside while NOT knocked in
-     * (twin-win). Only meaningful when barrierType !== 'none'. 0 = off.
+     * Positive participation in the downside while NOT knocked in,
+     * twin-win. Only meaningful when barrierType !== 'none'. 0 means off.
      */
     twinWinPct: number;
   };
@@ -142,10 +145,11 @@ export interface ParticipationSpec extends CommonTerms {
 export type KoSettlement = 'ko0' | 'ko1' | 'periodEnd';
 
 /**
- * 'accumulate': investor buys shares below spot (Accumulator/AQ) — geared on
- * down days, KO triggers above spot. 'decumulate': investor sells shares
- * above spot (Decumulator/DQ) — geared on up days, KO triggers below spot.
- * Mirror-image economics; see accumulator.ts payoff for the shared formula.
+ * 'accumulate': the investor buys shares below spot (Accumulator/AQ). It
+ * gears on down days, and the KO triggers above spot. 'decumulate': the
+ * investor sells shares above spot (Decumulator/DQ). It gears on up days,
+ * and the KO triggers below spot. These are mirror-image economics. See
+ * accumulator.ts payoff for the shared formula.
  */
 export type AccumulatorDirection = 'accumulate' | 'decumulate';
 

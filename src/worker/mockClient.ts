@@ -25,8 +25,9 @@ function callObservationCount(req: PriceRequest): number {
 }
 
 /**
- * Fake pricing client for phase-1 UI development: emits progress ticks over
- * ~1.5s then resolves a plausible-looking PriceResult. Respects cancel().
+ * Fake pricing client for phase-1 UI development. Emits progress ticks
+ * over about 1.5s, then resolves a plausible-looking PriceResult. Respects
+ * cancel().
  */
 export class MockPricerClient implements PricerClient {
   private cancelled = new Set<string>();

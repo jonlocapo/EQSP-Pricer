@@ -4,9 +4,10 @@ import type { PricingGrid } from './payoffs/types';
 import { STEPS_PER_YEAR } from './gbm';
 
 /**
- * Builds ascending, deduplicated grid indices for a periodic schedule with
- * `periodsPerYear` observations per year over `tenorYears`, mapped onto a
- * grid with `nSteps` steps of `dtYears` each. Always ends at nSteps.
+ * Builds ascending, deduplicated grid indices for a periodic schedule. The
+ * schedule has `periodsPerYear` observations per year over `tenorYears`,
+ * mapped onto a grid with `nSteps` steps of `dtYears` each. The result
+ * always ends at nSteps.
  */
 function periodicObs(
   tenorYears: number,
@@ -29,13 +30,13 @@ function periodicObs(
 }
 
 /**
- * Same construction as `periodicObs`, but in continuous time rather than
- * snapped to a daily grid index: the real observation dates (years) for a
- * periodic schedule, ascending, deduplicated, with the last entry always
- * forced to exactly `tenorYears`. Used to build a COMPACT grid's step set —
- * for European-only monitoring, stepping the GBM straight between these
- * dates is mathematically exact (log-increments over a longer dt are still
- * exactly lognormal), so there is no need to snap to a daily grid at all.
+ * Same construction as `periodicObs`, but in continuous time, not snapped to
+ * a daily grid index. Returns the real observation dates (years) for a
+ * periodic schedule, ascending and deduplicated, with the last entry always
+ * forced to exactly `tenorYears`. Used to build a COMPACT grid's step set.
+ * For European-only monitoring, stepping the GBM straight between these
+ * dates is mathematically exact — log-increments over a longer dt are still
+ * exactly lognormal. So the grid does not need to snap to daily steps at all.
  */
 function periodicTimes(tenorYears: number, periodsPerYear: number): number[] {
   const numObs = Math.round(tenorYears * periodsPerYear);
@@ -60,9 +61,10 @@ function settlementSchedule(nSteps: number, stepInterval: number): number[] {
 }
 
 /**
- * Decides whether a spec's payoff must walk every daily step (running
- * min/max monitoring, or a per-step strike-dependent walk) or can be priced
- * exactly on a compact grid of just the dates it actually observes.
+ * Decides whether a spec's payoff must walk every daily step, or can be
+ * priced exactly on a compact grid of just the dates it actually observes. A
+ * payoff needs daily steps when it has running min/max monitoring, or a walk
+ * where each step depends on the strike.
  *
  *   | family / mode                                    | daily? |
  *   |---------------------------------------------------|--------|
@@ -75,11 +77,11 @@ function settlementSchedule(nSteps: number, stepInterval: number): number[] {
  *   |   'american' koMonitoring                          |        |
  *   | accumulator                                        | yes    |
  *
- * * issuerCallable only needs its own call-observation dates in principle
- *   (LSMC regression doesn't read a running extremum), but the regression
- *   here is built and tested against the daily grid; moving it to a compact
- *   grid was judged an unnecessary risk for this change (see report) — so
- *   it stays daily, marked `yes` above.
+ * * In principle, issuerCallable needs only its own call-observation dates,
+ *   because the LSMC regression does not read a running extremum. But the
+ *   regression here is built and tested against the daily grid. Moving it to
+ *   a compact grid was judged an unnecessary risk for this change (see
+ *   report). So it stays daily, marked `yes` above.
  */
 function needsDailyPath(spec: ProductSpec): boolean {
   switch (spec.kind) {
@@ -92,18 +94,19 @@ function needsDailyPath(spec: ProductSpec): boolean {
       return downsideAmerican || koAmerican;
     }
     case 'accumulator':
-      // Every step feeds three strike-dependent loops (accrual, gearing,
-      // KO/cutoff detection) — inherently a daily walk.
+      // Every step feeds three strike-dependent loops: accrual, gearing, and
+      // KO/cutoff detection. This is inherently a daily walk.
       return true;
   }
 }
 
 /**
  * Daily grid: nSteps = round(tenorYears*252), uniform dtYears.
- * `times[i] = i*dtYears` (a plain loop, NOT a cumulative sum of stepDt) and
- * `stepDt` is filled with the identical `dtYears` scalar throughout — see
- * PricingGrid's bit-identity note. This exactly reproduces the pre-adaptive-
- * grid engine's discount factors for American/accumulator/LSMC products.
+ * `times[i] = i*dtYears` uses a plain loop, NOT a cumulative sum of stepDt.
+ * `stepDt` is filled with the identical `dtYears` scalar throughout. See
+ * PricingGrid's bit-identity note. This exactly reproduces the
+ * pre-adaptive-grid engine's discount factors for American, accumulator, and
+ * LSMC products.
  */
 function buildDailyTimes(nSteps: number, dtYears: number): { times: number[]; stepDt: Float64Array } {
   const times = new Array<number>(nSteps + 1);
@@ -114,10 +117,11 @@ function buildDailyTimes(nSteps: number, dtYears: number): { times: number[]; st
 
 /**
  * Compact grid: step set = the sorted, deduplicated union of `obsTimes` plus
- * maturity. `stepDt[i] = times[i+1] - times[i]` (a real, possibly
- * non-uniform difference — unlike the daily grid's identical-scalar fill,
- * since these are genuinely different-length steps, e.g. a merged
- * quarterly-coupon + monthly-call schedule or a stub final period).
+ * maturity. `stepDt[i] = times[i+1] - times[i]` is a real, possibly
+ * non-uniform difference. This differs from the daily grid's
+ * identical-scalar fill, because these steps genuinely have different
+ * lengths, for example a merged quarterly-coupon and monthly-call schedule,
+ * or a stub final period.
  */
 function buildCompactGrid(
   obsTimes: number[],
@@ -128,30 +132,33 @@ function buildCompactGrid(
   const positive = Array.from(set)
     .filter((t) => t > 0)
     .sort((a, b) => a - b);
-  // Guard degenerate cases: at least 1 step even if every observation date
-  // collapsed onto t=0 (shouldn't happen for tenorYears > 0, but stay safe).
+  // Guard against a degenerate case: keep at least 1 step, even if every
+  // observation date collapsed onto t=0. This should not happen for
+  // tenorYears > 0, but stay safe.
   const distinct = positive.length > 0 ? positive : [tenorYears];
   const times = [0, ...distinct];
   const nSteps = times.length - 1;
-  // Force the final grid point to be exactly tenorYears (guards float drift
-  // from the union/sort above, and matches the daily grid's guarantee).
+  // Force the final grid point to be exactly tenorYears. This guards against
+  // float drift from the union/sort above, and matches the daily grid's
+  // guarantee.
   times[nSteps] = tenorYears;
 
   const stepDt = new Float64Array(nSteps);
   for (let i = 0; i < nSteps; i++) stepDt[i] = times[i + 1] - times[i];
-  const dtYears = tenorYears / nSteps; // representative only — non-uniform grids have no single true dt.
+  const dtYears = tenorYears / nSteps; // representative only — a non-uniform grid has no single true dt.
   return { nSteps, times, stepDt, dtYears };
 }
 
 /**
- * Builds the DAILY grid (252/yr) for `spec`, unconditionally — i.e. the grid
- * `buildGrid` always returned before the adaptive-grid change. Used
- * internally whenever `needsDailyPath` says so, and exported for tests that
- * need an explicit daily-grid reference to compare a compact grid's price
- * against (see tests/adaptiveGrid.test.ts) — GBM stepped daily vs. stepped
- * straight to the same European observation dates are two different-but-
- * equally-valid sets of simulated paths for the identical model, so their
- * MC prices should agree to within Monte Carlo error, not bit-for-bit.
+ * Builds the DAILY grid (252/yr) for `spec`, unconditionally. This is the
+ * grid `buildGrid` always returned before the adaptive-grid change. Used
+ * internally whenever `needsDailyPath` requires it, and exported for tests
+ * that need an explicit daily-grid reference to compare a compact grid's
+ * price against (see tests/adaptiveGrid.test.ts). A GBM path stepped daily,
+ * and a GBM path stepped straight to the same European observation dates,
+ * are two different but equally valid sets of simulated paths for the
+ * identical model. So their MC prices should agree to within Monte Carlo
+ * error, not bit-for-bit.
  */
 export function buildDailyGrid(spec: ProductSpec): PricingGrid {
   const nSteps = Math.max(1, Math.round(spec.tenorYears * STEPS_PER_YEAR));
@@ -184,8 +191,8 @@ export function buildGrid(spec: ProductSpec): PricingGrid {
   }
 
   // Compact grid: step set = sorted union of the dates this payoff actually
-  // observes. Mathematically exact for European-only monitoring, not an
-  // approximation — see needsDailyPath's doc comment.
+  // observes. This is mathematically exact for European-only monitoring, not
+  // an approximation. See needsDailyPath's doc comment.
   if (spec.kind === 'coupon') {
     const couponTimes = periodicTimes(spec.tenorYears, PERIODS_PER_YEAR[spec.couponFrequency]);
     const callTimes =
@@ -198,8 +205,8 @@ export function buildGrid(spec: ProductSpec): PricingGrid {
     return { nSteps, dtYears, tenorYears: spec.tenorYears, times, stepDt, couponObs, callObs, settlementObs: [] };
   }
 
-  // Participation (European-only monitoring): only ever observes at
-  // maturity — the compact grid is a single step, [0, tenorYears].
+  // Participation (European-only monitoring) only ever observes at
+  // maturity. So the compact grid is a single step: [0, tenorYears].
   const { nSteps, times, stepDt, dtYears } = buildCompactGrid([], spec.tenorYears);
   return {
     nSteps,

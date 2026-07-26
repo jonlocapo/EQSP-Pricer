@@ -1,6 +1,6 @@
 /**
- * Root finding utilities used for reoffer solves (solve-for-coupon,
- * solve-for-barrier, etc).
+ * Root finding utilities used for reoffer solves: solve-for-coupon,
+ * solve-for-barrier, and so on.
  */
 
 export interface BrentOptions {
@@ -19,8 +19,8 @@ const DEFAULT_TOL_Y = 1e-4;
 const DEFAULT_MAX_ITER = 60;
 
 /**
- * Brent's method (inverse quadratic interpolation / secant, with bisection
- * fallback) for finding a root of `f` bracketed by [lo, hi].
+ * Brent's method — inverse quadratic interpolation or secant, with
+ * bisection fallback — for finding a root of `f` bracketed by [lo, hi].
  */
 export function brent(
   f: (x: number) => number,

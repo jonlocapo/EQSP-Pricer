@@ -14,9 +14,10 @@ import type {
 import { timeOf } from './types';
 
 /**
- * Merged observation event: a grid index carries a coupon obs and/or a call
- * obs (they may coincide, e.g. quarterly coupon + quarterly call). Precompute
- * one ascending schedule of events so the per-path walk is a single pass.
+ * Merged observation event: a grid index carries a coupon observation, a
+ * call observation, or both. They may coincide, for example a quarterly
+ * coupon and a quarterly call. Precompute one ascending schedule of events,
+ * so the per-path walk is a single pass.
  */
 export interface CouponEvent {
   gridIndex: number;
@@ -26,9 +27,9 @@ export interface CouponEvent {
   callPeriod?: number;
 }
 
-/** Thin export: reused by src/engine/combinators (additive DSL layer) to
- * build its own schedule-driven contract trees without duplicating the
- * merge logic. Pure, no behavior change. */
+/** Thin export: reused by src/engine/combinators, the additive DSL layer,
+ * to build its own schedule-driven contract trees without duplicating the
+ * merge logic. Pure function, no behavior change. */
 export function mergeEvents(grid: PricingGrid): CouponEvent[] {
   const byIndex = new Map<number, CouponEvent>();
   grid.couponObs.forEach((gi, idx) => {
@@ -44,9 +45,9 @@ export function mergeEvents(grid: PricingGrid): CouponEvent[] {
   return Array.from(byIndex.values()).sort((a, b) => a.gridIndex - b.gridIndex);
 }
 
-/** Call barrier (decimal, e.g. 1.00 = 100%) for 1-based call period j.
- * Thin export: reused by src/engine/combinators (pure numeric helper, no
- * path dependence — safe to share). */
+/** Call barrier, decimal, for example 1.00 = 100%, for 1-based call
+ * period j. Thin export: reused by src/engine/combinators. This is a pure
+ * numeric helper, with no path dependence, so it is safe to share. */
 export function callBarrierDecimal(spec: CouponProductSpec, j: number): number {
   switch (spec.callType) {
     case 'constant':
@@ -69,8 +70,8 @@ export function isCallable(spec: CouponProductSpec, j: number): boolean {
   );
 }
 
-/** Autocall coupon paid on redemption (call or, in the extractor, hypothetical) at period j.
- * Thin export: reused by src/engine/combinators. */
+/** Autocall coupon paid on redemption — at call, or, in the extractor,
+ * hypothetical — at period j. Thin export: reused by src/engine/combinators. */
 export function redemptionCostPctAt(spec: CouponProductSpec, j: number): number {
   switch (spec.acCouponType) {
     case 'flat':
@@ -116,9 +117,9 @@ function maturityRedemptionPct(spec: CouponProductSpec, spots: Float64Array): nu
   const perfT = spots[nSteps] / spots[0];
   const ki = isKnockedIn(spec, spots);
   if (!ki) return 100;
-  // Industry-standard geared put: leverage multiplies the raw shortfall
-  // (not the shortfall normalized by strike), so e.g. strike 80 / leverage
-  // 125% redeems to exactly 0 on a 100% stock decline.
+  // Industry-standard geared put: leverage multiplies the raw shortfall,
+  // not the shortfall normalized by strike. So, for example, strike 80 with
+  // leverage 125% redeems to exactly 0 on a 100% stock decline.
   const shortfall = Math.max(0, spec.putStrikePct - 100 * perfT);
   return Math.max(0, 100 - (spec.downsideLeveragePct / 100) * shortfall);
 }
@@ -182,29 +183,32 @@ export function makeCouponEvaluator(spec: CouponProductSpec, ctx: EvaluatorConte
 
 // ---------------------------------------------------------------------------
 // Observables split (Phase A / Phase B). Mirrors makeCouponEvaluator's
-// arithmetic and iteration order exactly — see tests/observables.test.ts for
+// arithmetic and iteration order exactly. See tests/observables.test.ts for
 // the per-path equivalence proof. Phase A (`makeCouponObservables`) depends
-// only on `ctx.grid` (the merged coupon+call observation schedule), never on
-// `spec`, so it can be cached and reused across solve iterations that vary
-// spec numeric parameters (barriers, coupon rates) while the schedule stays
-// fixed. Phase B (`makeCouponOutcome`) is the cheap per-iteration part.
+// only on `ctx.grid`, the merged coupon-and-call observation schedule,
+// never on `spec`. So it can be cached and reused across solve iterations
+// that vary spec numeric parameters, such as barriers or coupon rates,
+// while the schedule stays fixed. Phase B (`makeCouponOutcome`) is the
+// cheap per-iteration part.
 // ---------------------------------------------------------------------------
 
 /**
- * Coupon products never read `maxPerf` (only `minPerf`, for American KI
- * monitoring) — see kiEventFromObs below. Always safe to skip tracking it.
+ * Coupon products never read `maxPerf`, only `minPerf`, for American KI
+ * monitoring — see kiEventFromObs below. It is always safe to skip
+ * tracking `maxPerf`.
  */
 export function couponObservablesRequirements(spec: CouponProductSpec): ObservablesRequirements {
   return { needsMin: spec.barrierType === 'american', needsMax: false };
 }
 
-/** Phase A: precompute terminal/running perf + perf at each merged
- * coupon/call observation, once per path. `req` (derived from the spec's
- * monitoring MODE only, never barrier levels — see
- * `couponObservablesRequirements`) says which of minPerf/maxPerf are
- * actually read downstream; skipping the unused one keeps the per-step work
- * to what the spec's monitoring mode needs, without losing cacheability
- * across a barrier-level solve (the mode, and so `req`, stays fixed). */
+/** Phase A: precompute terminal and running perf, plus perf at each merged
+ * coupon or call observation, once per path. `req` is derived from the
+ * spec's monitoring MODE only, never barrier levels — see
+ * `couponObservablesRequirements`. It says which of minPerf/maxPerf are
+ * actually read downstream. Skipping the unused one keeps the per-step
+ * work to what the spec's monitoring mode needs, without losing
+ * cacheability across a barrier-level solve, because the mode, and so
+ * `req`, stays fixed. */
 export function makeCouponObservables(ctx: EvaluatorContext, req: ObservablesRequirements): ObservablesEvaluator {
   const { grid } = ctx;
   const events = mergeEvents(grid);
@@ -234,9 +238,10 @@ export function makeCouponObservables(ctx: EvaluatorContext, req: ObservablesReq
   };
 }
 
-/** Observables-based equivalent of kiEventFor: same branches, same operand
- * (obs.perfT / obs.minPerf are bit-identical to the spots-based computation
- * since they're the same division/loop, just computed once and cached). */
+/** Observables-based equivalent of kiEventFor: same branches, same
+ * operands. obs.perfT and obs.minPerf are bit-identical to the spots-based
+ * computation, because they are the same division and loop, just computed
+ * once and cached. */
 function kiEventFromObs(spec: CouponProductSpec, obs: PathObservables): boolean | undefined {
   switch (spec.barrierType) {
     case 'none':
@@ -261,7 +266,8 @@ function maturityRedemptionPctFromObs(spec: CouponProductSpec, obs: PathObservab
 }
 
 /** Phase B: apply spec terms to precomputed observables. Identical
- * arithmetic/iteration order to makeCouponEvaluator's per-path closure. */
+ * arithmetic and iteration order to makeCouponEvaluator's per-path
+ * closure. */
 export function makeCouponOutcome(spec: CouponProductSpec, ctx: EvaluatorContext): OutcomeEvaluator {
   const { grid } = ctx;
   const events = mergeEvents(grid);

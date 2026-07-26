@@ -6,50 +6,50 @@ import type { SliceRunner } from './pricing';
 import type { McRunResult } from '../engine/mc';
 
 /**
- * Every pool worker runs this SAME script (see realClient.ts's WorkerPool),
- * so it plays two roles at once:
+ * Every pool worker runs this SAME script (see realClient.ts's WorkerPool).
+ * So it plays two roles at once:
  *
  *  - Coordinator (worker index 0, the only one the main thread talks to via
- *    `self.onmessage`/`price`/`cancel`): runs the full `executePriceRequest`
- *    — including the LSMC/issuerCallable branch, which stays a single
+ *    `self.onmessage`/`price`/`cancel`): runs the full `executePriceRequest`,
+ *    including the LSMC/issuerCallable branch. That branch stays a single
  *    synchronous pass right here, off the main thread, exactly as before.
- *    For the ordinary (non-LSMC) slice loop, it farms slices out across the
- *    sibling ports below via `PoolSliceRunner` instead of evaluating them
- *    in-process.
+ *    For the ordinary, non-LSMC, slice loop, the coordinator farms slices
+ *    out across the sibling ports below via `PoolSliceRunner`, instead of
+ *    evaluating them in-process.
  *  - Sibling (any worker, including the coordinator for its own local
- *    share): serves `evalSlice` RPCs arriving on its pool port by calling
- *    `evaluatePriceSlice` (pricing.ts) — a pure, synchronous function of
- *    plain/cloneable arguments, so results are bit-identical to the
- *    sequential single-worker path regardless of which worker ran them.
+ *    share): serves `evalSlice` RPCs arriving on its pool port, by calling
+ *    `evaluatePriceSlice` (pricing.ts). This is a pure, synchronous function
+ *    of plain, cloneable, arguments. So results are bit-identical to the
+ *    sequential single-worker path, regardless of which worker ran them.
  *
- * A single-worker pool (poolSize 1, or Worker construction failed) has zero
- * sibling ports; `PoolSliceRunner` then only ever finds workerIndex 0 (this
- * worker) and never touches the pool wiring at all — same code path, no
- * special-casing needed.
+ * A single-worker pool — poolSize 1, or a failed Worker construction — has
+ * zero sibling ports. `PoolSliceRunner` then only ever finds workerIndex 0,
+ * this worker, and never touches the pool wiring at all. This is the same
+ * code path, with no special-casing needed.
  */
 
 const cancelledIds = new Set<string>();
 
 const post = (msg: WorkerResponse) => (self as unknown as Worker).postMessage(msg);
 
-/** Ports to sibling pool workers, indexed by their pool slot (1..poolSize-1
- * — slot 0 is always this worker itself, served locally with no port). Only
+/** Ports to sibling pool workers, indexed by their pool slot (1..poolSize-1;
+ * slot 0 is always this worker itself, served locally with no port). Only
  * populated when this worker is the coordinator (see `attachPoolPort`
- * below); empty otherwise, and empty entirely for a single-worker pool. */
+ * below). Empty otherwise, and empty entirely for a single-worker pool. */
 const poolPorts = new Map<number, MessagePort>();
 let poolSize = 1;
 
-/** Pending sibling RPCs this worker (as coordinator) is waiting on, keyed by
- * `${reqId}:${sliceIndex}` — composite because multiple price requests can
- * theoretically be in flight at once (see `self.onmessage` below, which
- * doesn't serialize distinct request ids), and slice indices restart at 0
- * for each. */
+/** Pending sibling RPCs this worker, as coordinator, is waiting on, keyed
+ * by `${reqId}:${sliceIndex}`. The key is composite because multiple price
+ * requests can theoretically be in flight at once (see `self.onmessage`
+ * below, which does not serialize distinct request ids), and slice indices
+ * restart at 0 for each request. */
 const pendingSliceResults = new Map<string, (r: McRunResult) => void>();
 
-/** Farms priceOnce's slices across `poolPorts` (workerIndex 0 = this worker,
- * served locally with no round trip). See PricingHooks.sliceRunner's doc in
- * pricing.ts for the ordering guarantee that keeps this bit-identical to the
- * sequential path. */
+/** Farms priceOnce's slices across `poolPorts`. workerIndex 0 is this
+ * worker, served locally with no round trip. See PricingHooks.sliceRunner's
+ * doc in pricing.ts for the ordering guarantee that keeps this
+ * bit-identical to the sequential path. */
 class PoolSliceRunner implements SliceRunner {
   constructor(private readonly reqId: string) {}
 
@@ -67,9 +67,9 @@ class PoolSliceRunner implements SliceRunner {
       const slicePaths = sliceSizeOf(numPaths, sliceIndex);
       if (workerIndex === 0) {
         // Local share: run right here, synchronously, wrapped in a resolved
-        // Promise so it never blocks starting the sibling RPCs below (all
-        // jobs are kicked off in the same synchronous pass — see
-        // Promise.all over `jobs`).
+        // Promise so it never blocks starting the sibling RPCs below. All
+        // jobs are kicked off in the same synchronous pass — see Promise.all
+        // over `jobs`.
         return Promise.resolve().then(() => {
           const result = evaluatePriceSlice(spec, market, numPaths, seed, antithetic, sliceIndex);
           onSliceDone(slicePaths);
@@ -78,9 +78,9 @@ class PoolSliceRunner implements SliceRunner {
       }
       const port = poolPorts.get(workerIndex);
       if (!port) {
-        // Defensive fallback (should not happen once the pool is wired) —
-        // evaluate locally rather than hang forever waiting on a port that
-        // doesn't exist.
+        // Defensive fallback, should not happen once the pool is wired.
+        // Evaluate locally, rather than hang forever waiting on a port that
+        // does not exist.
         return Promise.resolve().then(() => {
           const result = evaluatePriceSlice(spec, market, numPaths, seed, antithetic, sliceIndex);
           onSliceDone(slicePaths);
@@ -112,16 +112,16 @@ class PoolSliceRunner implements SliceRunner {
 }
 
 /** Handles messages on a sibling role port: `evalSlice` requests from the
- * coordinator (respond with `evalSliceResult`), and `cancelReq` (mirrors
- * into the same `cancelledIds` set the top-level `cancel` protocol uses, so
- * a request cancelled at the coordinator stops this worker from starting any
- * NOT-YET-STARTED slice for it too — an already-dispatched `evalSlice` still
- * runs to completion, the same per-slice cancellation granularity the
- * single-worker path always had). */
+ * coordinator, responding with `evalSliceResult`, and `cancelReq`.
+ * `cancelReq` mirrors into the same `cancelledIds` set the top-level
+ * `cancel` protocol uses. So a request cancelled at the coordinator also
+ * stops this worker from starting any NOT-YET-STARTED slice for it. An
+ * already-dispatched `evalSlice` still runs to completion — the same
+ * per-slice cancellation granularity the single-worker path always had. */
 function handleSiblingPortMessage(port: MessagePort, data: PoolMessage): void {
   if (data.type === 'evalSlice') {
     if (cancelledIds.has(data.reqId)) {
-      // Cheap stub — the coordinator discards the whole run's result once it
+      // Cheap stub. The coordinator discards the whole run's result once it
       // sees the request is cancelled, so the numeric content is never used.
       const stub: McRunResult = {
         pvPct: 0,
@@ -142,8 +142,8 @@ function handleSiblingPortMessage(port: MessagePort, data: PoolMessage): void {
   }
 }
 
-/** Handles messages on a coordinator role port (i.e. this worker sent
- * `evalSlice` down it and is waiting for `evalSliceResult`). */
+/** Handles messages on a coordinator role port. This worker sent
+ * `evalSlice` down it, and is waiting for `evalSliceResult`. */
 function handleCoordinatorPortMessage(data: PoolMessage): void {
   if (data.type === 'evalSliceResult') {
     const key = `${data.reqId}:${data.jobId}`;
@@ -173,11 +173,11 @@ self.onmessage = (
 
   if (msg.type === 'cancel') {
     cancelledIds.add(msg.id);
-    // Reach every worker with (potentially) in-flight slices for this
-    // request — not just this one. Already-dispatched `evalSlice` RPCs still
-    // run to completion (see handleSiblingPortMessage's doc); this only
-    // stops NOT-YET-STARTED work and, combined with priceOnce's
-    // hooks.isCancelled() check, stops further dispatch.
+    // Reach every worker with potentially in-flight slices for this request,
+    // not just this one. Already-dispatched `evalSlice` RPCs still run to
+    // completion (see handleSiblingPortMessage's doc). This only stops
+    // NOT-YET-STARTED work. Combined with priceOnce's hooks.isCancelled()
+    // check, it stops further dispatch.
     for (const port of poolPorts.values()) {
       const cancelMsg: PoolMessage = { type: 'cancelReq', reqId: msg.id };
       port.postMessage(cancelMsg);

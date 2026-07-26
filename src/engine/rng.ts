@@ -16,9 +16,9 @@ export function mulberry32(seed: number): () => number {
 
 /**
  * Standard-normal generator via Box-Muller, seeded deterministically.
- * Each call to the returned function produces one N(0,1) draw; internally
- * two uniforms produce two normals per pair, the second cached and returned
- * on the following call.
+ * Each call to the returned function produces one N(0,1) draw. Internally,
+ * two uniforms produce two normals per pair. The generator caches the
+ * second normal and returns it on the following call.
  */
 export function normals(seed: number): () => number {
   const rand = mulberry32(seed);

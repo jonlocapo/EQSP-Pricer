@@ -3,10 +3,10 @@ import type { ProductSpec } from './product';
 
 /**
  * Solve targets. The solver finds x such that PV%(x) equals the spec's
- * reofferPct (coupon/participation) or upfrontPct (accumulator).
- * 'none' = plain pricing. Availability is product-dependent (see
- * solveAvailability in engine/payoffs) — e.g. barrier solves are disabled
- * for issuerCallable and custom call schedules.
+ * reofferPct, for coupon or participation, or upfrontPct, for accumulator.
+ * 'none' means plain pricing. Availability is product-dependent (see
+ * solveAvailability in engine/payoffs). For example, barrier solves are
+ * disabled for issuerCallable and custom call schedules.
  */
 export type SolveTarget =
   | { kind: 'none' }
@@ -16,6 +16,7 @@ export type SolveTarget =
   | { kind: 'couponBarrier' }
   | { kind: 'callBarrier' }
   | { kind: 'kiBarrier' }
+  | { kind: 'putStrike' }
   // participation page
   | { kind: 'gearing' }
   | { kind: 'upsideStrike' }
@@ -26,13 +27,14 @@ export type SolveTarget =
   | { kind: 'rebate' }
   // accumulator page
   | { kind: 'strike' }
+  | { kind: 'koTrigger' }
   | { kind: 'upfront' };
 
 export interface McSettings {
   numPaths: number;
   seed: number;
   antithetic: boolean;
-  /** Reduced path count used when `PriceRequest.preview` is set — fast,
+  /** Reduced path count used when `PriceRequest.preview` is set: fast,
    * slightly noisier pricing for live-typing feedback. Defaults to
    * DEFAULT_PREVIEW_PATHS (src/worker/pricing.ts) when omitted. */
   previewNumPaths?: number;
@@ -49,16 +51,16 @@ export interface PriceRequest {
   solve: SolveTarget;
   /** Compute delta/vega by bump-and-reprice (3x cost). */
   greeks: boolean;
-  /** When true, price/solve at `mc.previewNumPaths` instead of
-   * `mc.numPaths` — a fast, transient/advisory pass used while the user is
-   * actively editing. The path cache keys on numPaths, so preview and full
-   * runs naturally live in separate cache entries. */
+  /** When true, price or solve at `mc.previewNumPaths` instead of
+   * `mc.numPaths`. This is a fast, transient, advisory pass used while the
+   * user is actively editing. The path cache keys on numPaths, so preview
+   * and full runs naturally live in separate cache entries. */
   preview?: boolean;
-  /** Previously-solved value (in the solve target's natural unit) to seed a
+  /** Previously solved value, in the solve target's natural unit, to seed a
    * tight bracket around, instead of cold-starting the root find from
-   * [lo, hi]. Ignored when solve.kind is 'none'/'upfront'. Falls back to a
-   * full cold-start bracket expansion if the tight bracket doesn't actually
-   * contain the root. */
+   * [lo, hi]. Ignored when solve.kind is 'none' or 'upfront'. Falls back to
+   * a full cold-start bracket expansion if the tight bracket does not
+   * actually contain the root. */
   warmStartValue?: number;
 }
 
@@ -79,13 +81,14 @@ export interface Diagnostics {
   /** P(accumulator knocked out before maturity). */
   koProb?: number;
   expectedLifeYears?: number;
-  /** Distribution of per-path (or per-antithetic-pair) PV% outcomes, ~24
-   * evenly-spaced bins. Absent for the issuerCallable/LSMC branch (out of
-   * scope — see engine/lsmc.ts). */
+  /** Distribution of per-path, or per-antithetic-pair, PV% outcomes, about
+   * 24 evenly spaced bins. Absent for the issuerCallable/LSMC branch, which
+   * is out of scope — see engine/lsmc.ts. */
   histogram?: { binEdges: number[]; counts: number[] };
-  /** P(sample < reference level). Coupon/participation: reference is
-   * issuePricePct. Accumulator: reference is 0 (P&L is already expressed in
-   * % of notional, so "loss" means negative P&L rather than a price paid). */
+  /** P(sample < reference level). For coupon or participation, the
+   * reference is issuePricePct. For accumulator, the reference is 0. The
+   * accumulator's P&L is already expressed in % of notional, so "loss"
+   * means negative P&L, not a price paid. */
   pLoss?: number;
   /** Mean of the worst 5% of samples, pvPct units. */
   expectedShortfall5?: number;
@@ -104,24 +107,25 @@ export interface PriceResult {
   solvedValue?: number;
   solveIterations?: number;
   /** True if the solver's warm-start tight bracket actually contained the
-   * root (converged in the fast path); false/undefined if it cold-started
-   * (no warmStartValue given, or the warm guess was bad and it fell back). */
+   * root, meaning it converged in the fast path. False or undefined if it
+   * cold-started: no warmStartValue was given, or the warm guess was bad
+   * and the solver fell back. */
   solveWarmStart?: boolean;
   greeks?: Greeks;
   diagnostics: Diagnostics;
   elapsedMs: number;
-  /** Echoes PriceRequest.preview — a transient/advisory result at reduced
-   * path count, not yet the settled full-precision price. */
+  /** Echoes PriceRequest.preview. This is a transient, advisory result at
+   * reduced path count, not yet the settled full-precision price. */
   preview?: boolean;
   /** What the price was actually built on. See PricingBasis. */
   basis?: PricingBasis;
 }
 
 /**
- * The assumptions behind a quoted level, reported so the number is auditable
- * rather than a black box. Two of these change a price materially and used to
- * be invisible: which point of the volatility surface the product was priced
- * at, and how much of the value the fee retained.
+ * The assumptions behind a quoted level, reported so the number is
+ * auditable, not a black box. Two of these change a price materially and
+ * used to be invisible: which point of the volatility surface priced the
+ * product, and how much of the value the fee retained.
  */
 export interface PricingBasis {
   /** The volatility the Monte Carlo actually ran at, decimal. */

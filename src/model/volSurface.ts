@@ -1,24 +1,24 @@
 /**
  * Implied-volatility surface built by interpolating a fetched option chain.
  *
- * WHY this exists: the engine otherwise prices every product on a single flat
- * volatility, but structured-product payoffs are concentrated away from the
- * money — a knock-in put at 60% of spot lives entirely in the left tail, where
- * equity implied vol is materially higher than ATM. Pricing it at ATM vol
- * understates that leg.
+ * WHY this exists: without it, the engine prices every product on a single
+ * flat volatility. But structured-product payoffs are concentrated away
+ * from the money. A knock-in put at 60% of spot lives entirely in the left
+ * tail, where equity implied vol is materially higher than ATM. Pricing it
+ * at ATM vol understates that leg.
  *
- * WHAT this is NOT: an arbitrage-free model. There is no SVI/SSVI fit and no
- * Dupire local volatility here. It interpolates quoted implied vols and lets a
- * payoff be priced at the vol of ITS OWN risk strike — the standard
- * practitioner shortcut. It captures the first-order skew effect honestly and
- * cheaply; a local-vol Monte Carlo would be the rigorous successor.
+ * WHAT this is NOT: an arbitrage-free model. There is no SVI/SSVI fit and
+ * no Dupire local volatility here. It interpolates quoted implied vols and
+ * lets a payoff be priced at the vol of ITS OWN risk strike, the standard
+ * practitioner shortcut. It captures the first-order skew effect honestly
+ * and cheaply. A local-vol Monte Carlo would be the rigorous successor.
  *
  * Interpolation choices:
- *  - across STRIKE: linear in the quoted vols, clamped (flat) outside the
+ *  - across STRIKE: linear in the quoted vols, clamped flat outside the
  *    quoted range, so an extreme barrier never extrapolates to a silly vol;
- *  - across MATURITY: linear in TOTAL VARIANCE (iv^2 * t) rather than in vol,
- *    which is the standard, better-behaved choice and is exact when the term
- *    structure of variance is piecewise linear.
+ *  - across MATURITY: linear in TOTAL VARIANCE (iv^2 * t), rather than in
+ *    vol. This is the standard, better-behaved choice, and it is exact
+ *    when the term structure of variance is piecewise linear.
  */
 
 export interface VolSlice {
@@ -52,8 +52,9 @@ const MAX_IV = 3;
 
 /**
  * Builds a surface from an option chain using the OTM composite smile: puts
- * below spot, calls at/above spot. Those are the liquid, informative quotes on
- * each side, and it avoids mixing two different vols at the same strike.
+ * below spot, calls at or above spot. Those are the liquid, informative
+ * quotes on each side. This avoids mixing two different vols at the same
+ * strike.
  */
 export function buildVolSurface(chain: ChainLike): VolSurface {
   const usable = (iv: number | undefined): iv is number => iv !== undefined && iv > MIN_IV && iv < MAX_IV;
@@ -103,9 +104,9 @@ function ivAtStrike(slice: VolSlice, strike: number): number {
 }
 
 /**
- * Implied vol at an absolute strike and maturity. Maturity interpolation is in
- * total variance; outside the quoted maturity range the nearest slice's vol is
- * held flat (never extrapolated).
+ * Implied vol at an absolute strike and maturity. Maturity interpolation is
+ * in total variance. Outside the quoted maturity range, the nearest
+ * slice's vol is held flat and never extrapolated.
  */
 export function volAt(surface: VolSurface, strike: number, tYears: number): number {
   const { slices } = surface;
@@ -138,9 +139,10 @@ export function volAtPctOfSpot(surface: VolSurface, strikePct: number, tYears: n
 }
 
 /**
- * Skew steepness as a diagnostic: the vol difference between a low strike and
- * ATM at the given maturity, in vol points. Positive for a normal equity skew.
- * Useful to show the user WHY a skew-aware price differs from the flat-vol one.
+ * Skew steepness as a diagnostic: the vol difference between a low strike
+ * and ATM at the given maturity, in vol points. Positive for a normal
+ * equity skew. Useful for showing the user WHY a skew-aware price differs
+ * from the flat-vol one.
  */
 export function skewPoints(surface: VolSurface, tYears: number, lowStrikePct = 80): number {
   return volAtPctOfSpot(surface, lowStrikePct, tYears) - volAtPctOfSpot(surface, 100, tYears);

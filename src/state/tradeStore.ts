@@ -80,8 +80,9 @@ export const PARTICIPATION_PRESET_LABELS: Record<ParticipationPreset, string> = 
 
 /**
  * Presets are UI prefills for the one generic ParticipationSpec shape, not
- * separate model shapes. CommonTerms (notional/tenor/reoffer/...) are left
- * untouched by presets — only the participation-specific fields below.
+ * separate model shapes. Presets leave CommonTerms (notional, tenor,
+ * reoffer, and so on) untouched — only the participation-specific fields
+ * below change.
  */
 export function participationPreset(
   preset: ParticipationPreset,
@@ -212,9 +213,9 @@ export const useTradeStore = create<TradeState>((set) => ({
   couponSolve: { kind: 'none' },
   setCouponSpec: (patch) => set((s) => ({ couponSpec: { ...s.couponSpec, ...patch } })),
   setCouponSolve: (couponSolve) => set({ couponSolve }),
-  // Merge OVER the default spec: older localStorage history entries (or
-  // anything predating a model field addition) won't carry newer fields,
-  // so defaults backfill anything missing from the restored spec.
+  // Merge OVER the default spec. Older localStorage history entries, or
+  // anything predating a model field addition, will not carry newer fields.
+  // So defaults backfill anything missing from the restored spec.
   replaceCouponSpec: (couponSpec) =>
     set({ couponSpec: { ...DEFAULT_COUPON_SPEC, ...couponSpec }, couponSolve: { kind: 'none' } }),
 
@@ -222,11 +223,11 @@ export const useTradeStore = create<TradeState>((set) => ({
   participationSolve: { kind: 'none' },
   patchParticipationSpec: (patch) => set((s) => ({ participationSpec: { ...s.participationSpec, ...patch } })),
   setParticipationSolve: (participationSolve) => set({ participationSolve }),
-  // Merge OVER the default spec, and shape-check first: older localStorage
-  // history entries predate the generic-spec redesign entirely (they carried
-  // a `subtype` and flat fields instead of nested upside/downside), so a
-  // naive merge would silently mix incompatible shapes. Fall back to
-  // defaults rather than let a malformed restore crash the history modal.
+  // Merge OVER the default spec, and shape-check first. Older localStorage
+  // history entries predate the generic-spec redesign entirely — they
+  // carried a `subtype` and flat fields instead of nested upside/downside.
+  // So a naive merge would silently mix incompatible shapes. Fall back to
+  // defaults, rather than let a malformed restore crash the history modal.
   replaceParticipationSpec: (spec) =>
     set(() => {
       try {

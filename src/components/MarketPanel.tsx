@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMarketStore } from '../state/marketStore';
 import { fetchSpot } from '../services/spotFetch';
-import { fetchFxRealizedVolAndCorr, fetchHistVol, fetchRefRate, REF_RATE_CCYS } from '../services/marketFetch';
+import { fetchFxRealizedVolAndCorr, fetchRealizedStats, fetchRefRate, REF_RATE_CCYS } from '../services/marketFetch';
 import { fetchImpliedFromOptions } from '../services/impliedFetch';
 import { useTradeStore } from '../state/tradeStore';
 import { NumericField } from './NumericField';
@@ -10,6 +10,7 @@ import { Segmented } from './Segmented';
 import { TickerSearch } from './TickerSearch';
 import { NO_COSTS, SUPPORTED_CURRENCIES as CURRENCIES, type CostParams } from '../model/market';
 import { buildVolSurface, skewPoints, type VolSurface } from '../model/volSurface';
+import { buildRealizedSurface } from '../model/realizedSurface';
 
 interface FetchLine {
   kind: 'ok' | 'err' | 'info';
@@ -20,17 +21,25 @@ interface FetchLine {
 
 /**
  * One-shot live data fetch. Concurrently:
- *  - spot (Yahoo→Stooq) — also detects the underlying's trading currency
- *  - reference rate (€STR/SOFR) when the note ccy has an open source
- *  - options-implied div yield + ATM vol (CBOE), falling back to 1Y
- *    historical vol when the chain is unavailable
- * Applies whatever succeeded; reports each component's outcome loudly.
+ *  - spot, Yahoo then Stooq — also detects the underlying's trading currency
+ *  - reference rate (€STR/SOFR), when the note ccy has an open source
+ *  - options-implied div yield and ATM vol (Yahoo, then CBOE)
+ *  - 1Y realized vol, computed from daily closes
+ * The last two run in PARALLEL, not as a fallback chain: option sources are
+ * the slowest and least reliable leg, so waiting for one to fail before
+ * computing a vol we can derive ourselves made every failure cost the full
+ * timeout. Implied supersedes realized when it arrives.
+ * Applies whatever succeeded, and reports each component's outcome loudly.
  */
 async function fetchLiveData(
   ticker: string,
   noteCcy: string,
   tenorYears: number,
   rate: number,
+  /** False once a newer fetch has superseded this one; every store write is
+   * gated on it so a slow leg of an abandoned fetch cannot overwrite the
+   * current underlying's data. */
+  isCurrent: () => boolean = () => true,
 ): Promise<FetchLine[]> {
   const lines: FetchLine[] = [];
   const store = useMarketStore.getState();
@@ -40,12 +49,19 @@ async function fetchLiveData(
     ? fetchRefRate(noteCcy)
     : Promise.reject(new Error(`no open rate source for ${noteCcy} — enter manually`));
   const impliedP = fetchImpliedFromOptions(ticker, tenorYears, rate);
+  // Realized vol runs ALONGSIDE the option chain rather than only as its
+  // fallback. Option sources are the slowest and least reliable leg (a chain
+  // can take the full timeout to fail), and waiting for them before even
+  // trying a vol we can compute ourselves made every failure cost the whole
+  // timeout. Whichever arrives is applied; implied then supersedes realized.
+  const histP = fetchRealizedStats(ticker);
 
-  const [spotR, rateR, impliedR] = await Promise.allSettled([spotP, rateP, impliedP]);
+  const [spotR, rateR, impliedR, histR] = await Promise.allSettled([spotP, rateP, impliedP, histP]);
 
   let underlyingCcy: string | undefined;
   if (spotR.status === 'fulfilled') {
     underlyingCcy = spotR.value.currency;
+    if (!isCurrent()) return lines;
     store.applyFetchedSpot(spotR.value.spot, spotR.value.source, spotR.value.asOf, spotR.value.currency);
     lines.push({ kind: 'ok', msg: `Spot ${spotR.value.spot} · ${spotR.value.source}`, short: `spot ${spotR.value.spot}` });
   } else {
@@ -53,21 +69,24 @@ async function fetchLiveData(
   }
 
   if (rateR.status === 'fulfilled') {
-    useMarketStore.setState((s) => ({ market: { ...s.market, rate: rateR.value.rate } }));
-    lines.push({
-      kind: 'ok',
-      msg: `Rate ${(rateR.value.rate * 100).toFixed(3)}% · ${rateR.value.source} ${rateR.value.asOf}`,
-      short: `rate ${(rateR.value.rate * 100).toFixed(3)}%`,
-    });
+    if (isCurrent()) {
+      useMarketStore.setState((s) => ({ market: { ...s.market, rate: rateR.value.rate } }));
+      lines.push({
+        kind: 'ok',
+        msg: `Rate ${(rateR.value.rate * 100).toFixed(3)}% · ${rateR.value.source} ${rateR.value.asOf}`,
+        short: `rate ${(rateR.value.rate * 100).toFixed(3)}%`,
+      });
+    }
   } else {
     lines.push({ kind: 'err', msg: `Rate: ${rateR.reason instanceof Error ? rateR.reason.message : 'failed'}` });
   }
 
+  if (!isCurrent()) return lines;
   if (impliedR.status === 'fulfilled') {
     const r = impliedR.value;
     // Keep the whole chain as a vol surface, not just the ATM number, so the
     // engine can price each product at its own risk strike. A chain too thin
-    // to build a surface from is not an error — the ATM vol is still good.
+    // to build a surface from is not an error. The ATM vol is still good.
     let surface: VolSurface | undefined;
     let surfaceMsg = '';
     try {
@@ -88,36 +107,57 @@ async function fetchLiveData(
         surfaceMsg,
       short: `vol ${(r.atmVol * 100).toFixed(1)}%`,
     });
-  } else {
-    const impliedMsg = impliedR.reason instanceof Error ? impliedR.reason.message : 'failed';
-    // Options chain unavailable — fall back to realized vol; div stays manual.
+  } else if (histR.status === 'fulfilled') {
+    const hv = histR.value;
+    // No chain, but the price history still supports a term structure AND a
+    // skew (from measured return moments), so build a surface rather than
+    // dropping to a single flat number. Any surface from a previous underlying
+    // is replaced, never kept.
+    let surface: VolSurface | undefined;
+    let surfaceMsg = '';
     try {
-      const hv = await fetchHistVol(ticker);
-      // Clear any surface from a previous fetch: a realized vol is flat, and
-      // keeping a stale surface would price this underlying on another one's
-      // skew.
-      useMarketStore.setState((s) => ({ market: { ...s.market, vol: hv.vol, volSurface: undefined } }));
-      lines.push({
-        kind: 'ok',
-        msg: `Vol ${(hv.vol * 100).toFixed(2)}% · ${hv.source} (realized fallback)`,
-        short: `vol ${(hv.vol * 100).toFixed(2)}%`,
-      });
-      lines.push({ kind: 'info', msg: `Options unavailable (${impliedMsg}) — div yield left as entered` });
-    } catch (hvErr) {
-      lines.push({ kind: 'err', msg: `Vol: options (${impliedMsg}); hist (${hvErr instanceof Error ? hvErr.message : 'failed'})` });
-      lines.push({ kind: 'info', msg: 'Div yield left as entered' });
+      const spotNow = useMarketStore.getState().market.spot;
+      surface = buildRealizedSurface(spotNow, hv, `${hv.source} surface`);
+      const skew = skewPoints(surface, tenorYears, 80);
+      surfaceMsg = ` · realized skew ${skew >= 0 ? '+' : ''}${(skew * 100).toFixed(1)}pt (80% vs ATM), ${hv.terms.length} tenors`;
+    } catch {
+      surfaceMsg = ' · flat (history too short for a surface)';
     }
+    useMarketStore.setState((s) => ({ market: { ...s.market, vol: hv.vol, volSurface: surface } }));
+    lines.push({
+      kind: 'ok',
+      msg: `Vol ${(hv.vol * 100).toFixed(2)}% · ${hv.source}${surfaceMsg}`,
+      short: `vol ${(hv.vol * 100).toFixed(2)}%`,
+    });
+    // Options are an upgrade, not a requirement: say so calmly rather than as
+    // an error, since a usable vol and skew were still produced. Realized
+    // levels carry no volatility risk premium, so they sit below traded implied.
+    lines.push({
+      kind: 'info',
+      msg: `No option chain — vol/skew are REALIZED (typically below implied) and div yield is left as entered (${
+        impliedR.reason instanceof Error ? impliedR.reason.message : 'options unavailable'
+      })`,
+    });
+  } else {
+    lines.push({
+      kind: 'err',
+      msg: `Vol: options (${impliedR.reason instanceof Error ? impliedR.reason.message : 'failed'}); realized (${
+        histR.reason instanceof Error ? histR.reason.message : 'failed'
+      })`,
+    });
+    lines.push({ kind: 'info', msg: 'Div yield left as entered' });
   }
 
   // Cross-currency note: the quanto drift needs the UNDERLYING currency's
-  // rate (not the note rate). Fetch it when there's a mismatch and an open
-  // source exists; FX vol and Eq-FX correlation are auto-filled from Yahoo
-  // 1Y realized FX/equity closes (best-effort, manual edits still override).
-  if (underlyingCcy && underlyingCcy !== noteCcy) {
+  // rate, not the note rate. Fetch it when there is a mismatch and an open
+  // source exists. FX vol and Eq-FX correlation are auto-filled from Yahoo
+  // 1Y realized FX/equity closes, best-effort; manual edits still override.
+  if (underlyingCcy && underlyingCcy !== noteCcy && isCurrent()) {
     const cur = useMarketStore.getState().market.quanto;
     if ((REF_RATE_CCYS as readonly string[]).includes(underlyingCcy)) {
       try {
         const ur = await fetchRefRate(underlyingCcy);
+        if (!isCurrent()) return lines;
         const latest = useMarketStore.getState().market.quanto;
         useMarketStore.getState().setQuanto({
           rateUnderlying: ur.rate,
@@ -138,6 +178,7 @@ async function fetchLiveData(
 
     try {
       const fx = await fetchFxRealizedVolAndCorr(underlyingCcy, noteCcy, ticker);
+      if (!isCurrent()) return lines;
       const latest = useMarketStore.getState().market.quanto;
       useMarketStore.getState().setQuanto({
         rateUnderlying: latest?.rateUnderlying ?? cur?.rateUnderlying ?? 0,
@@ -175,8 +216,15 @@ export function MarketPanel() {
 
   const [fetching, setFetching] = useState(false);
   const [fetchLines, setFetchLines] = useState<FetchLine[]>([]);
+  // Monotonic token identifying the newest fetch. Picking a different
+  // underlying used to leave the previous fetch running: its slow legs (the
+  // option chain waits up to 10s) then landed afterwards and wrote the OLD
+  // underlying's vol, div yield and status lines over the new one. Only the
+  // newest token is allowed to apply its results.
+  const fetchGeneration = useRef(0);
 
   async function handleFetchLive(sym = ticker) {
+    const generation = ++fetchGeneration.current;
     setFetching(true);
     setFetchLines([]);
     const trade = useTradeStore.getState();
@@ -187,22 +235,23 @@ export function MarketPanel() {
         : page === 'participation'
           ? trade.participationSpec
           : trade.accumulatorSpec;
-    const lines = await fetchLiveData(sym, market.currency, spec.tenorYears, market.rate);
+    const lines = await fetchLiveData(sym, market.currency, spec.tenorYears, market.rate, () => fetchGeneration.current === generation);
+    if (fetchGeneration.current !== generation) return; // superseded
     setFetchLines(lines);
     setFetching(false);
   }
 
   const quantoMismatch = !!underlyingCurrency && underlyingCurrency !== market.currency;
 
-  // Costs default to zero (a pure risk-neutral fair value); the badge makes it
-  // obvious when a quoted level is no longer the fair value.
+  // Costs default to zero, a pure risk-neutral fair value. The badge makes
+  // it obvious when a quoted level is no longer the fair value.
   const costs = market.costs ?? NO_COSTS;
   const costsActive = costs.fundingSpreadBp !== 0 || costs.borrowCostBp !== 0 || costs.feePct !== 0;
   const setCosts = (patch: Partial<CostParams>) => setMarket({ costs: { ...costs, ...patch } });
 
   // When a currency mismatch first appears, seed quanto params from the
-  // current note rate; when it resolves (or the underlying ccy is unknown),
-  // clear them so single-currency pricing is untouched.
+  // current note rate. When it resolves, or the underlying ccy is unknown,
+  // clear them, so single-currency pricing is untouched.
   useEffect(() => {
     if (quantoMismatch && !market.quanto) {
       setQuanto({ rateUnderlying: market.rate, fxVol: 0.1, corrEqFx: 0 });
@@ -343,7 +392,7 @@ export function MarketPanel() {
           </div>
         )}
 
-        {/* Issuer/desk costs. A pure risk-neutral price ignores these, which is
+        {/* Issuer and desk costs. A pure risk-neutral price ignores these. That is
          * why a fair value looks more aggressive than a bank's quote. Their
          * signs deliberately differ — see CostParams in model/market.ts. */}
         <div className="field-group">

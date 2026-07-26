@@ -10,12 +10,12 @@ export interface McOptions {
   antithetic: boolean;
   nSteps: number;
   /**
-   * Year fraction of one grid step. Either a single scalar (uniform grid —
-   * required for correct GBM stepping when tenorYears/nSteps deviates from
-   * 1/252, e.g. sub-daily tenors clamped to nSteps=1) or a per-step
-   * Float64Array/number[] of length nSteps (a compact/adaptive, possibly
-   * non-uniform grid — see schedule.ts's buildGrid). Defaults to 1/252 if
-   * omitted.
+   * Year fraction of one grid step. Either a single scalar — a uniform
+   * grid; required for correct GBM stepping when tenorYears/nSteps
+   * deviates from 1/252, for example sub-daily tenors clamped to nSteps=1
+   * — or a per-step Float64Array/number[] of length nSteps, a compact or
+   * adaptive, possibly non-uniform, grid (see schedule.ts's buildGrid).
+   * Defaults to 1/252 if omitted.
    */
   dtYears?: number | Float64Array | number[];
   s0: number;
@@ -26,9 +26,10 @@ export interface McOptions {
    * so far. Return false to cancel the run. */
   onBatch?: (pathsDone: number) => boolean;
   /**
-   * When provided, enables distribution diagnostics (histogram/pLoss/ES) in
-   * the returned result, computed against this PV% reference level (e.g.
-   * issuePricePct). Omit to skip the (small but non-zero) extra work.
+   * When provided, enables distribution diagnostics — histogram, pLoss,
+   * ES — in the returned result, computed against this PV% reference
+   * level, for example issuePricePct. Omit to skip this small but
+   * non-zero extra work.
    */
   referenceLevelPct?: number;
 }
@@ -38,10 +39,10 @@ export interface McRunResult {
   stderrPct: number;
   cancelled: boolean;
   diagnostics: Diagnostics;
-  /** One float per recorded sample (per path, or per antithetic pair —
-   * matches Aggregator.addSample's unit). Callers that combine multiple
-   * runs (e.g. sliced pricing) can concatenate these for a global
-   * distribution view rather than trusting any single run's histogram. */
+  /** One float per recorded sample: per path, or per antithetic pair,
+   * matching Aggregator.addSample's unit. Callers that combine multiple
+   * runs, for example sliced pricing, can concatenate these for a global
+   * distribution view, instead of trusting any single run's histogram. */
   samples: number[];
 }
 
@@ -115,19 +116,20 @@ export class Aggregator {
 }
 
 /**
- * Anything that can hand out the next path (or antithetic pair) on demand.
- * `PathBatchGenerator` satisfies this structurally (streaming, fresh RNG
- * draws); a cache-backed source can satisfy it too by replaying previously
- * generated paths — either way `evaluatePathSource` below does the exact
- * same aggregation, so results are identical regardless of where the paths
- * came from.
+ * Anything that can hand out the next path, or antithetic pair, on demand.
+ * `PathBatchGenerator` satisfies this structurally, with streaming, fresh
+ * RNG draws. A cache-backed source can satisfy it too, by replaying
+ * previously generated paths. Either way, `evaluatePathSource` below does
+ * the exact same aggregation. So results are identical regardless of where
+ * the paths came from.
  *
- * Generic over the item type `T` so the same replay/aggregation machinery
- * works both for raw paths (`T = Float64Array`, the classic case) and for
- * cached per-path observables (`T = PathObservables`, see pathCache.ts) —
- * the aggregation logic (pairing, batching, addSample/addPathDiagnostics
- * order) is identical either way, which is exactly what keeps an
- * observables-cache hit byte-identical to evaluating straight from spots.
+ * Generic over the item type `T`, so the same replay-and-aggregation
+ * machinery works both for raw paths (`T = Float64Array`, the classic
+ * case) and for cached per-path observables (`T = PathObservables`, see
+ * pathCache.ts). The aggregation logic — pairing, batching,
+ * addSample/addPathDiagnostics order — is identical either way. This is
+ * exactly what keeps an observables-cache hit byte-identical to evaluating
+ * straight from spots.
  */
 export interface PathSource<T = Float64Array> {
   nextPair(): { plus: T; minus: T };
@@ -135,12 +137,12 @@ export interface PathSource<T = Float64Array> {
 }
 
 /**
- * Pulls `numPaths` paths (or antithetic pairs) from `source`, evaluates each
- * with `evaluator`, and folds the outcomes into `agg`. This is the one
- * place path-evaluation + aggregation happens — `runMc` (streaming
+ * Pulls `numPaths` paths, or antithetic pairs, from `source`, evaluates
+ * each with `evaluator`, and folds the outcomes into `agg`. This is the
+ * one place path-evaluation and aggregation happens. `runMc` (streaming
  * generation) and the worker's path cache (generate-once-and-replay) both
- * funnel through it so a cache hit is numerically identical to a fresh run.
- * Returns true if `onBatch` requested cancellation.
+ * funnel through it. So a cache hit is numerically identical to a fresh
+ * run. Returns true if `onBatch` requested cancellation.
  */
 export function evaluatePathSource<T = Float64Array>(
   source: PathSource<T>,

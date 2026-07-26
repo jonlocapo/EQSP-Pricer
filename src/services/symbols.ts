@@ -1,17 +1,18 @@
 /**
- * The app stores underlyings as Yahoo-Finance-style symbols (picked via the
- * ticker search): "BA", "^SPX", "BMW.DE". Each data source needs its own
- * convention; these mappers centralize the translation.
+ * The app stores underlyings as Yahoo-Finance-style symbols, picked via the
+ * ticker search: "BA", "^SPX", "BMW.DE". Each data source needs its own
+ * convention. These mappers centralize the translation.
  */
 
 export const isIndexSymbol = (symbol: string): boolean => symbol.startsWith('^');
 
 /**
- * Yahoo reports some listings in a minor unit — London lines come back as
- * "GBp" (pence), not "GBP". Left alone that both breaks currency comparison
- * (a pence-quoted name always looks like a quanto mismatch against GBP) and
- * leaves the quoted price 100x too large. Returns the ISO currency together
- * with the divisor needed to convert a quoted price into it.
+ * Yahoo reports some listings in a minor unit. London lines come back as
+ * "GBp" (pence), not "GBP". Left alone, that both breaks currency
+ * comparison — a pence-quoted name always looks like a quanto mismatch
+ * against GBP — and leaves the quoted price 100 times too large. Returns
+ * the ISO currency, together with the divisor needed to convert a quoted
+ * price into it.
  */
 export function normalizeQuoteCurrency(raw?: string): { currency?: string; priceDivisor: number } {
   const t = raw?.trim();
@@ -38,11 +39,11 @@ export function toStooqSymbol(symbol: string): string {
 }
 
 /**
- * Index tickers whose CBOE option-root differs from the Yahoo symbol. Without
- * these the mapping silently produces a root CBOE does not serve — most
- * importantly `^GSPC`, which is exactly what the ticker search returns for the
- * S&P 500, so picking the index from search used to break the option fetch
- * while the hand-typed default `^SPX` happened to work.
+ * Index tickers whose CBOE option-root differs from the Yahoo symbol.
+ * Without these, the mapping silently produces a root CBOE does not serve.
+ * Most importantly, `^GSPC` is exactly what the ticker search returns for
+ * the S&P 500. So picking the index from search used to break the option
+ * fetch, while the hand-typed default `^SPX` happened to work.
  */
 const CBOE_INDEX_ROOTS: Record<string, string> = {
   GSPC: 'SPX', // S&P 500 — Yahoo's ^GSPC, CBOE's _SPX
@@ -55,9 +56,9 @@ const CBOE_INDEX_ROOTS: Record<string, string> = {
 };
 
 /**
- * Non-US suffixes are genuinely unavailable on CBOE (US-listed options only).
- * A dot does NOT by itself mean non-US though: US class shares like BRK.B are
- * listed, under a dotless root (BRKB).
+ * Non-US suffixes are genuinely unavailable on CBOE, which lists US
+ * options only. A dot does NOT by itself mean non-US, though. US class
+ * shares like BRK.B are listed, under a dotless root (BRKB).
  */
 const US_CLASS_SHARE_RE = /^[A-Z]+\.[A-Z]$/;
 
@@ -73,7 +74,7 @@ export function toCboeSymbol(symbol: string): string {
     }
     return `_${root}`;
   }
-  // US class shares (BRK.B -> BRKB) are listed; other dotted symbols are
+  // US class shares (BRK.B -> BRKB) are listed. Other dotted symbols are
   // foreign listings and genuinely have no CBOE chain.
   if (US_CLASS_SHARE_RE.test(s)) return s.replace('.', '');
   if (s.includes('.')) {

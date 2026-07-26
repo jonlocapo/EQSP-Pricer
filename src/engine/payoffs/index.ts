@@ -26,12 +26,12 @@ export function makeEvaluator(spec: ProductSpec, ctx: EvaluatorContext): PayoffE
 }
 
 /**
- * Observables-split evaluator for the families where it's a true no-op
- * decomposition (coupon non-issuerCallable, participation) — see
- * PathObservables' doc comment. Returns null for families that don't
- * decompose (accumulator's daily walk depends on the strike, a solve target;
- * issuerCallable coupons go through the LSMC cashflow-extractor path
- * instead, never through this evaluator at all).
+ * Observables-split evaluator for the families where it is a true no-op
+ * decomposition: coupon non-issuerCallable, participation. See
+ * PathObservables' doc comment. Returns null for families that do not
+ * decompose. The accumulator's daily walk depends on the strike, a solve
+ * target. issuerCallable coupons go through the LSMC cashflow-extractor
+ * path instead, never through this evaluator at all.
  */
 export function makeSplitEvaluator(spec: ProductSpec, ctx: EvaluatorContext): SplitEvaluator | null {
   switch (spec.kind) {
@@ -53,11 +53,11 @@ export function makeSplitEvaluator(spec: ProductSpec, ctx: EvaluatorContext): Sp
 
 /**
  * The observables requirements descriptor for a spec (see
- * `ObservablesRequirements`'s doc comment) — exposed so the pathCache's
+ * `ObservablesRequirements`'s doc comment). Exposed so the pathCache's
  * observables sub-cache key can include it (see pricing.ts /
  * pathCache.ts's `computeObservablesKey`), without pathCache.ts needing to
  * know each family's monitoring-mode fields. Accumulator has no split
- * evaluator, so its requirements are unused; return the (harmless) default.
+ * evaluator, so its requirements are unused. Return the harmless default.
  */
 export function observablesRequirementsOf(spec: ProductSpec): ObservablesRequirements {
   switch (spec.kind) {

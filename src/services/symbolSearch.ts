@@ -7,7 +7,7 @@ export interface SymbolMatch {
   exchange: string;
   quoteType: 'EQUITY' | 'INDEX' | 'ETF';
   /** Listing currency, when the search response carries one. Lets the note
-   * currency follow the underlying on pick (see marketStore.setUnderlying)
+   * currency follow the underlying on pick (see marketStore.setUnderlying),
    * instead of silently leaving a USD name in a EUR note. */
   currency?: string;
 }
