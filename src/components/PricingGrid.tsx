@@ -148,10 +148,17 @@ export function PricingGrid({ page, spec, market, underlyingName }: PricingGridP
         },
       });
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : 'Grid pricing failed.');
+      if (abortRef.current === controller) {
+        setErrorMessage(err instanceof Error ? err.message : 'Grid pricing failed.');
+      }
     } finally {
-      setRunning(false);
-      abortRef.current = null;
+      // Only the CURRENT run may clear the shared run state. A superseded run
+      // finishing late would otherwise null out its successor's controller and
+      // report "not running" while that successor is still solving.
+      if (abortRef.current === controller) {
+        setRunning(false);
+        abortRef.current = null;
+      }
     }
   }
 
@@ -162,6 +169,13 @@ export function PricingGrid({ page, spec, market, underlyingName }: PricingGridP
   async function resolveSlice(axis: 'row' | 'col', index: number, value: number) {
     if (!xParam || !yParam) return;
     setErrorMessage(null);
+    // Supersede whatever slice run is still in flight. A header is a
+    // NumericField, which commits on every keystroke, so typing "130" asks for
+    // three re-solves in a row. Without this abort they all keep writing, and
+    // the slowest one wins whichever cells it finishes last: a column that
+    // reads partly from 130 and partly from the intermediate 1. Observed in a
+    // browser as a column with one invalid cell and four stale ones.
+    abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     setRunning(true);
@@ -178,6 +192,7 @@ export function PricingGrid({ page, spec, market, underlyingName }: PricingGridP
           solve: solveTarget,
           signal: controller.signal,
           onCell: (_r, c, state) => {
+            if (abortRef.current !== controller) return;
             setCells((prev) => {
               const copy = prev.map((row) => row.slice());
               if (copy[index] && copy[index][c]) copy[index][c] = { ...copy[index][c], state, yValue: value };
@@ -197,6 +212,11 @@ export function PricingGrid({ page, spec, market, underlyingName }: PricingGridP
           solve: solveTarget,
           signal: controller.signal,
           onCell: (r, _c, state) => {
+            // A superseded run must never write. `runGrid` only checks its
+            // abort signal between cells, so a run aborted mid-cell can still
+            // deliver that one cell, and it would land on top of the newer
+            // run's answer.
+            if (abortRef.current !== controller) return;
             setCells((prev) => {
               const copy = prev.map((row) => row.slice());
               if (copy[r] && copy[r][index]) copy[r][index] = { ...copy[r][index], state, xValue: value };
@@ -206,21 +226,56 @@ export function PricingGrid({ page, spec, market, underlyingName }: PricingGridP
         });
       }
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : 'Grid pricing failed.');
+      if (abortRef.current === controller) {
+        setErrorMessage(err instanceof Error ? err.message : 'Grid pricing failed.');
+      }
     } finally {
-      setRunning(false);
-      abortRef.current = null;
+      // Only the CURRENT run may clear the shared run state. A superseded run
+      // finishing late would otherwise null out its successor's controller and
+      // report "not running" while that successor is still solving.
+      if (abortRef.current === controller) {
+        setRunning(false);
+        abortRef.current = null;
+      }
     }
   }
 
+  /**
+   * Waits for a header edit to settle before re-solving its slice.
+   *
+   * A header is a NumericField, and NumericField commits on every keystroke, so
+   * typing "130" arrives as 1, then 13, then 130. Each one is a whole column of
+   * solves. The abort in resolveSlice keeps the answers consistent, but firing
+   * three runs to keep one is pure waste, and the intermediate values are not
+   * anything the user asked to price. So collapse a burst into one run, the same
+   * reasoning the main form's typing debounce uses (see hooks/useLiveReprice).
+   */
+  const HEADER_DEBOUNCE_MS = 260;
+  const headerTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function scheduleSlice(axis: 'row' | 'col', index: number, value: number) {
+    if (!hasGenerated) return;
+    if (headerTimer.current) clearTimeout(headerTimer.current);
+    headerTimer.current = setTimeout(() => {
+      headerTimer.current = null;
+      void resolveSlice(axis, index, value);
+    }, HEADER_DEBOUNCE_MS);
+  }
+
+  useEffect(() => {
+    return () => {
+      if (headerTimer.current) clearTimeout(headerTimer.current);
+    };
+  }, []);
+
   function editColumnHeader(index: number, value: number) {
     setXValues((prev) => prev.map((v, i) => (i === index ? value : v)));
-    if (hasGenerated) void resolveSlice('col', index, value);
+    scheduleSlice('col', index, value);
   }
 
   function editRowHeader(index: number, value: number) {
     setYValues((prev) => prev.map((v, i) => (i === index ? value : v)));
-    if (hasGenerated) void resolveSlice('row', index, value);
+    scheduleSlice('row', index, value);
   }
 
   function addColumn() {
