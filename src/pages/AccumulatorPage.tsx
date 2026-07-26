@@ -7,7 +7,6 @@ import { Segmented } from '../components/Segmented';
 import { NumericField } from '../components/NumericField';
 import { SelectField } from '../components/SelectField';
 import { ActionRow } from '../components/ActionRow';
-import { noteEditSource } from '../state/editSource';
 import { validateAccumulator } from '../services/validation';
 import { runPricing } from '../services/runPricing';
 import { useLiveReprice } from '../hooks/useLiveReprice';
@@ -95,7 +94,7 @@ export function AccumulatorPage() {
     <div className="page-grid">
       {indexBlocked && (
         <div className="page-banner error" role="alert">
-          Accumulators/Decumulators (AQ/DQ) are share-only — an index underlying cannot be
+          Accumulators and Decumulators (AQ/DQ) are share-only. An index underlying cannot be
           accumulated. Set Asset type to Share in the Market Data panel.
         </div>
       )}
@@ -145,14 +144,18 @@ export function AccumulatorPage() {
             <span>Tenor</span>
           </div>
           <div className="field-row">
-            <input
-              className="input"
-              type="number"
-              step={1}
-              value={Number.isFinite(tenorValue) ? tenorValue : ''}
-              onChange={(e) => updateTenor(e.target.valueAsNumber, tenorUnit)}
-              style={{ maxWidth: 90 }}
-            />
+            {/* A NumericField, not a raw input, so the keyboard arrows snap to a
+             * multiple of the step and take the fast step debounce. A raw number
+             * input steps itself, and does neither. */}
+            <div style={{ maxWidth: 110 }}>
+              <NumericField
+                label=""
+                value={tenorValue}
+                step={1}
+                min={1}
+                onChange={(v) => updateTenor(v, tenorUnit)}
+              />
+            </div>
             <Segmented<TenorUnit>
               value={tenorUnit}
               options={[
@@ -201,33 +204,19 @@ export function AccumulatorPage() {
           <div className="field-label">
             <span>Guarantee periods</span>
           </div>
-          <div className="stepper">
-            {/* These are "arrows" like NumericField's steppers. So they get the
-             * same fast step-style debounce, rather than the slow typing one. */}
-            <button
-              type="button"
-              onClick={() => {
-                noteEditSource('step');
-                setSpec({ guaranteePeriods: Math.max(0, spec.guaranteePeriods - 1) });
-              }}
-            >
-              −
-            </button>
-            <input
-              className="input"
-              type="number"
-              value={spec.guaranteePeriods}
-              onChange={(e) => setSpec({ guaranteePeriods: Math.max(0, e.target.valueAsNumber || 0) })}
-            />
-            <button
-              type="button"
-              onClick={() => {
-                noteEditSource('step');
-                setSpec({ guaranteePeriods: spec.guaranteePeriods + 1 });
-              }}
-            >
-              +
-            </button>
+          {/* A NumericField supplies its own arrows, and they behave the same
+           * whether clicked or driven from the keyboard. The hand-written
+           * −/+ buttons this replaces did neither. */}
+          <div className="field-row">
+            <div style={{ maxWidth: 110 }}>
+              <NumericField
+                label=""
+                value={spec.guaranteePeriods}
+                step={1}
+                min={0}
+                onChange={(v) => setSpec({ guaranteePeriods: v })}
+              />
+            </div>
             <span className="text-muted">settlement periods</span>
           </div>
         </div>
