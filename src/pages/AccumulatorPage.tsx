@@ -273,7 +273,7 @@ export function AccumulatorPage() {
         <ActionRow
           label={priceLabel}
           disabled={priceDisabled}
-          tooltip={indexBlocked ? 'Accumulators/Decumulators are share-only — switch Asset type to Share.' : 'Fix validation errors above.'}
+          tooltip={indexBlocked ? 'Accumulators and Decumulators are share-only. Switch Asset type to Share.' : 'Fix validation errors above.'}
           onRun={handleRun}
           greeks={greeks}
           onGreeksChange={setGreeks}

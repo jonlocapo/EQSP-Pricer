@@ -121,7 +121,7 @@ export async function fetchHistVol(symbol: string): Promise<HistVolResult> {
     } catch (stooqErr) {
       const stooqMsg = stooqErr instanceof Error ? stooqErr.message : String(stooqErr);
       throw new Error(
-        `Vol history unavailable (yahoo: ${yahooMsg}; stooq: ${stooqMsg}) — enter vol manually`,
+        `Vol history unavailable (yahoo: ${yahooMsg}; stooq: ${stooqMsg}). Enter vol manually.`,
       );
     }
   }
@@ -166,7 +166,7 @@ export async function fetchRefRate(currency: string): Promise<RefRateResult> {
       source: proxied ? 'NY Fed SOFR (proxied)' : 'NY Fed SOFR',
     };
   }
-  throw new Error(`No open reference-rate source for ${currency} — enter the rate manually`);
+  throw new Error(`No open reference-rate source for ${currency}. Enter the rate manually.`);
 }
 
 /**
@@ -275,7 +275,7 @@ export async function fetchFxRealizedVolAndCorr(
     corrEqFx = realizedCorrelation(eqCloses, fxCloses);
   } catch (e) {
     throw new Error(
-      `FX vol ok but correlation failed (${e instanceof Error ? e.message : 'failed'}) — corr left as entered`,
+      `FX vol ok but correlation failed (${e instanceof Error ? e.message : 'failed'}). Correlation left as entered.`,
     );
   }
 
@@ -305,7 +305,7 @@ export async function fetchRealizedStats(yahooSymbol: string): Promise<RealizedS
   const closes = await fetchDailyCloses(yahooSymbol);
   const px = closes.map((c) => c.close).filter((c) => c > 0);
   if (px.length < 30) {
-    throw new Error(`Only ${px.length} closes for "${yahooSymbol}" — not enough for a vol estimate`);
+    throw new Error(`Only ${px.length} closes for "${yahooSymbol}", not enough for a vol estimate`);
   }
   const logReturns: number[] = [];
   for (let i = 1; i < px.length; i++) logReturns.push(Math.log(px[i] / px[i - 1]));

@@ -143,6 +143,6 @@ export async function fetchImpliedFromOptions(
   }
 
   throw new Error(
-    `Could not imply vol/div yield from any option source — enter them manually. ${reasons.join('; ')}`,
+    `Could not imply vol/div yield from any option source. Enter them manually. ${reasons.join('; ')}`,
   );
 }

@@ -54,7 +54,7 @@ export interface ImpliedFromChain {
 
 const MS_PER_YEAR = 365.25 * 24 * 3600 * 1000;
 /** Anything expiring sooner than this is too close-dated to imply from. */
-const MIN_TENOR_YEARS = 10 / 365;
+export const MIN_TENOR_YEARS = 10 / 365;
 
 export function midPrice(q: OptionQuote): number | null {
   if (q.bid !== undefined && q.ask !== undefined && q.bid > 0 && q.ask > 0 && q.ask >= q.bid) {
@@ -92,7 +92,7 @@ export function impliedFromChain(chain: OptionChain, rate: number, tenorYears: n
     .filter((s) => s.tYears > MIN_TENOR_YEARS)
     .sort((a, b) => Math.abs(a.tYears - tenorYears) - Math.abs(b.tYears - tenorYears));
   if (candidates.length === 0) {
-    throw new Error(`No listed expiry beyond 10 days for "${chain.symbol}" — cannot imply`);
+    throw new Error(`No listed expiry beyond 10 days for "${chain.symbol}", so vol cannot be implied`);
   }
 
   let lastReject = '';
@@ -208,7 +208,7 @@ export async function fetchOptionChainYahoo(
   const first = await fetchYahooOptions(symbol);
   const spot = first.result.quote?.regularMarketPrice;
   if (!spot || !(spot > 0)) {
-    throw new Error(`Yahoo returned no spot for "${symbol}" — cannot imply from its chain`);
+    throw new Error(`Yahoo returned no spot for "${symbol}", so its chain cannot be used`);
   }
 
   const expiryDates = (first.result.expirationDates ?? []).filter((d) => typeof d === 'number');

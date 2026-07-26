@@ -7,14 +7,9 @@ import { useTradeStore } from '../state/tradeStore';
 import { NumericField } from './NumericField';
 import { SelectField } from './SelectField';
 import { Segmented } from './Segmented';
-import { TextField } from './TextField';
 import { TickerSearch } from './TickerSearch';
 import { NO_COSTS, SUPPORTED_CURRENCIES as CURRENCIES, type CostParams } from '../model/market';
 import { skewPoints } from '../model/volSurface';
-
-/** localStorage key for the user's own, optional, Alpha Vantage API key. It
- * never leaves the browser except in a request to alphavantage.co itself. */
-const ALPHA_VANTAGE_KEY_STORAGE = 'eqsp.alphaVantageKey';
 
 interface FetchLine {
   kind: 'ok' | 'err' | 'info';
@@ -35,18 +30,18 @@ export interface VolSourceInfo {
  * One-shot live data fetch. Concurrently:
  *  - spot, Yahoo then Stooq — also detects the underlying's trading currency
  *  - reference rate (€STR/SOFR), when the note ccy has an open source
- * Then the volatility source ladder runs (see services/volPipeline.ts):
- * Alpha Vantage chain (if a key is set), the keyless chain path (Yahoo v7,
- * then CBOE), a listed vol-index anchor, a market-wide VIX-scaled ratio, and
- * finally plain realized vol as the last resort. Applies whatever the
- * ladder produced, and reports each component's outcome loudly.
+ * Then the volatility source ladder runs (see services/volPipeline.ts), all
+ * rungs keyless: the marketdata.app chain, the existing keyless chain path
+ * (Yahoo v7, then CBOE), a listed vol-index anchor, a market-wide
+ * VIX-scaled ratio, and finally plain realized vol as the last resort.
+ * Applies whatever the ladder produced, and reports each component's
+ * outcome loudly.
  */
 async function fetchLiveData(
   ticker: string,
   noteCcy: string,
   tenorYears: number,
   rate: number,
-  apiKey: string,
   /** False once a newer fetch has superseded this one; every store write is
    * gated on it so a slow leg of an abandoned fetch cannot overwrite the
    * current underlying's data. */
@@ -58,7 +53,7 @@ async function fetchLiveData(
   const spotP = fetchSpot(ticker);
   const rateP = (REF_RATE_CCYS as readonly string[]).includes(noteCcy)
     ? fetchRefRate(noteCcy)
-    : Promise.reject(new Error(`no open rate source for ${noteCcy} — enter manually`));
+    : Promise.reject(new Error(`no open rate source for ${noteCcy}. Enter manually.`));
 
   const [spotR, rateR] = await Promise.allSettled([spotP, rateP]);
 
@@ -94,7 +89,13 @@ async function fetchLiveData(
 
   let volSource: VolSourceInfo | undefined;
   try {
-    const vp = await fetchVolPipeline({ symbol: ticker, spot: spotForVol, tenorYears, rate, apiKey });
+    const vp = await fetchVolPipeline({
+      symbol: ticker,
+      spot: spotForVol,
+      tenorYears,
+      rate,
+      fallbackVol: useMarketStore.getState().market.vol,
+    });
     if (!isCurrent()) return { lines };
 
     let skewMsg = '';
@@ -126,7 +127,7 @@ async function fetchLiveData(
     if (vp.kind === 'realized' || vp.kind === 'realized-scaled' || vp.kind === 'vol-index') {
       lines.push({
         kind: 'info',
-        msg: 'No option chain — vol/skew are realized-derived, not directly quoted implied vol.',
+        msg: 'No option chain. Vol and skew are realized-derived, not directly quoted implied vol.',
       });
     }
   } catch (e) {
@@ -156,10 +157,10 @@ async function fetchLiveData(
           short: `ul rate ${(ur.rate * 100).toFixed(3)}%`,
         });
       } catch (urErr) {
-        lines.push({ kind: 'info', msg: `Underlying rate: ${urErr instanceof Error ? urErr.message : 'failed'} — enter manually` });
+        lines.push({ kind: 'info', msg: `Underlying rate: ${urErr instanceof Error ? urErr.message : 'failed'}. Enter manually.` });
       }
     } else {
-      lines.push({ kind: 'info', msg: `No open rate source for ${underlyingCcy} — set underlying rate manually` });
+      lines.push({ kind: 'info', msg: `No open rate source for ${underlyingCcy}. Set the underlying rate manually.` });
     }
 
     try {
@@ -179,7 +180,7 @@ async function fetchLiveData(
     } catch (fxErr) {
       lines.push({
         kind: 'info',
-        msg: `FX vol/correlation: ${fxErr instanceof Error ? fxErr.message : 'failed'} — enter manually`,
+        msg: `FX vol/correlation: ${fxErr instanceof Error ? fxErr.message : 'failed'}. Enter manually.`,
       });
     }
   }
@@ -203,27 +204,17 @@ export function MarketPanel() {
   const [fetching, setFetching] = useState(false);
   const [fetchLines, setFetchLines] = useState<FetchLine[]>([]);
   const [volSource, setVolSource] = useState<VolSourceInfo | undefined>(undefined);
-  // The Alpha Vantage key never travels with the trade state — it is a
-  // per-browser credential, not deal data — so it lives in localStorage,
-  // read once at mount. It is sent to alphavantage.co only, inside
-  // services/alphaVantage.ts, and is never logged.
-  const [apiKey, setApiKey] = useState(() => {
+  // A previous version of this panel stored a user-entered Alpha Vantage
+  // API key here. The vol pipeline no longer has any rung that needs a
+  // key, so clear a lingering value out of the user's browser storage —
+  // it does nothing now and should not sit there indefinitely.
+  useEffect(() => {
     try {
-      return localStorage.getItem(ALPHA_VANTAGE_KEY_STORAGE) ?? '';
+      localStorage.removeItem('eqsp.alphaVantageKey');
     } catch {
-      return '';
+      // Private browsing or a blocked storage API — nothing to clean up.
     }
-  });
-  function handleApiKeyChange(v: string) {
-    setApiKey(v);
-    try {
-      if (v.trim()) localStorage.setItem(ALPHA_VANTAGE_KEY_STORAGE, v.trim());
-      else localStorage.removeItem(ALPHA_VANTAGE_KEY_STORAGE);
-    } catch {
-      // Private browsing or a full quota — the key still works for this
-      // session from React state, it just will not persist across reloads.
-    }
-  }
+  }, []);
   // Monotonic token identifying the newest fetch. Picking a different
   // underlying used to leave the previous fetch running: its slow legs (the
   // option chain waits up to 10s) then landed afterwards and wrote the OLD
@@ -249,7 +240,6 @@ export function MarketPanel() {
       market.currency,
       spec.tenorYears,
       market.rate,
-      apiKey,
       () => fetchGeneration.current === generation,
     );
     if (fetchGeneration.current !== generation) return; // superseded
@@ -341,8 +331,8 @@ export function MarketPanel() {
         {quantoMismatch && (
           <div className="status-line warn">
             {market.quanto
-              ? 'Cross-currency note — quanto drift adjustment active.'
-              : `Underlying trades in ${underlyingCurrency}, note in ${market.currency} — quanto/composite effects are NOT modeled; prices assume a single currency.`}
+              ? 'Cross-currency note. Quanto drift adjustment is active.'
+              : `Underlying trades in ${underlyingCurrency}, note in ${market.currency}. Quanto and composite effects are not modelled, so prices assume a single currency.`}
           </div>
         )}
 
@@ -365,22 +355,9 @@ export function MarketPanel() {
         {volSource && (
           <div className="status-line" title={volSource.note ?? volSource.label}>
             Source: {volSource.label}
-            {volSource.note ? ` — ${volSource.note}` : ''}
+            {volSource.note ? `. ${volSource.note}` : ''}
           </div>
         )}
-        <div className="field">
-          <TextField
-            label="Alpha Vantage key (optional)"
-            value={apiKey}
-            placeholder="e.g. ABCD1234EFGH5678"
-            onChange={handleApiKeyChange}
-          />
-          <span className="text-muted" style={{ fontSize: 11 }}>
-            Unlocks a real end-of-day option chain instead of a realized-vol estimate. Free, under a
-            minute to claim: alphavantage.co/support/#api-key. Stored only in this browser, sent only to
-            alphavantage.co.
-          </span>
-        </div>
         <NumericField
           label="Rate"
           value={Number((market.rate * 100).toFixed(4))}

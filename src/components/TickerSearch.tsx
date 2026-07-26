@@ -39,7 +39,7 @@ export function TickerSearch({ ticker, displayName, onPick }: Props) {
         if (seq !== seqRef.current) return;
         setMatches(res);
         setHighlight(0);
-        if (res.length === 0) setError('No matches — try the exact ticker');
+        if (res.length === 0) setError('No matches. Try the exact ticker.');
       } catch (e) {
         if (seq !== seqRef.current) return;
         setMatches([]);

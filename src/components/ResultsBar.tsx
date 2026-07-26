@@ -117,7 +117,7 @@ export function ResultsBar() {
                 <span className="repricing-spinner" role="status" aria-label="Repricing" title="Repricing from cached paths" />
               )}
               {!showCachedSpinner && result.preview && !liveUnsolvable && (
-                <span className="live-badge" title="Reduced-path preview — settling to full precision">
+                <span className="live-badge" title="Preview, settling to full precision">
                   live
                 </span>
               )}

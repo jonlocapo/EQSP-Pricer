@@ -1,6 +1,8 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useTradeStore, type PageId } from './state/tradeStore';
 import { useResultsStore } from './state/resultsStore';
+import { useAccent, useAccentShortcut } from './hooks/useAccent';
+import { AccentPicker } from './components/AccentPicker';
 import { MarketPanel } from './components/MarketPanel';
 import { ResultsBar } from './components/ResultsBar';
 import { HistoryModal } from './components/HistoryModal';
@@ -20,6 +22,9 @@ export default function App() {
   const setActivePage = useTradeStore((s) => s.setActivePage);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [labOpen, setLabOpen] = useState(false);
+  const [accentOpen, setAccentOpen] = useState(false);
+  const { accentId, setAccentId } = useAccent();
+  useAccentShortcut(useCallback(() => setAccentOpen((open) => !open), []));
 
   return (
     <div className="app-shell">
@@ -48,7 +53,7 @@ export default function App() {
             className="btn btn-sm lab-launch-btn"
             type="button"
             onClick={() => setLabOpen(true)}
-            title="Contract Lab — experimental drag-and-drop pricing sandbox"
+            title="Contract Lab: build a payoff from blocks"
           >
             🧪 Lab
           </button>
@@ -72,6 +77,9 @@ export default function App() {
       <ResultsBar />
       {historyOpen && <HistoryModal onClose={() => setHistoryOpen(false)} />}
       {labOpen && <LabModal onClose={() => setLabOpen(false)} />}
+      {accentOpen && (
+        <AccentPicker accentId={accentId} onPick={setAccentId} onClose={() => setAccentOpen(false)} />
+      )}
     </div>
   );
 }
