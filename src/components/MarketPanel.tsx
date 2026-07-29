@@ -50,12 +50,19 @@ async function fetchLiveData(
   const lines: FetchLine[] = [];
   const store = useMarketStore.getState();
 
-  const spotP = fetchSpot(ticker);
-  const rateP = (REF_RATE_CCYS as readonly string[]).includes(noteCcy)
-    ? fetchRefRate(noteCcy)
-    : Promise.reject(new Error(`no open rate source for ${noteCcy}. Enter manually.`));
+  /** The reference rate for one currency, or a rejection naming the gap. */
+  const rateFor = (ccy: string) =>
+    (REF_RATE_CCYS as readonly string[]).includes(ccy)
+      ? fetchRefRate(ccy)
+      : Promise.reject(new Error(`no open rate source for ${ccy}. Enter manually.`));
 
-  const [spotR, rateR] = await Promise.allSettled([spotP, rateP]);
+  const spotP = fetchSpot(ticker);
+  // Start the rate OPTIMISTICALLY for the currency the note holds right now.
+  // In the common case the underlying keeps that currency and this costs no
+  // extra latency. When it does not, the optimistic answer is discarded below.
+  const optimisticP = rateFor(noteCcy);
+
+  const [spotR, optimisticR] = await Promise.allSettled([spotP, optimisticP]);
 
   let underlyingCcy: string | undefined;
   // The vol pipeline needs a spot even when the live spot fetch failed —
@@ -71,6 +78,17 @@ async function fetchLiveData(
   } else {
     lines.push({ kind: 'err', msg: `Spot: ${spotR.reason instanceof Error ? spotR.reason.message : 'failed'}` });
   }
+
+  // The rate MUST match the currency the note ends up in. The spot fetch is
+  // what discovers the underlying's currency, so a rate requested before it
+  // returned can be for the wrong one: picking a USD name into a EUR note used
+  // to write the EUR rate and label it "ECB EURSTR" on a USD note, silently
+  // mis-discounting every cashflow. So re-request whenever the currency moved.
+  const finalCcy = useMarketStore.getState().market.currency;
+  const rateR =
+    finalCcy === noteCcy
+      ? optimisticR
+      : await Promise.allSettled([rateFor(finalCcy)]).then(([r]) => r);
 
   if (rateR.status === 'fulfilled') {
     if (isCurrent()) {
@@ -248,6 +266,43 @@ export function MarketPanel() {
     setFetching(false);
   }
 
+  /** Newest manual currency change, so a quick double-switch cannot let the
+   * slower rate land after the faster one. */
+  const rateGeneration = useRef(0);
+
+  /**
+   * Changing the note currency changes which reference rate applies, so fetch
+   * it. A EUR rate left sitting on a JPY note is not a stale convenience, it is
+   * a wrong discount rate, and it silently mis-prices every cashflow. Failure
+   * is reported, never silent, and never overwrites with a guess.
+   */
+  async function handleCurrencyChange(next: string) {
+    if (next === market.currency) return;
+    setMarket({ currency: next });
+    const generation = ++rateGeneration.current;
+    if (!(REF_RATE_CCYS as readonly string[]).includes(next)) {
+      setFetchLines([{ kind: 'info', msg: `No open rate source for ${next}. Enter the rate manually.` }]);
+      return;
+    }
+    try {
+      const r = await fetchRefRate(next);
+      if (rateGeneration.current !== generation) return;
+      setMarket({ rate: r.rate });
+      setFetchLines([
+        {
+          kind: 'ok',
+          msg: `Rate ${(r.rate * 100).toFixed(3)}% · ${r.source} ${r.asOf}`,
+          short: `rate ${(r.rate * 100).toFixed(3)}%`,
+        },
+      ]);
+    } catch (e) {
+      if (rateGeneration.current !== generation) return;
+      setFetchLines([
+        { kind: 'err', msg: `Rate for ${next}: ${e instanceof Error ? e.message : 'failed'}` },
+      ]);
+    }
+  }
+
   const quantoMismatch = !!underlyingCurrency && underlyingCurrency !== market.currency;
 
   // Costs default to zero, a pure risk-neutral fair value. The badge makes
@@ -276,7 +331,7 @@ export function MarketPanel() {
           label="Currency"
           value={market.currency}
           options={CURRENCIES.map((c) => ({ value: c, label: c }))}
-          onChange={(v) => setMarket({ currency: v })}
+          onChange={(v) => void handleCurrencyChange(v)}
         />
         <TickerSearch
           ticker={ticker}
