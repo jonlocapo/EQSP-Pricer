@@ -578,7 +578,13 @@ function effectiveMarketFor(
 ): { market: MarketData; basis: PricingBasis } {
   const feePct = market.costs?.feePct ?? 0;
   const dr = discountRate(market);
-  if (!market.volSurface) {
+  // A dead-flat surface (no strike skew — see VolSurface.isFlat) returns the
+  // same vol at every strike, so reading market.vol directly is numerically
+  // IDENTICAL to reading the surface at the risk strike (see
+  // tests/costsAndSkew.test.ts's flat-surface-vs-no-surface parity check).
+  // Treat it exactly like "no surface": same code path, and the reporting
+  // says so honestly instead of claiming a skew that is not there.
+  if (!market.volSurface || market.volSurface.isFlat) {
     return {
       market,
       basis: { volUsed: market.vol, volSource: 'flat', discountRate: dr, feePct },

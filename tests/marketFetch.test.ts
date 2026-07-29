@@ -6,6 +6,9 @@ import {
   fetchFxRealizedVolAndCorr,
   fetchHistVol,
   fetchRefRate,
+  parseBojTona,
+  parseFredLatestPercent,
+  parseSnbSaron,
   realizedCorrelation,
 } from '../src/services/marketFetch';
 import { fetchImpliedFromOptions } from '../src/services/impliedFetch';
@@ -31,8 +34,37 @@ live('marketFetch (live network)', () => {
     expect(r.source).toContain('SOFR');
   });
 
+  it('fetches SONIA for GBP', async () => {
+    const r = await fetchRefRate('GBP');
+    expect(Number.isFinite(r.rate)).toBe(true);
+    expect(r.rate).toBeGreaterThan(-0.01);
+    expect(r.rate).toBeLessThan(0.15);
+    expect(r.source).toContain('SONIA');
+    expect(r.asOf).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it('fetches SARON for CHF', async () => {
+    const r = await fetchRefRate('CHF');
+    expect(Number.isFinite(r.rate)).toBe(true);
+    // CHF policy rates go negative, so the band floors well below zero.
+    expect(r.rate).toBeGreaterThan(-0.01);
+    expect(r.rate).toBeLessThan(0.15);
+    expect(r.source).toContain('SARON');
+    expect(r.asOf).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it('fetches TONA for JPY', async () => {
+    const r = await fetchRefRate('JPY');
+    expect(Number.isFinite(r.rate)).toBe(true);
+    // JPY rates can legitimately sit near zero or slightly negative.
+    expect(r.rate).toBeGreaterThan(-0.01);
+    expect(r.rate).toBeLessThan(0.15);
+    expect(r.source).toContain('TONA');
+    expect(r.asOf).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
   it('rejects unsupported currencies with a friendly message', async () => {
-    await expect(fetchRefRate('JPY')).rejects.toThrow(/manually/);
+    await expect(fetchRefRate('SEK')).rejects.toThrow(/manually/);
   });
 
   it('estimates 1Y historical vol for AAPL', async () => {
@@ -79,7 +111,112 @@ live('marketFetch (live network)', () => {
 // Always-on tests: no network required.
 describe('marketFetch (offline)', () => {
   it('throws for currencies without an open source', async () => {
-    await expect(fetchRefRate('CHF')).rejects.toThrow(/Enter the rate manually/i);
+    await expect(fetchRefRate('SEK')).rejects.toThrow(/Enter the rate manually/i);
+  });
+
+  describe('parseFredLatestPercent (BoE SONIA via FRED)', () => {
+    // Real shape of https://fred.stlouisfed.org/graph/fredgraph.csv?id=IUDSOIA
+    const FIXTURE = ['observation_date,IUDSOIA', '2026-07-21,3.7302', '2026-07-22,3.7303', '2026-07-23,3.7310', '2026-07-24,3.7307'].join(
+      '\n',
+    );
+
+    it('picks the latest row and keeps the value in percent form', () => {
+      const { asOf, ratePercent } = parseFredLatestPercent(FIXTURE);
+      expect(asOf).toBe('2026-07-24');
+      expect(ratePercent).toBeCloseTo(3.7307, 6);
+    });
+
+    it('skips a trailing FRED "." placeholder for a not-yet-published day', () => {
+      const withGap = `${FIXTURE}\n2026-07-27,.`;
+      const { asOf, ratePercent } = parseFredLatestPercent(withGap);
+      expect(asOf).toBe('2026-07-24');
+      expect(ratePercent).toBeCloseTo(3.7307, 6);
+    });
+
+    it('throws rather than returning 0 for an empty body', () => {
+      expect(() => parseFredLatestPercent('observation_date,IUDSOIA')).toThrow(/empty|no numeric/i);
+      expect(() => parseFredLatestPercent('')).toThrow(/empty|no numeric/i);
+    });
+
+    it('throws rather than returning NaN when every row is a placeholder', () => {
+      expect(() => parseFredLatestPercent('observation_date,IUDSOIA\n2026-07-24,.')).toThrow(/no numeric/i);
+    });
+  });
+
+  describe('parseSnbSaron', () => {
+    // Real shape of https://data.snb.ch/api/cube/snbgwdzid/data/json/en?dimSel=D0(SARON)
+    const FIXTURE = JSON.stringify({
+      timeseries: [
+        {
+          header: [{ dim: 'Overview', dimItem: 'SARON fixing at the close of the trading day' }],
+          metadata: { key: 'EPB@SNB.snbgwdzid{SARON}', frequency: 'P1D_L', scale: '', unit: 'In percent' },
+          values: [
+            { date: '2026-07-21', value: -0.04 },
+            { date: '2026-07-22', value: -0.04 },
+            { date: '2026-07-23', value: -0.04 },
+            { date: '2026-07-24', value: -0.04 },
+          ],
+        },
+      ],
+    });
+
+    it('picks the latest observation and keeps a negative rate negative', () => {
+      const { asOf, ratePercent } = parseSnbSaron(FIXTURE);
+      expect(asOf).toBe('2026-07-24');
+      expect(ratePercent).toBeCloseTo(-0.04, 6);
+    });
+
+    it('throws rather than returning 0 for an empty values array', () => {
+      expect(() =>
+        parseSnbSaron(JSON.stringify({ timeseries: [{ values: [] }] })),
+      ).toThrow(/no SARON value/);
+    });
+
+    it('throws for a malformed body instead of yielding NaN', () => {
+      expect(() => parseSnbSaron('{}')).toThrow(/no SARON value/);
+      expect(() => parseSnbSaron('not json')).toThrow();
+    });
+  });
+
+  describe('parseBojTona', () => {
+    // Real shape of https://www.stat-search.boj.or.jp/api/v1/getDataCode
+    // (db=FM01, code=STRDCLUCON), trimmed to a few days including the
+    // weekend nulls the live series actually returns.
+    const FIXTURE = JSON.stringify({
+      STATUS: 200,
+      MESSAGEID: 'M181000I',
+      MESSAGE: 'Successfully completed',
+      RESULTSET: [
+        {
+          SERIES_CODE: 'STRDCLUCON',
+          NAME_OF_TIME_SERIES: 'Call Rate, Uncollateralized Overnight, Average (Daily)',
+          UNIT: 'percent per annum',
+          FREQUENCY: 'DAILY',
+          VALUES: {
+            SURVEY_DATES: [20260723, 20260724, 20260725, 20260726, 20260727],
+            VALUES: [0.727, 0.728, null, null, 0.727],
+          },
+        },
+      ],
+    });
+
+    it('picks the latest non-null day, skipping weekend nulls', () => {
+      const { asOf, ratePercent } = parseBojTona(FIXTURE);
+      expect(asOf).toBe('2026-07-27');
+      expect(ratePercent).toBeCloseTo(0.727, 6);
+    });
+
+    it('throws rather than returning 0 when every value is null', () => {
+      const allNull = JSON.stringify({
+        RESULTSET: [{ VALUES: { SURVEY_DATES: [20260726, 20260727], VALUES: [null, null] } }],
+      });
+      expect(() => parseBojTona(allNull)).toThrow(/no TONA value/);
+    });
+
+    it('throws for a malformed body instead of yielding NaN', () => {
+      expect(() => parseBojTona('{}')).toThrow(/no TONA value/);
+      expect(() => parseBojTona('not json')).toThrow();
+    });
   });
 
   it('computes annualized vol from synthetic closes', () => {

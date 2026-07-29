@@ -3,6 +3,7 @@ import { executePriceRequest } from '../src/worker/pricing';
 import type { PricingHooks } from '../src/worker/pricing';
 import { __clearPathCacheForTests } from '../src/engine/pathCache';
 import { buildVolSurface } from '../src/model/volSurface';
+import { buildRealizedSurface } from '../src/model/realizedSurface';
 import type { CostParams, MarketData } from '../src/model/market';
 import type { CouponProductSpec } from '../src/model/product';
 
@@ -178,5 +179,68 @@ describe('volatility skew — pricing at the risk strike instead of ATM', () => 
     // coupon UP, measured about +4.7 on this note. Skew makes the model MORE
     // aggressive. So skew is not what explains a bank quoting less.
     expect(skewed).toBeGreaterThan(flat);
+  });
+});
+
+describe('a dead-flat surface prices IDENTICALLY to no surface at all, and is reported as such', () => {
+  beforeEach(() => __clearPathCacheForTests());
+
+  // Built the same way volPipeline's flatSurface helper builds one: zero
+  // skew, zero excess kurtosis, so buildRealizedSurface's own isFlat
+  // detection marks it true (see model/realizedSurface.ts).
+  const flatVolSurface = buildRealizedSurface(
+    baseMarket.spot,
+    { terms: [{ tYears: 1, vol: baseMarket.vol }], skewDaily: 0, excessKurtDaily: 0 },
+    'test flat',
+  );
+
+  it('is flagged isFlat', () => {
+    expect(flatVolSurface.isFlat).toBe(true);
+  });
+
+  it('reports volSource "flat", not "surface", for a dead-flat surface', async () => {
+    const res = await executePriceRequest(
+      {
+        id: 't',
+        product: spec,
+        market: { ...baseMarket, volSurface: flatVolSurface },
+        mc: { numPaths: 20_000, seed: 42, antithetic: true },
+        solve: { kind: 'none' },
+        greeks: false,
+      },
+      hooks,
+    );
+    expect(res!.basis!.volSource).toBe('flat');
+    expect(res!.basis!.volUsed).toBeCloseTo(baseMarket.vol, 12);
+    expect(res!.basis!.riskStrikePct).toBeUndefined();
+  });
+
+  it('prices IDENTICALLY (bit-for-bit) whether the flat surface is attached or omitted — not just close', async () => {
+    __clearPathCacheForTests();
+    const withoutSurface = await executePriceRequest(
+      {
+        id: 't',
+        product: spec,
+        market: baseMarket,
+        mc: { numPaths: 20_000, seed: 42, antithetic: true },
+        solve: { kind: 'none' },
+        greeks: false,
+      },
+      hooks,
+    );
+    __clearPathCacheForTests();
+    const withFlatSurface = await executePriceRequest(
+      {
+        id: 't',
+        product: spec,
+        market: { ...baseMarket, volSurface: flatVolSurface },
+        mc: { numPaths: 20_000, seed: 42, antithetic: true },
+        solve: { kind: 'none' },
+        greeks: false,
+      },
+      hooks,
+    );
+    expect(withFlatSurface!.pvPct).toBe(withoutSurface!.pvPct);
+    expect(withFlatSurface!.stderrPct).toBe(withoutSurface!.stderrPct);
   });
 });

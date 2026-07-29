@@ -44,6 +44,39 @@ export function axisValues(base: number, step: number, count: number): number[] 
 }
 
 /**
+ * The solve targets the CURRENT terms can actually reach.
+ *
+ * Offering a target the spec cannot support fills the whole grid with "no
+ * solution": solving for a call barrier means nothing when the note has no call
+ * schedule. The product pages already gate their SOLVE chips this way (see
+ * `canCallBarrier` and friends in pages/CouponPage.tsx), so the grid applies
+ * the same rules rather than offering a choice that cannot work.
+ */
+export function solvableKinds(spec: ProductSpec): SolveTarget['kind'][] {
+  if (spec.kind === 'coupon') {
+    // Under issuerCallable the engine prices by LSMC and solves for nothing.
+    if (spec.callType === 'issuerCallable') return ['none'];
+    const kinds: SolveTarget['kind'][] = ['none', 'couponPa', 'putStrike'];
+    if (spec.acCouponType !== 'none') kinds.push('acCouponPa');
+    if (spec.couponType !== 'fixed') kinds.push('couponBarrier');
+    if (spec.callType === 'constant' || spec.callType === 'stepdown') kinds.push('callBarrier');
+    if (spec.barrierType !== 'none') kinds.push('kiBarrier');
+    return kinds;
+  }
+  if (spec.kind === 'participation') {
+    const kinds: SolveTarget['kind'][] = ['none', 'gearing', 'upsideStrike'];
+    if (spec.upside.variant.variant === 'callSpread') kinds.push('upperStrike');
+    if (spec.upside.variant.variant === 'koRebate') kinds.push('upsideKoBarrier', 'rebate');
+    // A bonus and a twin-win both depend on the knock-in condition, so neither
+    // is solvable while the downside leg is always live.
+    if (spec.downside.barrierType !== 'none') kinds.push('bonusLevel', 'twinWin');
+    return kinds;
+  }
+  if (spec.kind === 'accumulator') return ['strike', 'upfront', 'koTrigger'];
+  return ['none'];
+}
+
+/**
  * The client's-eye direction for a solve target: does a HIGHER solved value
  * read as better value, or a LOWER one? Cells shade from this, darker toward
  * "better". Returns 'none' when there is no single correct direction, so the
@@ -93,7 +126,11 @@ export function betterDirection(target: SolveTarget, spec: ProductSpec): 'higher
       // unshaded rather than guess.
       return 'none';
     case 'none':
-      return 'none';
+      // Not a solve at all: the cell holds the PRICE, a PV as a percent of
+      // notional. A higher PV means the note is worth more for the reoffer the
+      // client pays, so higher is better on the client frame this whole table
+      // uses.
+      return 'higher';
   }
 }
 

@@ -3,8 +3,9 @@
  * keyless, so they are limited:
  *  - Historical (realized) volatility from Stooq daily closes. This is a
  *    rough starting point for the vol input, NOT implied vol.
- *  - Official overnight reference rates: ECB €STR (EUR) and NY Fed SOFR
- *    (USD). These are daily fixings, not a live curve.
+ *  - Official overnight reference rates: ECB €STR (EUR), NY Fed SOFR (USD),
+ *    BoE SONIA (GBP, via FRED), SNB SARON (CHF), and BoJ TONA (JPY). These
+ *    are daily fixings, not a live curve.
  * Everything here is a suggestion. Manual override always wins.
  */
 import { fetchTextWithCorsFallback } from './spotFetch';
@@ -137,9 +138,95 @@ export interface RefRateResult {
 const ESTR_URL =
   'https://data-api.ecb.europa.eu/service/data/EST/B.EU000A2X2A25.WT?lastNObservations=1&format=csvdata';
 const SOFR_URL = 'https://markets.newyorkfed.org/api/rates/secured/sofr/last/1.json';
+/** FRED's keyless CSV endpoint, series IUDSOIA. This is the Bank of England
+ * SONIA fixing, mirrored onto FRED, so it needs no BoE-specific parsing. */
+const SONIA_SERIES = 'IUDSOIA';
+/** SNB data portal cube for the SARON daily fixing at the close of the
+ * trading day. This cube always answers with the last 5 observations, so
+ * the request needs no date filter. */
+const SARON_URL = 'https://data.snb.ch/api/cube/snbgwdzid/data/json/en?dimSel=D0(SARON)';
+/** BoJ Time-Series Data Search API. DB FM01 is the Uncollateralized
+ * Overnight Call Rate; series STRDCLUCON is the daily average, which is
+ * TONA (also called TONAR). */
+const TONA_SERIES_CODE = 'STRDCLUCON';
+
+/** Days since epoch shifted back by `days`, as an ISO calendar date
+ * (YYYY-MM-DD). Used to bound the FRED CSV request to a small recent
+ * window instead of pulling the full multi-decade history. */
+function isoDateDaysAgo(days: number): string {
+  return new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+}
+
+/** Days since epoch shifted back by `days`, as a BoJ-style YYYYMM start
+ * date. The BoJ API takes daily series start dates in monthly granularity,
+ * so a request from a month ago safely covers the recent fixings even
+ * across a long holiday gap. */
+function bojStartDateYYYYMM(days: number): string {
+  const d = new Date(Date.now() - days * 86_400_000);
+  return `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+/**
+ * Parses the FRED fredgraph.csv body for a single-series request into the
+ * latest (date, decimal rate) pair. FRED marks a missing observation with
+ * "." rather than a number, so the loop walks backward and skips any row
+ * that does not parse as a finite number. This picks the most recent real
+ * fixing instead of a missing-value placeholder.
+ */
+export function parseFredLatestPercent(text: string): { asOf: string; ratePercent: number } {
+  const lines = text.trim().split('\n');
+  if (lines.length < 2) throw new Error('empty FRED response');
+  let latest: { asOf: string; ratePercent: number } | null = null;
+  for (let i = 1; i < lines.length; i++) {
+    const [date, raw] = lines[i].split(',');
+    const value = Number(raw);
+    if (date && Number.isFinite(value)) latest = { asOf: date, ratePercent: value };
+  }
+  if (!latest) throw new Error('no numeric observation in FRED response');
+  return latest;
+}
+
+/**
+ * Parses the SNB data-portal JSON body for the SARON cube into the latest
+ * (date, decimal rate) pair. The cube already answers with only the most
+ * recent observations, so the last entry in the array is the latest one.
+ */
+export function parseSnbSaron(text: string): { asOf: string; ratePercent: number } {
+  const data = JSON.parse(text) as {
+    timeseries?: { values?: { date: string; value: number }[] }[];
+  };
+  const values = data.timeseries?.[0]?.values ?? [];
+  const last = values[values.length - 1];
+  if (!last || !Number.isFinite(last.value)) throw new Error('no SARON value in SNB response');
+  return { asOf: last.date, ratePercent: last.value };
+}
+
+/**
+ * Parses the BoJ Time-Series Data Search JSON body for the FM01
+ * uncollateralized overnight call rate series into the latest (date,
+ * decimal rate) pair. Weekend and holiday rows come back as `null`, so the
+ * loop walks the parallel date/value arrays and keeps the last finite one.
+ */
+export function parseBojTona(text: string): { asOf: string; ratePercent: number } {
+  const data = JSON.parse(text) as {
+    RESULTSET?: { VALUES?: { SURVEY_DATES?: number[]; VALUES?: (number | null)[] } }[];
+  };
+  const series = data.RESULTSET?.[0]?.VALUES;
+  const dates = series?.SURVEY_DATES ?? [];
+  const rates = series?.VALUES ?? [];
+  let latest: { asOf: number; ratePercent: number } | null = null;
+  for (let i = 0; i < rates.length; i++) {
+    const v = rates[i];
+    if (typeof v === 'number' && Number.isFinite(v)) latest = { asOf: dates[i], ratePercent: v };
+  }
+  if (!latest) throw new Error('no TONA value in BoJ response');
+  const digits = String(latest.asOf);
+  const asOf = `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
+  return { asOf, ratePercent: latest.ratePercent };
+}
 
 /** Currencies with a keyless official reference-rate source. */
-export const REF_RATE_CCYS = ['EUR', 'USD'] as const;
+export const REF_RATE_CCYS = ['EUR', 'USD', 'GBP', 'CHF', 'JPY'] as const;
 
 export async function fetchRefRate(currency: string): Promise<RefRateResult> {
   if (currency === 'EUR') {
@@ -165,6 +252,25 @@ export async function fetchRefRate(currency: string): Promise<RefRateResult> {
       asOf: r.effectiveDate,
       source: proxied ? 'NY Fed SOFR (proxied)' : 'NY Fed SOFR',
     };
+  }
+  if (currency === 'GBP') {
+    const url = `https://fred.stlouisfed.org/graph/fredgraph.csv?id=${SONIA_SERIES}&cosd=${isoDateDaysAgo(20)}`;
+    const { text, proxied } = await fetchTextWithCorsFallback(url, 8000, looksLikeCsv);
+    const { asOf, ratePercent } = parseFredLatestPercent(text);
+    return { rate: ratePercent / 100, asOf, source: proxied ? 'BoE SONIA (proxied)' : 'BoE SONIA' };
+  }
+  if (currency === 'CHF') {
+    const { text, proxied } = await fetchTextWithCorsFallback(SARON_URL, 8000, (t) => t.trimStart().startsWith('{'));
+    const { asOf, ratePercent } = parseSnbSaron(text);
+    return { rate: ratePercent / 100, asOf, source: proxied ? 'SNB SARON (proxied)' : 'SNB SARON' };
+  }
+  if (currency === 'JPY') {
+    const url =
+      `https://www.stat-search.boj.or.jp/api/v1/getDataCode?format=json&lang=en&db=FM01` +
+      `&code=${TONA_SERIES_CODE}&startDate=${bojStartDateYYYYMM(35)}`;
+    const { text, proxied } = await fetchTextWithCorsFallback(url, 8000, (t) => t.trimStart().startsWith('{'));
+    const { asOf, ratePercent } = parseBojTona(text);
+    return { rate: ratePercent / 100, asOf, source: proxied ? 'BoJ TONA (proxied)' : 'BoJ TONA' };
   }
   throw new Error(`No open reference-rate source for ${currency}. Enter the rate manually.`);
 }

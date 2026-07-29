@@ -12,9 +12,13 @@ export interface SpotFetchResult {
  * a CORS proxy, such as marketdata.app, which already sends
  * `access-control-allow-origin: *`.
  */
-export async function fetchWithTimeout(url: string, ms: number): Promise<string> {
+export async function fetchWithTimeout(url: string, ms: number, external?: AbortSignal): Promise<string> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
+  // A caller can cancel this attempt early, which is how a hedged race stops
+  // the losers as soon as one relay answers.
+  const onExternalAbort = () => controller.abort();
+  external?.addEventListener('abort', onExternalAbort);
   try {
     const res = await fetch(url, { signal: controller.signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -24,6 +28,7 @@ export async function fetchWithTimeout(url: string, ms: number): Promise<string>
     throw e;
   } finally {
     clearTimeout(timer);
+    external?.removeEventListener('abort', onExternalAbort);
   }
 }
 
@@ -41,28 +46,116 @@ const PROXIES = [
 ];
 
 /**
- * Fetch text, retrying through public CORS proxies when the origin does
- * not send CORS headers (Yahoo, Stooq, ECB, CBOE). Returns the body and
- * whether a proxy was used. `isValid` guards against 200-with-garbage
- * responses, such as bot challenges or proxy error pages, so they count
- * as failures.
+ * The route that last worked for a given origin, remembered for the session.
+ *
+ * Index 0 is the direct request; 1 and up index PROXIES. Without this every
+ * fetch restarts at the top of the list and re-pays the failure of any dead
+ * route ahead of the live one. Keyed per ORIGIN, because a relay that serves
+ * Yahoo happily may still refuse the ECB.
+ */
+const preferredRoute = new Map<string, number>();
+
+function originOf(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return url;
+  }
+}
+
+/** Milliseconds to wait for the current route before ALSO starting the next
+ * one. Short enough that a slow relay does not decide the user's latency,
+ * long enough that a healthy one answers alone and the others are never
+ * started. */
+const DEFAULT_HEDGE_MS = 700;
+
+/**
+ * Fetch text, falling back through public CORS relays when the origin does not
+ * send CORS headers (Yahoo, Stooq, ECB, CBOE). Returns the body and whether a
+ * relay was used. `isValid` guards against 200-with-garbage responses, such as
+ * bot challenges or relay error pages, so they count as failures.
+ *
+ * Routes are HEDGED, not tried strictly in turn. The previous version awaited
+ * each route to completion before starting the next, so one slow or dead relay
+ * cost its whole timeout before anything else was attempted, and the worst case
+ * was the SUM of five timeouts. Interactive callers, above all ticker search,
+ * paid that on every keystroke.
+ *
+ * Now the preferred route starts immediately, the next one starts after
+ * `hedgeMs` if no answer has arrived, and so on. The first valid response wins
+ * and cancels the rest, so latency becomes the FASTEST responder rather than
+ * the sum of the failures ahead of it. The winner is remembered for that
+ * origin, so later fetches usually succeed on the first route with no hedging
+ * at all.
  */
 export async function fetchTextWithCorsFallback(
   url: string,
   ms = 5000,
   isValid: (text: string) => boolean = () => true,
+  hedgeMs = DEFAULT_HEDGE_MS,
 ): Promise<{ text: string; proxied: boolean }> {
-  let lastErr: unknown;
-  for (const wrap of [null, ...PROXIES]) {
-    try {
-      const text = await fetchWithTimeout(wrap ? wrap(url) : url, ms);
-      if (!isValid(text)) throw new Error('unexpected response body');
-      return { text, proxied: wrap !== null };
-    } catch (e) {
-      lastErr = e;
+  const targets: (((u: string) => string) | null)[] = [null, ...PROXIES];
+  const origin = originOf(url);
+  const preferred = preferredRoute.get(origin) ?? 0;
+  // Preferred route first, then the rest in their declared order.
+  const order = [preferred, ...targets.map((_, i) => i).filter((i) => i !== preferred)];
+
+  return new Promise<{ text: string; proxied: boolean }>((resolve, reject) => {
+    const controllers: AbortController[] = [];
+    let settled = false;
+    let started = 0;
+    let failed = 0;
+    let lastErr: unknown;
+    let hedgeTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const finish = () => {
+      if (hedgeTimer) clearTimeout(hedgeTimer);
+      for (const c of controllers) c.abort();
+    };
+
+    const scheduleHedge = () => {
+      if (hedgeTimer) clearTimeout(hedgeTimer);
+      if (started >= order.length) return;
+      hedgeTimer = setTimeout(startNext, hedgeMs);
+    };
+
+    function startNext(): void {
+      if (settled || started >= order.length) return;
+      const idx = order[started++];
+      const wrap = targets[idx];
+      const controller = new AbortController();
+      controllers.push(controller);
+      scheduleHedge();
+      fetchWithTimeout(wrap ? wrap(url) : url, ms, controller.signal)
+        .then((text) => {
+          if (settled) return;
+          if (!isValid(text)) throw new Error('unexpected response body');
+          settled = true;
+          preferredRoute.set(origin, idx);
+          finish();
+          resolve({ text, proxied: idx !== 0 });
+        })
+        .catch((e) => {
+          if (settled) return;
+          lastErr = e;
+          failed++;
+          // A failure frees the slot immediately; do not wait out the hedge.
+          if (started < order.length) startNext();
+          else if (failed === order.length) {
+            settled = true;
+            finish();
+            reject(lastErr instanceof Error ? lastErr : new Error('fetch failed'));
+          }
+        });
     }
-  }
-  throw lastErr instanceof Error ? lastErr : new Error('fetch failed');
+
+    startNext();
+  });
+}
+
+/** Clears the remembered routes. Tests only. */
+export function __resetPreferredRoutes(): void {
+  preferredRoute.clear();
 }
 
 function parseStooqCsv(csv: string): { close: number; date: string } {

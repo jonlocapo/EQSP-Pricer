@@ -34,6 +34,7 @@ import { fetchOptionChainMarketData } from './marketDataApp';
 import { impliedFromChain } from './optionChain';
 import { fetchImpliedFromOptions } from './impliedFetch';
 import { fetchRealizedStats } from './marketFetch';
+import { fetchRealizedVolStats, type RealizedVolStatsResult } from './realizedVolFetch';
 import { fetchVolIndexLevel, volIndexSymbolFor } from './volIndex';
 
 export type VolSourceKind =
@@ -169,8 +170,11 @@ async function runLadder(args: VolPipelineArgs): Promise<VolPipelineResult> {
   // Rung 1: marketdata.app chain, keyless.
   try {
     const chain = await fetchOptionChainMarketData(symbol, tenorYears, spot);
-    const surface = buildVolSurface(chain);
+    // Parity FIRST: the dividend yield it derives is an INPUT the vol
+    // inversion needs (see buildVolSurface's opts), not just an output
+    // reported alongside it. Order matters.
     const implied = impliedFromChain(chain, rate, tenorYears);
+    const surface = buildVolSurface(chain, { rate, divYield: implied.divYield });
     return {
       surface,
       atmVol: implied.atmVol,
@@ -184,8 +188,12 @@ async function runLadder(args: VolPipelineArgs): Promise<VolPipelineResult> {
 
   // Rung 2: the existing keyless chain path (Yahoo v7, then CBOE).
   try {
+    // fetchImpliedFromOptions already runs impliedFromChain internally to
+    // get r.divYield (parity on prices), before this ever touches
+    // buildVolSurface — see impliedFetch.ts. Reuse it rather than deriving
+    // it twice.
     const r = await fetchImpliedFromOptions(symbol, tenorYears, rate);
-    const surface = buildVolSurface(r.chain);
+    const surface = buildVolSurface(r.chain, { rate, divYield: r.divYield });
     return {
       surface,
       atmVol: r.atmVol,
@@ -204,12 +212,24 @@ async function runLadder(args: VolPipelineArgs): Promise<VolPipelineResult> {
   // used to throw out of the whole pipeline, which left the pricer with no
   // surface at all whenever the daily-close fetch was rate-limited or blocked.
   // It now falls through to the flat rungs, which need no price history.
-  let realized: Awaited<ReturnType<typeof fetchRealizedStats>> | undefined;
+  //
+  // The OHLC path (Yang-Zhang level + GARCH(1,1) term structure — see
+  // ./realizedVolFetch.ts) is tried first, because it is the genuine model:
+  // range-based instead of close-only, and mean-reverting instead of four
+  // overlapping trailing windows. `fetchRealizedStats` (close-only,
+  // trailing windows) is the fallback when the OHLC fetch itself fails, for
+  // example a source that serves close but not open/high/low.
+  let realized: RealizedVolStatsResult | Awaited<ReturnType<typeof fetchRealizedStats>> | undefined;
   try {
-    realized = await fetchRealizedStats(symbol);
+    realized = await fetchRealizedVolStats(symbol);
   } catch {
-    realized = undefined;
+    try {
+      realized = await fetchRealizedStats(symbol);
+    } catch {
+      realized = undefined;
+    }
   }
+  const modelLabel = realized && 'modelLabel' in realized ? realized.modelLabel : 'close-to-close (trailing windows)';
 
   if (realized) {
     // Rung 3: a listed vol index for THIS underlying.
@@ -224,8 +244,8 @@ async function runLadder(args: VolPipelineArgs): Promise<VolPipelineResult> {
           surface,
           atmVol: volAtPctOfSpot(surface, 100, tenorYears),
           kind: 'vol-index',
-          label: `${idx.symbol}-scaled realized`,
-          note: `Realized moments scaled by a ${ratio.toFixed(2)}x ${idx.symbol}/realized premium`,
+          label: `${idx.symbol}-scaled realized (${modelLabel})`,
+          note: `Realized moments (${modelLabel}) scaled by a ${ratio.toFixed(2)}x ${idx.symbol}/realized premium`,
         };
       } catch {
         // Fall through to the market-wide ratio.
@@ -243,11 +263,11 @@ async function runLadder(args: VolPipelineArgs): Promise<VolPipelineResult> {
         surface,
         atmVol: volAtPctOfSpot(surface, 100, tenorYears),
         kind: 'realized-scaled',
-        label: 'VIX-scaled realized',
+        label: `VIX-scaled realized (${modelLabel})`,
         // Rung 3 either found no index for this name or could not fetch the
         // one it found. Both land here, so the note names the substitute
         // rather than claiming a reason it cannot know.
-        note: `Applied the broad-market ${marketRatio.toFixed(2)}x VIX/realized premium, because no vol index reading was available for "${symbol}"`,
+        note: `Realized moments (${modelLabel}) scaled by the broad-market ${marketRatio.toFixed(2)}x VIX/realized premium, because no vol index reading was available for "${symbol}"`,
       };
     } catch {
       // Fall through to plain realized, the last rung that uses history.
@@ -259,7 +279,7 @@ async function runLadder(args: VolPipelineArgs): Promise<VolPipelineResult> {
       surface,
       atmVol: volAtPctOfSpot(surface, 100, tenorYears),
       kind: 'realized',
-      label: realized.source,
+      label: `${realized.source} (${modelLabel})`,
       note: 'Realized vol carries no volatility risk premium, so it typically sits below traded implied levels',
     };
   }
