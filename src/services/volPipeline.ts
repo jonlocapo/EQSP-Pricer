@@ -169,8 +169,11 @@ async function runLadder(args: VolPipelineArgs): Promise<VolPipelineResult> {
   // Rung 1: marketdata.app chain, keyless.
   try {
     const chain = await fetchOptionChainMarketData(symbol, tenorYears, spot);
-    const surface = buildVolSurface(chain);
+    // Parity FIRST: the dividend yield it derives is an INPUT the vol
+    // inversion needs (see buildVolSurface's opts), not just an output
+    // reported alongside it. Order matters.
     const implied = impliedFromChain(chain, rate, tenorYears);
+    const surface = buildVolSurface(chain, { rate, divYield: implied.divYield });
     return {
       surface,
       atmVol: implied.atmVol,
@@ -184,8 +187,12 @@ async function runLadder(args: VolPipelineArgs): Promise<VolPipelineResult> {
 
   // Rung 2: the existing keyless chain path (Yahoo v7, then CBOE).
   try {
+    // fetchImpliedFromOptions already runs impliedFromChain internally to
+    // get r.divYield (parity on prices), before this ever touches
+    // buildVolSurface — see impliedFetch.ts. Reuse it rather than deriving
+    // it twice.
     const r = await fetchImpliedFromOptions(symbol, tenorYears, rate);
-    const surface = buildVolSurface(r.chain);
+    const surface = buildVolSurface(r.chain, { rate, divYield: r.divYield });
     return {
       surface,
       atmVol: r.atmVol,

@@ -154,5 +154,12 @@ export function buildRealizedSurface(
     return { tYears, points };
   });
 
-  return { spotRef: spot, slices, source };
+  // Flat when the EFFECTIVE skew and kurtosis, after the zero-floor above,
+  // both vanish: the Gram-Charlier factor then equals 1 at every strike, so
+  // every point on every slice carries the same vol as its own ATM level.
+  // A term structure can still vary maturity to maturity — "flat" here
+  // means no STRIKE skew, not a single number across the whole surface.
+  const isFlat = skewDailyUsed === 0 && moments.excessKurtDaily === 0;
+
+  return { spotRef: spot, slices, source, isFlat };
 }
