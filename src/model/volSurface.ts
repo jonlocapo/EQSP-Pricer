@@ -249,18 +249,42 @@ export function buildVolSurface(chain: ChainLike, opts?: BuildVolSurfaceOpts): V
   return { spotRef: chain.spot, slices, source: chain.source };
 }
 
-/** Linear-in-strike interpolation within one expiry, flat outside its range. */
-function ivAtStrike(slice: VolSlice, strike: number, _spotRef: number): number {
+/**
+ * Interpolation within one expiry: linear in LOG-MONEYNESS ln(K/spotRef),
+ * not raw strike, and linear in TOTAL VARIANCE (iv^2, maturity is fixed
+ * within one slice so iv^2 and iv^2*t share the same shape here), not raw
+ * vol. Flat outside the quoted range.
+ *
+ * WHY log-moneyness: strike is not the natural coordinate for a smile — a
+ * $10 move means something completely different at a $20 strike and at a
+ * $2000 strike, but the SAME log-moneyness move means the same thing at
+ * both. This is the standard SVI-style convention and it is also the same
+ * convention this file already uses across MATURITY (see `volAt`'s total-
+ * variance interpolation below); using raw strike for the strike axis while
+ * using variance for the time axis was an inconsistency.
+ *
+ * WHY total variance, not raw vol: variance is what actually enters the
+ * option price (through vol^2 * t), so it is the quantity a genuinely
+ * arbitrage-consistent interpolation should be linear in, not vol itself.
+ */
+function ivAtStrike(slice: VolSlice, strike: number, spotRef: number): number {
   const pts = slice.points;
-  if (strike <= pts[0].strike) return pts[0].iv;
+  const xAt = (k: number) => Math.log(Math.max(k, 1e-12) / spotRef);
+  const x = xAt(strike);
+  if (x <= xAt(pts[0].strike)) return pts[0].iv;
   const last = pts[pts.length - 1];
-  if (strike >= last.strike) return last.iv;
+  if (x >= xAt(last.strike)) return last.iv;
   for (let i = 1; i < pts.length; i++) {
     const a = pts[i - 1];
     const b = pts[i];
-    if (strike <= b.strike) {
-      const w = (strike - a.strike) / (b.strike - a.strike);
-      return a.iv + w * (b.iv - a.iv);
+    const bx = xAt(b.strike);
+    if (x <= bx) {
+      const ax = xAt(a.strike);
+      const w = (x - ax) / (bx - ax);
+      const varA = a.iv * a.iv;
+      const varB = b.iv * b.iv;
+      const variance = varA + w * (varB - varA);
+      return Math.sqrt(Math.max(0, variance));
     }
   }
   return last.iv;

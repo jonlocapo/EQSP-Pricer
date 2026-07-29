@@ -81,9 +81,23 @@ describe('volAt — strike interpolation', () => {
     expect(volAt(s, 120, 1)).toBeCloseTo(0.22, 12);
   });
 
-  it('interpolates linearly between quoted strikes', () => {
-    // Midway between 60 (0.36) and 80 (0.30).
-    expect(volAt(s, 70, 1)).toBeCloseTo(0.33, 12);
+  it('interpolates in log-moneyness and total variance between quoted strikes, not raw strike/vol', () => {
+    // Strike 70 is NOT the log-moneyness midpoint of 60 and 80 (that point
+    // is at spot*sqrt(0.6*0.8) ~= 69.28), and total-variance interpolation
+    // is not linear in vol either, so this is deliberately NOT the naive
+    // linear-in-strike answer (0.33) the old scheme gave. Recomputed
+    // directly from the interpolation this file documents: x = ln(70/100),
+    // weight w between ln(60/100) and ln(80/100), variance = iv^2
+    // interpolated by w, vol = sqrt(variance).
+    const x = Math.log(70 / 100);
+    const ax = Math.log(60 / 100);
+    const bx = Math.log(80 / 100);
+    const w = (x - ax) / (bx - ax);
+    const expected = Math.sqrt(0.36 * 0.36 + w * (0.3 * 0.3 - 0.36 * 0.36));
+    expect(volAt(s, 70, 1)).toBeCloseTo(expected, 12);
+    expect(volAt(s, 70, 1)).toBeCloseTo(0.3292124806, 9);
+    // Deliberately NOT the old linear-in-strike/linear-in-vol answer.
+    expect(volAt(s, 70, 1)).not.toBeCloseTo(0.33, 3);
   });
 
   it('holds the end vols flat outside the quoted range (never extrapolates)', () => {
