@@ -116,7 +116,19 @@ export async function fetchRealizedDivYield(symbol: string): Promise<DivYieldFet
     return { ...r, source: `${symbol} vs ${trSymbol}` };
   }
 
-  const { close, adjClose } = seriesFromYahooChart(await fetchChart(symbol));
+  return divYieldFromChartPayload(symbol, await fetchChart(symbol));
+}
+
+/**
+ * The single-name path, from a payload the caller ALREADY has.
+ *
+ * The vol model fetches two years of daily history for the same symbol (see
+ * ./ohlcFetch's fetchDailyChart), and the adjusted close needed here rides in
+ * that same response. So the pipeline passes the payload through rather than
+ * spending a second request on identical data.
+ */
+export function divYieldFromChartPayload(symbol: string, payload: unknown): DivYieldFetchResult {
+  const { close, adjClose } = seriesFromYahooChart(payload);
   if (!adjClose) {
     throw new Error(`Yahoo returned no adjusted close for "${symbol}", so dividends cannot be separated`);
   }
