@@ -134,6 +134,34 @@ async function getMarketVrpRatio(): Promise<number> {
 const DEFAULT_BUDGET_MS = 12_000;
 
 /**
+ * The bound on rungs 1 and 2 TOGETHER, the two that chase option chains.
+ *
+ * Without a bound of their own they starve the rungs that work. Measured worst
+ * case: rung 1 allows two 8 second fetches, and rung 2 tries Yahoo v7 then CBOE,
+ * each hedging four routes at 700 ms intervals with a 6 second timeout, so about
+ * 8 seconds each. That is up to 24 seconds for the two, which exceeds the whole
+ * ladder's budget, so the budget expired inside rung 2 and the pipeline returned
+ * the entered-vol rung even when price history was perfectly reachable. A chain
+ * that has not answered in this long is not going to.
+ */
+const CHAIN_BUDGET_MS = 3_000;
+
+/** Resolves to `undefined` if `work` has not finished within `ms`. The losing
+ * work is not cancelled, because these sources have no abort handle here; its
+ * result is simply discarded. */
+async function withDeadline<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), ms);
+  });
+  try {
+    return await Promise.race([work, deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * The terminal rung, computed without any network call so it can never fail.
  * Both the normal end of the ladder and the budget expiry return this.
  */
@@ -173,7 +201,33 @@ export async function fetchVolPipeline(args: VolPipelineArgs): Promise<VolPipeli
 }
 
 async function runLadder(args: VolPipelineArgs): Promise<VolPipelineResult> {
-  const { symbol, spot, tenorYears, rate, fallbackVol } = args;
+  const { symbol } = args;
+
+  // INVARIANT: the realized rungs must always get a chance to run, whatever the
+  // chain rungs do. They read different hosts, so serialising them only added
+  // their latencies together. Start the price-history fetch here and await it
+  // after the chain rungs, so by then it is already in flight or finished.
+  //
+  // The `catch` is attached immediately, not later: nothing awaits this promise
+  // for several seconds, and an early rejection would otherwise surface as an
+  // unhandled rejection.
+  const realizedP: Promise<RealizedVolStatsResult | Awaited<ReturnType<typeof fetchRealizedStats>> | undefined> =
+    fetchRealizedVolStats(symbol)
+      .catch(() => fetchRealizedStats(symbol))
+      .catch(() => undefined);
+
+  const chainResult = await withDeadline(chainRungs(args), CHAIN_BUDGET_MS);
+  if (chainResult) return chainResult;
+
+  return realizedRungs(args, await realizedP);
+}
+
+/**
+ * Rungs 1 and 2: a real option chain, which beats any model when it answers.
+ * Resolves to `undefined` when neither source produced one.
+ */
+async function chainRungs(args: VolPipelineArgs): Promise<VolPipelineResult | undefined> {
+  const { symbol, spot, tenorYears, rate } = args;
 
   // Rung 1: marketdata.app chain, keyless.
   try {
@@ -214,29 +268,26 @@ async function runLadder(args: VolPipelineArgs): Promise<VolPipelineResult> {
     // Fall through to the realized-based rungs.
   }
 
+  return undefined;
+}
+
+/**
+ * Rungs 3 to 7: the model built from price history, then the flat backstops.
+ *
+ * `realized` is whatever the price-history fetch produced, started before the
+ * chain rungs ran. Undefined means no history was reachable, which leaves only
+ * the flat rungs. The OHLC path (Yang-Zhang level plus GARCH(1,1) term
+ * structure, see ./realizedVolFetch.ts) is preferred over the close-only
+ * trailing windows, and that preference is expressed where the promise is
+ * built.
+ */
+async function realizedRungs(
+  args: VolPipelineArgs,
+  realized: RealizedVolStatsResult | Awaited<ReturnType<typeof fetchRealizedStats>> | undefined,
+): Promise<VolPipelineResult> {
+  const { symbol, spot, tenorYears, fallbackVol } = args;
   const ownIndexSymbol = volIndexSymbolFor(symbol);
 
-  // Rungs 3, 4 and 5 need this underlying's realized moments. A failure here
-  // used to throw out of the whole pipeline, which left the pricer with no
-  // surface at all whenever the daily-close fetch was rate-limited or blocked.
-  // It now falls through to the flat rungs, which need no price history.
-  //
-  // The OHLC path (Yang-Zhang level + GARCH(1,1) term structure — see
-  // ./realizedVolFetch.ts) is tried first, because it is the genuine model:
-  // range-based instead of close-only, and mean-reverting instead of four
-  // overlapping trailing windows. `fetchRealizedStats` (close-only,
-  // trailing windows) is the fallback when the OHLC fetch itself fails, for
-  // example a source that serves close but not open/high/low.
-  let realized: RealizedVolStatsResult | Awaited<ReturnType<typeof fetchRealizedStats>> | undefined;
-  try {
-    realized = await fetchRealizedVolStats(symbol);
-  } catch {
-    try {
-      realized = await fetchRealizedStats(symbol);
-    } catch {
-      realized = undefined;
-    }
-  }
   const modelLabel = realized && 'modelLabel' in realized ? realized.modelLabel : 'close-to-close (trailing windows)';
 
   // A dividend yield measured from price history, for the rungs that have no
