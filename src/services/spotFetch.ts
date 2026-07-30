@@ -33,15 +33,26 @@ export async function fetchWithTimeout(url: string, ms: number, external?: Abort
 }
 
 /**
- * Public CORS relays, tried in order after a direct request fails. None needs a
- * key. They are listed most-reliable-first and deliberately more than two deep:
- * these services rate-limit and disappear without notice, and a single dead
- * relay used to take the whole fetch down with it.
+ * Public CORS relays, hedged behind a direct request. None needs a key. Listed
+ * most-reliable-first and deliberately more than two deep: these services
+ * rate-limit and disappear without notice, and a single dead relay used to take
+ * the whole fetch down with it.
+ *
+ * corsproxy.io was removed after it began answering 403 with "Server-side
+ * requests are not allowed on your plan". That is a paywall, not a rate limit,
+ * so retrying it can never succeed and it only wasted a hedge slot.
+ *
+ * MEASURED STATE, and the reason this list should not be trusted: against a
+ * target that answered a direct request in 318 ms, allorigins returned 500
+ * after 12 seconds, codetabs timed out at 20 seconds, and thingproxy failed.
+ * All three do work intermittently. So the relay tier is a best effort, and any
+ * source that sends its own `access-control-allow-origin` should be preferred
+ * over anything reached through here. A small self-hosted relay would remove
+ * this whole class of failure.
  */
 const PROXIES = [
   (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
   (url: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
-  (url: string) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
   (url: string) => `https://thingproxy.freeboard.io/fetch/${url}`,
 ];
 
