@@ -30,15 +30,18 @@ import type { VolSurface } from './volSurface';
 const DAYS_PER_YEAR = 252;
 
 /** Keep a synthetic vol inside a sane band, both relative to its own ATM level
- * and absolutely, so a fat-tailed sample cannot produce a nonsense wing. */
-const MIN_REL = 0.4;
-const MAX_REL = 2.5;
-const MIN_ABS = 0.01;
-const MAX_ABS = 2.0;
+ * and absolutely, so a fat-tailed sample cannot produce a nonsense wing.
+ * Exported because ./skewSurface uses the same backstop band for its own
+ * clamp: two different smile shapes, one shared sanity check. */
+export const MIN_REL = 0.4;
+export const MAX_REL = 2.5;
+export const MIN_ABS = 0.01;
+export const MAX_ABS = 2.0;
 
 /** Strikes, as % of spot, the surface is tabulated at. Wide enough to cover the
- * barriers these products use without extrapolating. */
-const DEFAULT_STRIKE_PCTS = [50, 60, 70, 80, 90, 95, 100, 105, 110, 120, 140];
+ * barriers these products use without extrapolating. Exported so
+ * ./skewSurface tabulates at the same strikes. */
+export const DEFAULT_STRIKE_PCTS = [50, 60, 70, 80, 90, 95, 100, 105, 110, 120, 140];
 
 export interface RealizedMoments {
   /** Realized vol per horizon, ascending by tYears. At least one entry. */
@@ -98,7 +101,8 @@ export function realizedTermStructure(
   return terms;
 }
 
-function clampVol(v: number, atm: number): number {
+/** Exported so ./skewSurface clamps to the same backstop band. */
+export function clampVol(v: number, atm: number): number {
   return Math.min(MAX_ABS, Math.max(MIN_ABS, Math.min(atm * MAX_REL, Math.max(atm * MIN_REL, v))));
 }
 
