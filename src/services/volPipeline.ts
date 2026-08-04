@@ -35,6 +35,7 @@
  */
 import { buildVolSurface, volAtPctOfSpot, type VolSurface } from '../model/volSurface';
 import { buildRealizedSurface } from '../model/realizedSurface';
+import { buildSkewSurface, effectiveBeta1y } from '../model/skewSurface';
 import { applyVrp, nearestAnchorTerm, vrpRatio } from '../model/vrp';
 import { fetchOptionChainMarketData } from './marketDataApp';
 import { impliedFromChain } from './optionChain';
@@ -43,6 +44,7 @@ import { fetchRealizedStats } from './marketFetch';
 import { fetchRealizedVolStats, type RealizedVolStatsResult } from './realizedVolFetch';
 import { fetchVolIndexLevel, volIndexSymbolFor } from './volIndex';
 import { fetchRealizedDivYield } from './divYieldFetch';
+import { isIndexSymbol } from './symbols';
 
 export type VolSourceKind =
   | 'chain-free-marketdata'
@@ -285,7 +287,7 @@ async function realizedRungs(
   args: VolPipelineArgs,
   realized: RealizedVolStatsResult | Awaited<ReturnType<typeof fetchRealizedStats>> | undefined,
 ): Promise<VolPipelineResult> {
-  const { symbol, spot, tenorYears, fallbackVol } = args;
+  const { symbol, spot, tenorYears, rate, fallbackVol } = args;
   const ownIndexSymbol = volIndexSymbolFor(symbol);
 
   const modelLabel = realized && 'modelLabel' in realized ? realized.modelLabel : 'close-to-close (trailing windows)';
@@ -305,6 +307,32 @@ async function realizedRungs(
   } catch {
     // No total-return series for this underlying. Keep the entered yield.
   }
+  /**
+   * The smile for a realized-derived rung.
+   *
+   * The LEVEL and the TERM STRUCTURE stay exactly as the rung computed them,
+   * from Yang-Zhang plus GARCH with the risk-premium scaling. Only the SHAPE
+   * changes: it now comes from a direct slope in log-moneyness decaying as the
+   * square root of maturity, rather than from realized third and fourth
+   * moments through a Gram-Charlier expansion.
+   *
+   * Realized skewness is roughly an order of magnitude shallower than the
+   * risk-neutral skewness options actually price, and the wing it produced was
+   * therefore far too flat exactly where knock-in barriers sit. So this MOVES
+   * PRICES on any note with a barrier, and it moves them in the direction the
+   * economics say: a steeper downside wing means a more valuable short put and
+   * a higher solved coupon.
+   */
+  const smileFor = (terms: { tYears: number; vol: number }[], source: string) =>
+    buildSkewSurface(
+      spot,
+      terms,
+      effectiveBeta1y(isIndexSymbol(symbol)),
+      rate,
+      measuredDivYield ?? 0,
+      source,
+    );
+
   /** Appends the dividend provenance to a rung's note, so a MEASURED yield is
    * never applied silently. */
   const withDivNote = (note: string) => (divYieldNote ? `${note} · ${divYieldNote}` : note);
@@ -317,7 +345,7 @@ async function realizedRungs(
         const anchor = nearestAnchorTerm(realized.terms);
         const ratio = vrpRatio(idx.vol, anchor.vol);
         const scaled = applyVrp(realized, ratio);
-        const surface = buildRealizedSurface(spot, scaled, `${idx.symbol}-scaled realized`);
+        const surface = smileFor(scaled.terms, `${idx.symbol}-scaled realized`);
         return {
           surface,
           atmVol: volAtPctOfSpot(surface, 100, tenorYears),
@@ -337,7 +365,7 @@ async function realizedRungs(
     try {
       const marketRatio = await getMarketVrpRatio();
       const scaled = applyVrp(realized, marketRatio);
-      const surface = buildRealizedSurface(spot, scaled, 'VIX-scaled realized (market-wide premium)');
+      const surface = smileFor(scaled.terms, 'VIX-scaled realized (market-wide premium)');
       return {
         surface,
         atmVol: volAtPctOfSpot(surface, 100, tenorYears),
@@ -354,7 +382,7 @@ async function realizedRungs(
     }
 
     // Rung 5: plain realized vol, unscaled.
-    const surface = buildRealizedSurface(spot, realized, `${realized.source} surface`);
+    const surface = smileFor(realized.terms, `${realized.source} surface`);
     return {
       surface,
       atmVol: volAtPctOfSpot(surface, 100, tenorYears),
