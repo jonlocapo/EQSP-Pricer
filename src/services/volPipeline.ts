@@ -43,7 +43,7 @@ import { fetchImpliedFromOptions } from './impliedFetch';
 import { fetchRealizedStats } from './marketFetch';
 import { fetchRealizedVolStats, type RealizedVolStatsResult } from './realizedVolFetch';
 import { fetchVolIndexLevel, volIndexSymbolFor } from './volIndex';
-import { fetchRealizedDivYield } from './divYieldFetch';
+import { divYieldFromChartPayload, fetchRealizedDivYield } from './divYieldFetch';
 import { isIndexSymbol } from './symbols';
 
 export type VolSourceKind =
@@ -301,7 +301,16 @@ async function realizedRungs(
   let measuredDivYield: number | undefined;
   let divYieldNote: string | undefined;
   try {
-    const dy = await fetchRealizedDivYield(symbol);
+    // Prefer the payload the vol model already fetched. It is the SAME two
+    // years of the SAME symbol, and the adjusted close the yield needs rides in
+    // it, so refetching would spend a request on identical data. Fall back to a
+    // dedicated fetch only when there is no payload, which is the index case,
+    // where the yield genuinely needs a second symbol.
+    const payload = realized && 'payload' in realized ? realized.payload : undefined;
+    const dy =
+      payload !== undefined && !isIndexSymbol(symbol)
+        ? divYieldFromChartPayload(symbol, payload)
+        : await fetchRealizedDivYield(symbol);
     measuredDivYield = dy.divYield;
     divYieldNote = `div ${(dy.divYield * 100).toFixed(2)}% realized over ${dy.years.toFixed(1)}y (${dy.source})`;
   } catch {
