@@ -499,6 +499,12 @@ export function applySolveValue(spec: ProductSpec, target: SolveTarget, x: numbe
   }
 }
 
+/** The smallest gap the solver leaves between an accumulator's strike and its
+ * knock-out trigger. The validator only needs a strict inequality, but a strike
+ * a ten-thousandth of a point clear of the trigger is not an answer anyone
+ * wants, so the search stops a visible distance short. */
+const KO_STRIKE_GAP_PCT = 0.1;
+
 /**
  * Bracket and PV target for each solve variable.
  *
@@ -547,12 +553,40 @@ export function solveBounds(
       return { lo: 100.5, hi: 250, hardLo: 100.1, hardHi: 400, targetPct: reoffer };
     case 'rebate':
       return { lo: 0, hi: 50, hardLo: 0, hardHi: 100, targetPct: reoffer };
-    case 'strike':
-      return { lo: 50, hi: 200, hardLo: 10, hardHi: 250, targetPct: reoffer };
+    // Accumulator strike. The bracket must stay on the LEGAL side of the
+    // knock-out trigger, because the two have a required ordering that
+    // validateAccumulator enforces: accumulating knocks out ABOVE the strike,
+    // decumulating BELOW it.
+    //
+    // Without this the solver walked the strike straight through the trigger
+    // and returned a spec the app itself rejects. That is worse than an error,
+    // because the solved value is written back into the strike field, the field
+    // is greyed out precisely BECAUSE it is the solve target, and the now
+    // invalid spec disables live repricing. So the solver poisoned a field the
+    // user cannot edit and nothing recalculated again. Reported after setting a
+    // 500% funding spread, which pushed the strike below a 95% trigger.
+    //
+    // Bounding the search means an unreachable target throws "no solution",
+    // which is recoverable, instead of producing an illegal answer.
+    case 'strike': {
+      if (spec.kind !== 'accumulator') return { lo: 50, hi: 200, hardLo: 10, hardHi: 250, targetPct: reoffer };
+      const ko = spec.koTriggerPct;
+      return spec.direction === 'decumulate'
+        ? { lo: Math.max(50, ko + KO_STRIKE_GAP_PCT), hi: 200, hardLo: ko + KO_STRIKE_GAP_PCT, hardHi: 250, targetPct: reoffer }
+        : { lo: 50, hi: Math.min(200, ko - KO_STRIKE_GAP_PCT), hardLo: 10, hardHi: ko - KO_STRIKE_GAP_PCT, targetPct: reoffer };
+    }
     // Accumulator knock-out trigger. A more distant trigger keeps the trade
-    // alive longer, so it moves the upfront monotonically.
-    case 'koTrigger':
-      return { lo: 100.5, hi: 200, hardLo: 100.1, hardHi: 400, targetPct: reoffer };
+    // alive longer, so it moves the upfront monotonically. The same ordering
+    // applies from the other side, and the old bracket assumed accumulating:
+    // it searched at and above 100, which is the wrong side of spot entirely
+    // for a decumulator, whose trigger sits BELOW the strike.
+    case 'koTrigger': {
+      if (spec.kind !== 'accumulator') return { lo: 100.5, hi: 200, hardLo: 100.1, hardHi: 400, targetPct: reoffer };
+      const k = spec.strikePct;
+      return spec.direction === 'decumulate'
+        ? { lo: 10, hi: Math.max(10, k - KO_STRIKE_GAP_PCT), hardLo: 1, hardHi: k - KO_STRIKE_GAP_PCT, targetPct: reoffer }
+        : { lo: Math.min(200, k + KO_STRIKE_GAP_PCT), hi: 200, hardLo: k + KO_STRIKE_GAP_PCT, hardHi: 400, targetPct: reoffer };
+    }
     default:
       throw new Error(`solve target ${target.kind} has no bounds`);
   }
