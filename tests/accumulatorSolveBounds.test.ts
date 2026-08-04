@@ -34,7 +34,9 @@ const decumulator: AccumulatorSpec = {
   guaranteePeriods: 2,
 };
 
-/** Mirror image: knocks out ABOVE the strike, so the ordering flips. */
+/** Mirror image: knocks out ABOVE the strike, so the ordering flips. The
+ * bounds are INCLUSIVE at the trigger, since a strike sitting exactly on the
+ * knock-out is a real structure. */
 const accumulator: AccumulatorSpec = { ...decumulator, direction: 'accumulate', strikePct: 97, koTriggerPct: 110 };
 
 const market: MarketData = { spot: 80.21, vol: 0.18, rate: -0.0005, divYield: 0.02, currency: 'CHF' };
@@ -65,14 +67,14 @@ describe('accumulator solve bounds respect the knock-out ordering', () => {
     // what has to hold this, so an extreme input is the right test.
     for (const bp of [0, 5_000, 50_000]) {
       const strike = await solve(decumulator, 'strike', { fundingSpreadBp: bp, borrowCostBp: 0, feePct: 0 });
-      expect(strike).toBeGreaterThan(decumulator.koTriggerPct);
+      expect(strike).toBeGreaterThanOrEqual(decumulator.koTriggerPct);
       expect(validateAccumulator({ ...decumulator, strikePct: strike }, market).valid).toBe(true);
     }
   }, 60_000);
 
   it('keeps an accumulator strike below the trigger, the mirror case', async () => {
     const strike = await solve(accumulator, 'strike');
-    expect(strike).toBeLessThan(accumulator.koTriggerPct);
+    expect(strike).toBeLessThanOrEqual(accumulator.koTriggerPct);
     expect(validateAccumulator({ ...accumulator, strikePct: strike }, market).valid).toBe(true);
   }, 60_000);
 
@@ -80,7 +82,7 @@ describe('accumulator solve bounds respect the knock-out ordering', () => {
     // The old bracket was lo 100.5, hi 200 for both directions, which searched
     // entirely on the wrong side of spot for a decumulator.
     const ko = await solve(decumulator, 'koTrigger');
-    expect(ko).toBeLessThan(decumulator.strikePct);
+    expect(ko).toBeLessThanOrEqual(decumulator.strikePct);
     expect(validateAccumulator({ ...decumulator, koTriggerPct: ko }, market).valid).toBe(true);
   }, 60_000);
 
@@ -101,7 +103,7 @@ describe('accumulator solve bounds respect the knock-out ordering', () => {
       // Whatever it reports, it must have searched the LEGAL side.
       expect(message).toMatch(/\[9[0-9]|\[1[0-9][0-9]/);
     } else {
-      expect(ko).toBeGreaterThan(accumulator.strikePct);
+      expect(ko).toBeGreaterThanOrEqual(accumulator.strikePct);
       expect(validateAccumulator({ ...accumulator, koTriggerPct: ko }, market).valid).toBe(true);
     }
   }, 60_000);
@@ -121,7 +123,7 @@ describe('accumulator solve bounds respect the knock-out ordering', () => {
     if (solved === null) {
       expect(message).toMatch(/no solution|not reachable/i);
     } else {
-      expect(solved).toBeGreaterThan(impossible.koTriggerPct);
+      expect(solved).toBeGreaterThanOrEqual(impossible.koTriggerPct);
     }
   }, 60_000);
 });

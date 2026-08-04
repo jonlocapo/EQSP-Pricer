@@ -93,10 +93,14 @@ export function validateAccumulator(spec: AccumulatorSpec, market: MarketData): 
   const errors: FieldErrors = { ...commonErrors(1, spec.tenorYears), ...marketErrors(market) };
   delete errors.notional;
   if (!(spec.dailyShares > 0)) errors.dailyShares = 'Must be positive.';
+  // The trigger may sit exactly ON the strike. That is a real structure, the
+  // knock-out coinciding with the level being dealt at, so the comparison is
+  // inclusive. The same reasoning applies to an airbag, whose knock-in barrier
+  // legitimately equals its put strike (see validateCoupon).
   if (spec.direction === 'decumulate') {
-    if (!(spec.koTriggerPct < spec.strikePct)) errors.koTriggerPct = 'Trigger must be below strike.';
+    if (!(spec.koTriggerPct <= spec.strikePct)) errors.koTriggerPct = 'Trigger cannot be above strike.';
   } else {
-    if (!(spec.koTriggerPct > spec.strikePct)) errors.koTriggerPct = 'Trigger must be above strike.';
+    if (!(spec.koTriggerPct >= spec.strikePct)) errors.koTriggerPct = 'Trigger cannot be below strike.';
   }
   const valid = Object.keys(errors).length === 0;
   return { errors, valid };
