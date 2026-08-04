@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMarketStore } from '../state/marketStore';
-import { fetchSpot } from '../services/spotFetch';
+import { fetchSpot, recentRouteAttempts, type RouteAttempt } from '../services/spotFetch';
 import { fetchFxRealizedVolAndCorr, fetchRefRate, REF_RATE_CCYS } from '../services/marketFetch';
 import { fetchVolPipeline, type VolSourceKind } from '../services/volPipeline';
 import { useTradeStore } from '../state/tradeStore';
@@ -16,6 +16,37 @@ interface FetchLine {
   msg: string;
   /** Compact form used when rolling successful fetches into one summary line. */
   short?: string;
+}
+
+/** Render an elapsed time for a fetch log line: milliseconds under a second,
+ * one decimal of seconds above it, e.g. "412ms" or "3.2s". */
+function fmtMs(ms: number): string {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
+}
+
+/** Await a promise without changing its outcome, but also capture how long it
+ * took. Never rejects: a failing leg reports `ok: false` instead, so callers
+ * can build the fetch log's timing without a second try/catch around every
+ * leg. */
+function timed<T>(p: Promise<T>): Promise<{ ms: number } & ({ ok: true; value: T } | { ok: false; error: unknown })> {
+  const t0 = performance.now();
+  return p.then(
+    (value) => ({ ms: performance.now() - t0, ok: true as const, value }),
+    (error) => ({ ms: performance.now() - t0, ok: false as const, error }),
+  );
+}
+
+/** One line naming how many route attempts landed on each winner, e.g.
+ * "allorigins.win 3, direct 1" or "direct 2, failed 1" when a route
+ * exhausted every hedge. Grouped in first-seen order, not alphabetically, so
+ * the dominant route usually reads first. */
+function summarizeRoutes(attempts: RouteAttempt[]): string {
+  const counts = new Map<string, number>();
+  for (const a of attempts) {
+    const label = a.winner ?? 'failed';
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return [...counts.entries()].map(([label, n]) => `${label} ${n}`).join(', ');
 }
 
 /** Reported alongside the fetch lines, so the vol field can show which rung
@@ -50,6 +81,24 @@ async function fetchLiveData(
   const lines: FetchLine[] = [];
   const store = useMarketStore.getState();
 
+  // Timing for the whole call, and a snapshot of the diagnostics buffer taken
+  // before any leg starts, so the final summary line can identify exactly
+  // which route attempts belong to THIS fetch and not an earlier or
+  // concurrent one. Comparing by reference, not by count, stays correct even
+  // if the ring buffer wraps mid-call.
+  const callStart = performance.now();
+  const attemptsBefore = recentRouteAttempts();
+  const finalizeSummary = () => {
+    const totalMs = performance.now() - callStart;
+    const newAttempts = recentRouteAttempts().filter((a) => !attemptsBefore.includes(a));
+    const routeSummary = newAttempts.length > 0 ? summarizeRoutes(newAttempts) : 'no network route used';
+    const n = newAttempts.length;
+    lines.push({
+      kind: 'info',
+      msg: `${n} request${n === 1 ? '' : 's'} · ${routeSummary} · total ${fmtMs(totalMs)}`,
+    });
+  };
+
   /** The reference rate for one currency, or a rejection naming the gap. */
   const rateFor = (ccy: string) =>
     (REF_RATE_CCYS as readonly string[]).includes(ccy)
@@ -62,21 +111,26 @@ async function fetchLiveData(
   // extra latency. When it does not, the optimistic answer is discarded below.
   const optimisticP = rateFor(noteCcy);
 
-  const [spotR, optimisticR] = await Promise.allSettled([spotP, optimisticP]);
+  const [spotT, optimisticT] = await Promise.all([timed(spotP), timed(optimisticP)]);
 
   let underlyingCcy: string | undefined;
   // The vol pipeline needs a spot even when the live spot fetch failed —
   // fall back to whatever is already in the store (a manual entry, or a
   // previous fetch), same as the realized-surface builder always did.
   let spotForVol = store.market.spot;
-  if (spotR.status === 'fulfilled') {
-    underlyingCcy = spotR.value.currency;
-    spotForVol = spotR.value.spot;
-    if (!isCurrent()) return { lines };
-    store.applyFetchedSpot(spotR.value.spot, spotR.value.source, spotR.value.asOf, spotR.value.currency);
-    lines.push({ kind: 'ok', msg: `Spot ${spotR.value.spot} · ${spotR.value.source}`, short: `spot ${spotR.value.spot}` });
+  if (spotT.ok) {
+    underlyingCcy = spotT.value.currency;
+    spotForVol = spotT.value.spot;
+    if (!isCurrent()) { finalizeSummary(); return { lines }; }
+    store.applyFetchedSpot(spotT.value.spot, spotT.value.source, spotT.value.asOf, spotT.value.currency);
+    lines.push({
+      kind: 'ok',
+      msg: `Spot ${spotT.value.spot} · ${spotT.value.source} · ${fmtMs(spotT.ms)}`,
+      short: `spot ${spotT.value.spot}`,
+    });
   } else {
-    lines.push({ kind: 'err', msg: `Spot: ${spotR.reason instanceof Error ? spotR.reason.message : 'failed'}` });
+    const msg = spotT.error instanceof Error ? spotT.error.message : 'failed';
+    lines.push({ kind: 'err', msg: `Spot: ${msg} after ${fmtMs(spotT.ms)}` });
   }
 
   // The rate MUST match the currency the note ends up in. The spot fetch is
@@ -85,27 +139,26 @@ async function fetchLiveData(
   // to write the EUR rate and label it "ECB EURSTR" on a USD note, silently
   // mis-discounting every cashflow. So re-request whenever the currency moved.
   const finalCcy = useMarketStore.getState().market.currency;
-  const rateR =
-    finalCcy === noteCcy
-      ? optimisticR
-      : await Promise.allSettled([rateFor(finalCcy)]).then(([r]) => r);
+  const rateT = finalCcy === noteCcy ? optimisticT : await timed(rateFor(finalCcy));
 
-  if (rateR.status === 'fulfilled') {
+  if (rateT.ok) {
     if (isCurrent()) {
-      useMarketStore.setState((s) => ({ market: { ...s.market, rate: rateR.value.rate } }));
+      useMarketStore.setState((s) => ({ market: { ...s.market, rate: rateT.value.rate } }));
       lines.push({
         kind: 'ok',
-        msg: `Rate ${(rateR.value.rate * 100).toFixed(3)}% · ${rateR.value.source} ${rateR.value.asOf}`,
-        short: `rate ${(rateR.value.rate * 100).toFixed(3)}%`,
+        msg: `Rate ${(rateT.value.rate * 100).toFixed(3)}% · ${rateT.value.source} ${rateT.value.asOf} · ${fmtMs(rateT.ms)}`,
+        short: `rate ${(rateT.value.rate * 100).toFixed(3)}%`,
       });
     }
   } else {
-    lines.push({ kind: 'err', msg: `Rate: ${rateR.reason instanceof Error ? rateR.reason.message : 'failed'}` });
+    const msg = rateT.error instanceof Error ? rateT.error.message : 'failed';
+    lines.push({ kind: 'err', msg: `Rate: ${msg} after ${fmtMs(rateT.ms)}` });
   }
 
-  if (!isCurrent()) return { lines };
+  if (!isCurrent()) { finalizeSummary(); return { lines }; }
 
   let volSource: VolSourceInfo | undefined;
+  const volStart = performance.now();
   try {
     const vp = await fetchVolPipeline({
       symbol: ticker,
@@ -114,7 +167,8 @@ async function fetchLiveData(
       rate,
       fallbackVol: useMarketStore.getState().market.vol,
     });
-    if (!isCurrent()) return { lines };
+    const volMs = performance.now() - volStart;
+    if (!isCurrent()) { finalizeSummary(); return { lines }; }
 
     let skewMsg = '';
     try {
@@ -139,7 +193,8 @@ async function fetchLiveData(
         `Vol ${(vp.atmVol * 100).toFixed(2)}% · ${vp.label}` +
         (vp.divYield !== undefined ? `, div ${(vp.divYield * 100).toFixed(2)}%` : '') +
         skewMsg +
-        (vp.note ? ` · ${vp.note}` : ''),
+        (vp.note ? ` · ${vp.note}` : '') +
+        ` · ${fmtMs(volMs)}`,
       short: `vol ${(vp.atmVol * 100).toFixed(2)}%`,
     });
     if (vp.kind === 'realized' || vp.kind === 'realized-scaled' || vp.kind === 'vol-index') {
@@ -149,7 +204,9 @@ async function fetchLiveData(
       });
     }
   } catch (e) {
-    lines.push({ kind: 'err', msg: `Vol: ${e instanceof Error ? e.message : 'all sources failed'}` });
+    const volMs = performance.now() - volStart;
+    const msg = e instanceof Error ? e.message : 'all sources failed';
+    lines.push({ kind: 'err', msg: `Vol: ${msg} after ${fmtMs(volMs)}` });
     lines.push({ kind: 'info', msg: 'Div yield left as entered' });
   }
 
@@ -160,9 +217,11 @@ async function fetchLiveData(
   if (underlyingCcy && underlyingCcy !== noteCcy && isCurrent()) {
     const cur = useMarketStore.getState().market.quanto;
     if ((REF_RATE_CCYS as readonly string[]).includes(underlyingCcy)) {
+      const urStart = performance.now();
       try {
         const ur = await fetchRefRate(underlyingCcy);
-        if (!isCurrent()) return { lines, volSource };
+        const urMs = performance.now() - urStart;
+        if (!isCurrent()) { finalizeSummary(); return { lines, volSource }; }
         const latest = useMarketStore.getState().market.quanto;
         useMarketStore.getState().setQuanto({
           rateUnderlying: ur.rate,
@@ -171,19 +230,23 @@ async function fetchLiveData(
         });
         lines.push({
           kind: 'ok',
-          msg: `Underlying rate ${(ur.rate * 100).toFixed(3)}% · ${ur.source}`,
+          msg: `Underlying rate ${(ur.rate * 100).toFixed(3)}% · ${ur.source} · ${fmtMs(urMs)}`,
           short: `ul rate ${(ur.rate * 100).toFixed(3)}%`,
         });
       } catch (urErr) {
-        lines.push({ kind: 'info', msg: `Underlying rate: ${urErr instanceof Error ? urErr.message : 'failed'}. Enter manually.` });
+        const urMs = performance.now() - urStart;
+        const msg = urErr instanceof Error ? urErr.message : 'failed';
+        lines.push({ kind: 'info', msg: `Underlying rate: ${msg} after ${fmtMs(urMs)}. Enter manually.` });
       }
     } else {
       lines.push({ kind: 'info', msg: `No open rate source for ${underlyingCcy}. Set the underlying rate manually.` });
     }
 
+    const fxStart = performance.now();
     try {
       const fx = await fetchFxRealizedVolAndCorr(underlyingCcy, noteCcy, ticker);
-      if (!isCurrent()) return { lines, volSource };
+      const fxMs = performance.now() - fxStart;
+      if (!isCurrent()) { finalizeSummary(); return { lines, volSource }; }
       const latest = useMarketStore.getState().market.quanto;
       useMarketStore.getState().setQuanto({
         rateUnderlying: latest?.rateUnderlying ?? cur?.rateUnderlying ?? 0,
@@ -192,17 +255,20 @@ async function fetchLiveData(
       });
       lines.push({
         kind: 'ok',
-        msg: `FX vol ${(fx.fxVol * 100).toFixed(1)}%, eq-FX corr ${fx.corrEqFx.toFixed(2)} · ${fx.source}`,
+        msg: `FX vol ${(fx.fxVol * 100).toFixed(1)}%, eq-FX corr ${fx.corrEqFx.toFixed(2)} · ${fx.source} · ${fmtMs(fxMs)}`,
         short: `fx ${(fx.fxVol * 100).toFixed(1)}%/${fx.corrEqFx.toFixed(2)}`,
       });
     } catch (fxErr) {
+      const fxMs = performance.now() - fxStart;
+      const msg = fxErr instanceof Error ? fxErr.message : 'failed';
       lines.push({
         kind: 'info',
-        msg: `FX vol/correlation: ${fxErr instanceof Error ? fxErr.message : 'failed'}. Enter manually.`,
+        msg: `FX vol/correlation: ${msg} after ${fmtMs(fxMs)}. Enter manually.`,
       });
     }
   }
 
+  finalizeSummary();
   return { lines, volSource };
 }
 
