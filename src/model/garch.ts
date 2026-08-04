@@ -56,6 +56,17 @@ const DAYS_PER_YEAR = 252;
 /** RiskMetrics' standard EWMA decay for daily equity returns. */
 export const EWMA_LAMBDA = 0.94;
 
+/**
+ * Daily variance persistence used ONLY when the GARCH fit does not converge and
+ * an unconditional anchor is available. 0.97 is a typical equity figure, giving
+ * a half-life near 23 days, so a shock has largely decayed within a quarter.
+ *
+ * It is a default, not a measurement. It exists because assuming variance never
+ * reverts is a stronger and worse claim than assuming it reverts at roughly the
+ * usual speed.
+ */
+export const FALLBACK_PERSISTENCE = 0.97;
+
 export interface Garch11Params {
   omega: number;
   alpha: number;
@@ -257,8 +268,30 @@ export function garchTermStructure(
   const fit = fitGarch11(returns, targetVar);
 
   if (!fit.converged) {
-    const v = Math.max(0, ewmaVariance(returns));
-    const vol = Math.sqrt(v * DAYS_PER_YEAR);
+    // EWMA at lambda 0.94 has a half-life near 11 days, so it is a two to three
+    // week CONDITIONAL estimate. Holding it flat to every horizon extrapolates
+    // a recent shock across the whole life of the trade. Measured on a defensive
+    // staple that had moved sharply, that produced a 33% six-month vol against a
+    // long-run level near 15%, and once the risk premium was applied the note
+    // priced nowhere near a dealer quote.
+    //
+    // So when an unconditional anchor is available, revert toward it. Variance
+    // mean-reverts whether or not this particular sample let the fit converge,
+    // and refusing to model that is a stronger claim than modelling it with a
+    // default speed. The shape is the SAME closed form the converged branch
+    // uses, with a typical equity persistence in place of a fitted one, starting
+    // from the EWMA level and decaying to the anchor.
+    const shortVar = Math.max(0, ewmaVariance(returns));
+    if (targetVar !== undefined && targetVar > 0) {
+      const terms = horizonsDays.map((T) => {
+        const factor = (1 - Math.pow(FALLBACK_PERSISTENCE, T)) / (1 - FALLBACK_PERSISTENCE) / T;
+        const avgVar = targetVar + (shortVar - targetVar) * factor;
+        return { tYears: T / DAYS_PER_YEAR, vol: Math.sqrt(Math.max(0, avgVar) * DAYS_PER_YEAR) };
+      });
+      return { terms, converged: false };
+    }
+    // No anchor to revert to, so flat EWMA remains the honest answer.
+    const vol = Math.sqrt(shortVar * DAYS_PER_YEAR);
     return {
       terms: horizonsDays.map((d) => ({ tYears: d / DAYS_PER_YEAR, vol })),
       converged: false,
