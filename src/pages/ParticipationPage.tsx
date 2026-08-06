@@ -243,7 +243,7 @@ export function ParticipationPage() {
           label="Notional"
           value={spec.notional}
           step={10000}
-          suffix={spec.currency}
+          suffix={market.currency}
           onChange={(v) => patchSpec({ notional: v })}
           error={validation.errors.notional}
         />

@@ -102,12 +102,16 @@ export function gridTimesDigest(grid: PricingGrid): string {
 }
 
 /** Cache key: market data + MC settings + grid shape — everything path
- * generation depends on, and nothing product-specific. */
+ * generation depends on, and nothing product-specific. `volPerStep` is
+ * included: a per-step vol schedule changes every path, even when
+ * `market.vol` (the flat anchor) is unchanged. */
 export function computeCacheKey(p: CacheKeyParams): string {
   return stableStringify({
     spot: p.s0,
     vol: p.market.vol,
+    volPerStep: p.market.volPerStep,
     rate: p.market.rate,
+    rateCurve: p.market.rateCurve,
     divYield: p.market.divYield,
     quanto: p.market.quanto
       ? {

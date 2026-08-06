@@ -45,6 +45,7 @@ import { fetchRealizedVolStats, type RealizedVolStatsResult } from './realizedVo
 import { fetchVolIndexLevel, volIndexSymbolFor } from './volIndex';
 import { divYieldFromChartPayload, fetchRealizedDivYield } from './divYieldFetch';
 import { isIndexSymbol } from './symbols';
+import { trackingIndexDivYield } from './ohlcFetch';
 
 export type VolSourceKind =
   | 'chain-free-marketdata'
@@ -254,7 +255,7 @@ async function chainRungs(args: VolPipelineArgs): Promise<VolPipelineResult | un
   try {
     // fetchImpliedFromOptions already runs impliedFromChain internally to
     // get r.divYield (parity on prices), before this ever touches
-    // buildVolSurface — see impliedFetch.ts. Reuse it rather than deriving
+    // buildVolSurface Î“Ã‡Ã¶ see impliedFetch.ts. Reuse it rather than deriving
     // it twice.
     const r = await fetchImpliedFromOptions(symbol, tenorYears, rate);
     const surface = buildVolSurface(r.chain, { rate, divYield: r.divYield });
@@ -314,7 +315,18 @@ async function realizedRungs(
     measuredDivYield = dy.divYield;
     divYieldNote = `div ${(dy.divYield * 100).toFixed(2)}% realized over ${dy.years.toFixed(1)}y (${dy.source})`;
   } catch {
-    // No total-return series for this underlying. Keep the entered yield.
+    // No total-return series for this underlying. A PRICE INDEX with no
+    // total-return counterpart (e.g. ^STOXX50E, which has no ^...TR twin on
+    // Yahoo) cannot use the pair-of-indices method at all. Fall back to its
+    // tracking ETF's adjusted close â€” the yield comes out net of the fund
+    // fee, and the note says so â€” see trackingIndexDivYield.
+    if (isIndexSymbol(symbol)) {
+      const etfDiv = await trackingIndexDivYield(symbol);
+      if (etfDiv) {
+        measuredDivYield = etfDiv.divYield;
+        divYieldNote = `div ${(etfDiv.divYield * 100).toFixed(2)}% from ${etfDiv.etf} adjusted close (net of fund fee)`;
+      }
+    }
   }
   /**
    * The smile for a realized-derived rung.
@@ -359,7 +371,7 @@ async function realizedRungs(
           surface,
           atmVol: volAtPctOfSpot(surface, 100, tenorYears),
           divYield: measuredDivYield,
-        kind: 'vol-index',
+                  kind: 'vol-index',
           label: `${idx.symbol}-scaled realized (${modelLabel})`,
           note: withDivNote(`Realized moments (${modelLabel}) scaled by a ${ratio.toFixed(2)}x ${idx.symbol}/realized premium`),
         };
@@ -379,7 +391,7 @@ async function realizedRungs(
         surface,
         atmVol: volAtPctOfSpot(surface, 100, tenorYears),
         divYield: measuredDivYield,
-      kind: 'realized-scaled',
+        kind: 'realized-scaled',
         label: `VIX-scaled realized (${modelLabel})`,
         // Rung 3 either found no index for this name or could not fetch the
         // one it found. Both land here, so the note names the substitute
@@ -396,7 +408,7 @@ async function realizedRungs(
       surface,
       atmVol: volAtPctOfSpot(surface, 100, tenorYears),
       divYield: measuredDivYield,
-    kind: 'realized',
+      kind: 'realized',
       label: `${realized.source} (${modelLabel})`,
       note: withDivNote('Realized vol carries no volatility risk premium, so it typically sits below traded implied levels'),
     };
