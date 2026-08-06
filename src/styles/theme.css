@@ -108,6 +108,10 @@ body {
   font-size: 13.5px;
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
+  /* Safety net, not the fix. Every wide element (tables, the pricing grid,
+   * modals) must scroll inside its own container — see app.css. This rule
+   * only stops a missed case from pushing the whole page sideways. */
+  overflow-x: hidden;
 }
 
 input,

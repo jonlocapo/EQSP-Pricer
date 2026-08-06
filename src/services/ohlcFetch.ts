@@ -71,14 +71,34 @@ export function barsFromYahooChart(json: unknown): Bar[] {
  * the same chart endpoint and CORS-fallback transport as spot and hist-vol.
  */
 export async function fetchDailyBars(yahooSymbol: string): Promise<Bar[]> {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=${RANGE}&interval=1d`;
+  return (await fetchDailyChart(yahooSymbol)).bars;
+}
+
+export interface DailyChart {
+  bars: Bar[];
+  /** The raw parsed payload, so a second consumer does not have to refetch it.
+   * The chart response carries the ADJUSTED close alongside open/high/low/close,
+   * and the dividend yield is measured from the gap between the two (see
+   * ../model/divYield). Both wanted the same two years of the same symbol, so
+   * fetching twice spent a request for nothing, which matters because Yahoo
+   * rate-limits per IP and one Fetch press already makes several calls. */
+  payload: unknown;
+}
+
+/**
+ * One chart request, parsed once, serving every consumer that wants daily
+ * history for this symbol. Prefer this over calling the endpoint again.
+ */
+export async function fetchDailyChart(yahooSymbol: string): Promise<DailyChart> {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=${RANGE}&interval=1d&events=div`;
   let text: string;
   try {
     ({ text } = await fetchTextWithCorsFallback(url, 8000, (t) => t.trimStart().startsWith('{')));
   } catch (e) {
     throw new Error(`Daily OHLC bars unavailable for "${yahooSymbol}": ${e instanceof Error ? e.message : 'fetch failed'}`);
   }
-  const bars = barsFromYahooChart(JSON.parse(text));
+  const payload = JSON.parse(text);
+  const bars = barsFromYahooChart(payload);
   if (bars.length === 0) throw new Error(`No OHLC bars returned for "${yahooSymbol}"`);
-  return bars;
+  return { bars, payload };
 }

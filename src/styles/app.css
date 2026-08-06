@@ -96,6 +96,20 @@
   gap: 3px;
 }
 
+/* The market panel is a permanently narrow column, by design, at desktop
+ * widths. Its two-field rows already fit that width through ordinary flex
+ * shrinking, so exempt it from the wider `.field-row` floor below — that
+ * floor is sized for the roomier page cards, not this sidebar. On a phone
+ * the sidebar stacks to full width (see the mobile layout rules further
+ * down), so this shrink-only behaviour simply gets more room to work with. */
+.sidebar .field-row {
+  flex-wrap: nowrap;
+}
+
+.sidebar .field-row > .field {
+  min-width: 0;
+}
+
 .main-area {
   flex: 1;
   min-width: 0;
@@ -233,12 +247,16 @@
 
 .field-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
 }
 
+/* A field keeps a floor width so its value and its stepper arrows stay
+ * readable. Below that floor the row wraps a field onto its own line
+ * instead of squeezing it further (see the flex-wrap above). */
 .field-row > .field {
-  flex: 1;
-  min-width: 0;
+  flex: 1 1 140px;
+  min-width: 140px;
 }
 
 .field {
@@ -868,6 +886,9 @@ select.input:focus {
 
 .modal-body {
   overflow-y: auto;
+  /* The history table is wider than a phone screen. Scroll it inside this
+   * box, not the page body, without needing a dedicated wrapper element. */
+  overflow-x: auto;
   padding: 0;
 }
 
@@ -986,6 +1007,10 @@ select.input:focus {
 .schedule-scroll {
   max-height: 220px;
   overflow-y: auto;
+  /* The custom call schedule table, and the pricing grid that reuses this
+   * class, are both wider than a phone screen. Scroll the table inside this
+   * box instead of letting it push the page body sideways. */
+  overflow-x: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 0 4px;
@@ -1363,7 +1388,10 @@ select.input:focus {
 
 .pricing-grid-setup {
   display: grid;
-  grid-template-columns: repeat(3, minmax(140px, 1fr)) auto;
+  /* auto-fit lets the row drop to fewer columns as the container narrows —
+   * a fixed 3-column-plus-button track does not fit next to the sidebar at
+   * a tablet width, let alone on a phone. */
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 12px;
   align-items: end;
 }
@@ -1479,4 +1507,289 @@ select.input:focus {
 .pricing-grid-cell.no-solution {
   color: var(--danger, #dc2626);
   background: color-mix(in srgb, #dc2626 8%, var(--bg-elevated));
+}
+
+/* ---------- Mobile layout (phone-width viewports) ---------- */
+
+/*
+ * Below this width the sidebar and main area no longer fit side by side at
+ * a usable size, so they stack. The breakpoint sits under a tablet width
+ * (768px) on purpose: the fixed-width sidebar still has room to sit next to
+ * the main area at 768px, it just needed the pricing-grid and lab-layout
+ * fixes above so nothing inside either column overflows.
+ */
+@media (max-width: 640px) {
+  .app-header {
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    padding: 8px 12px;
+  }
+
+  .app-title {
+    order: 1;
+  }
+
+  .header-actions {
+    order: 2;
+    margin-left: auto;
+  }
+
+  /*
+   * The tab bar becomes its own full-width row below the title/actions row,
+   * and scrolls horizontally rather than shrinking tab labels until they
+   * clip. A tab is always reachable by a horizontal swipe, never cut off
+   * with no way to reach it.
+   */
+  .tab-bar {
+    order: 3;
+    flex-basis: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .tab-btn {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .app-body {
+    flex-direction: column;
+  }
+
+  /*
+   * Desktop gives the sidebar and main area their own independent
+   * scrollbars (two side-by-side panes, each internally scrollable) because
+   * they sit in a fixed-height row next to each other. Stacked into one
+   * column that pane-scrolling reads as broken: the sidebar traps its own
+   * scroll instead of the page just scrolling past it. Switch both to
+   * natural content height with normal overflow, so the whole stacked page
+   * scrolls as one, the way a phone page is expected to.
+   */
+  .sidebar,
+  .main-area {
+    overflow-y: visible;
+    max-height: none;
+  }
+
+  /*
+   * The market panel renders first in App.tsx, so it is already first in
+   * document order, and stacking the flex column puts it visually first
+   * too. It stays permanently visible rather than collapsible: the panel
+   * holds the spot/vol/rate inputs every price depends on, and a
+   * collapsed-by-default panel risks a user pricing off stale or
+   * default market data without noticing it is hidden. A plain scroll
+   * past it costs one swipe; a silently wrong market does not announce
+   * itself the same way.
+   */
+  .sidebar {
+    width: 100%;
+    max-height: none;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .main-area {
+    padding: 14px;
+    /* Taller reserve than desktop: the results bar can wrap onto two rows
+     * at this width (see .results-bar-row below), so the last form field
+     * needs more clearance to avoid sitting under it. */
+    padding-bottom: 190px;
+  }
+
+  .page-grid {
+    /* auto-fit with a 320px floor forces a column wider than the viewport
+     * itself once padding is subtracted. A single flexible column is the
+     * correct shape once there is only room for one anyway.
+     *
+     * minmax(0, 1fr), not a bare 1fr: a grid track's automatic minimum size
+     * is its content's min-content size unless told otherwise, so a bare
+     * 1fr still grows the column, and the whole page, to fit an
+     * unbreakable child (a field-row's flex-basis floor) instead of
+     * shrinking that child to the viewport. The 0 floor lets the track
+     * actually take the narrow width it was assigned. */
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+
+  /*
+   * A grid or flex item's default min-width is "auto" — its content's
+   * natural width, not the space actually available — so an ancestor
+   * between the grid track and a field-row silently refuses to shrink
+   * below that content width and blows the whole track (and the page)
+   * out past the viewport. Cut that chain at the card and field-group
+   * level, both grid/flex items in this path. Do NOT add `.field-row`
+   * or its `.field` children here: their min-width is the deliberate
+   * "do not shrink further" floor from the base `.field-row` rule
+   * above, and zeroing it here would silently defeat that floor for
+   * every phone-width screen, exactly where it matters most.
+   */
+  .page-grid > .card,
+  .field-group {
+    min-width: 0;
+  }
+
+  /* ---------- Results bar: keep it from eating the screen ---------- */
+
+  .results-bar {
+    left: 0;
+  }
+
+  .results-bar-row {
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    padding: 8px 12px;
+    min-height: 0;
+  }
+
+  .results-meta {
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    width: 100%;
+  }
+
+  .results-spacer {
+    display: none;
+  }
+
+  .results-detail {
+    grid-template-columns: 1fr;
+    max-height: 40vh;
+    padding: 12px 14px 14px;
+  }
+
+  .progress-wrap {
+    flex-wrap: wrap;
+  }
+
+  .progress-label {
+    min-width: 0;
+  }
+
+  /* ---------- Modals: full-screen with an always-reachable close ---------- */
+
+  .modal-backdrop {
+    padding-top: 0;
+  }
+
+  .modal,
+  .lab-modal {
+    width: 100vw;
+    max-width: 100vw;
+    height: 100dvh;
+    max-height: 100dvh;
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+  }
+
+  .lab-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .lab-palette {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding-right: 0;
+    padding-bottom: 12px;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .lab-price-bar {
+    flex-wrap: wrap;
+  }
+
+  .lab-price-bar .field-row {
+    max-width: none;
+    width: 100%;
+  }
+
+  .history-table th,
+  .history-table td {
+    padding: 8px 10px;
+  }
+
+  .accent-popover {
+    width: min(320px, 92vw);
+  }
+
+  .accent-row {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+}
+
+/* ---------- Touch targets ----------
+ *
+ * `(hover: none)` and `(pointer: coarse)` both hold on a touchscreen with no
+ * mouse, so this block never fires on a desktop with a trackpad or mouse,
+ * whatever the window width. Desktop appearance is untouched.
+ */
+@media (hover: none), (pointer: coarse) {
+  /*
+   * The stepper arrows are visually tiny by design, right against the input
+   * text, so they cannot simply grow without overlapping the value. Instead
+   * grow the tappable area with a transparent, oversized ::after that does
+   * not affect layout or how the button paints.
+   */
+  .field-steppers button {
+    position: relative;
+  }
+
+  .field-steppers button::after {
+    content: '';
+    position: absolute;
+    top: -10px;
+    bottom: -10px;
+    left: -12px;
+    right: -12px;
+  }
+
+  .segmented button {
+    padding: 12px 10px;
+    min-height: 44px;
+  }
+
+  .auto-toggle {
+    padding: 9px 11px;
+    min-height: 36px;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .chevron-btn {
+    width: 40px;
+    height: 40px;
+  }
+
+  .modal-header .btn {
+    min-height: 40px;
+    padding: 9px 14px;
+  }
+
+  .toggle {
+    width: 44px;
+    height: 26px;
+  }
+
+  .toggle .knob {
+    width: 22px;
+    height: 22px;
+  }
+
+  .toggle.on .knob {
+    transform: translateX(18px);
+  }
+
+  .history-group-arrow,
+  .pricing-grid-remove {
+    position: relative;
+  }
+
+  .history-group-arrow::after,
+  .pricing-grid-remove::after {
+    content: '';
+    position: absolute;
+    inset: -12px;
+  }
 }

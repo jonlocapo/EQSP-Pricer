@@ -1,6 +1,7 @@
 node_modules
 dist
-.claude
+.claude/*
+!.claude/skills/
 *.local
 .DS_Store
 docs

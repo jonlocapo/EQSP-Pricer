@@ -26,9 +26,16 @@
  *  7. Every source failed. A flat surface at the volatility already in the
  *     panel. This rung cannot fail, so the pipeline never throws and the
  *     pricer always has a usable surface.
+ *
+ * The DIVIDEND YIELD is measured separately, and independently of which rung
+ * wins. Rungs 1 and 2 imply it from the chain by put-call parity. The rest
+ * measure it from price history, as the gap between a total-return series and a
+ * price series (see ./divYieldFetch). So a note no longer prices on a stale
+ * typed yield just because no option chain was reachable.
  */
 import { buildVolSurface, volAtPctOfSpot, type VolSurface } from '../model/volSurface';
 import { buildRealizedSurface } from '../model/realizedSurface';
+import { buildSkewSurface, effectiveBeta1y } from '../model/skewSurface';
 import { applyVrp, nearestAnchorTerm, vrpRatio } from '../model/vrp';
 import { fetchOptionChainMarketData } from './marketDataApp';
 import { impliedFromChain } from './optionChain';
@@ -36,6 +43,8 @@ import { fetchImpliedFromOptions } from './impliedFetch';
 import { fetchRealizedStats } from './marketFetch';
 import { fetchRealizedVolStats, type RealizedVolStatsResult } from './realizedVolFetch';
 import { fetchVolIndexLevel, volIndexSymbolFor } from './volIndex';
+import { divYieldFromChartPayload, fetchRealizedDivYield } from './divYieldFetch';
+import { isIndexSymbol } from './symbols';
 
 export type VolSourceKind =
   | 'chain-free-marketdata'
@@ -50,8 +59,9 @@ export interface VolPipelineResult {
   surface: VolSurface;
   /** Decimal, at the requested tenor. */
   atmVol: number;
-  /** Only present when a chain gave one. The realized-derived rungs leave the
-   * caller's existing dividend yield untouched. */
+  /** From put-call parity when a chain gave one, otherwise MEASURED from price
+   * history (see ./divYieldFetch). Absent only when neither was possible, in
+   * which case the caller keeps whatever yield it already had. */
   divYield?: number;
   kind: VolSourceKind;
   /** Short human string for the UI, e.g. "marketdata.app (delayed)". */
@@ -126,6 +136,34 @@ async function getMarketVrpRatio(): Promise<number> {
 const DEFAULT_BUDGET_MS = 12_000;
 
 /**
+ * The bound on rungs 1 and 2 TOGETHER, the two that chase option chains.
+ *
+ * Without a bound of their own they starve the rungs that work. Measured worst
+ * case: rung 1 allows two 8 second fetches, and rung 2 tries Yahoo v7 then CBOE,
+ * each hedging four routes at 700 ms intervals with a 6 second timeout, so about
+ * 8 seconds each. That is up to 24 seconds for the two, which exceeds the whole
+ * ladder's budget, so the budget expired inside rung 2 and the pipeline returned
+ * the entered-vol rung even when price history was perfectly reachable. A chain
+ * that has not answered in this long is not going to.
+ */
+const CHAIN_BUDGET_MS = 3_000;
+
+/** Resolves to `undefined` if `work` has not finished within `ms`. The losing
+ * work is not cancelled, because these sources have no abort handle here; its
+ * result is simply discarded. */
+async function withDeadline<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), ms);
+  });
+  try {
+    return await Promise.race([work, deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * The terminal rung, computed without any network call so it can never fail.
  * Both the normal end of the ladder and the budget expiry return this.
  */
@@ -165,7 +203,33 @@ export async function fetchVolPipeline(args: VolPipelineArgs): Promise<VolPipeli
 }
 
 async function runLadder(args: VolPipelineArgs): Promise<VolPipelineResult> {
-  const { symbol, spot, tenorYears, rate, fallbackVol } = args;
+  const { symbol } = args;
+
+  // INVARIANT: the realized rungs must always get a chance to run, whatever the
+  // chain rungs do. They read different hosts, so serialising them only added
+  // their latencies together. Start the price-history fetch here and await it
+  // after the chain rungs, so by then it is already in flight or finished.
+  //
+  // The `catch` is attached immediately, not later: nothing awaits this promise
+  // for several seconds, and an early rejection would otherwise surface as an
+  // unhandled rejection.
+  const realizedP: Promise<RealizedVolStatsResult | Awaited<ReturnType<typeof fetchRealizedStats>> | undefined> =
+    fetchRealizedVolStats(symbol)
+      .catch(() => fetchRealizedStats(symbol))
+      .catch(() => undefined);
+
+  const chainResult = await withDeadline(chainRungs(args), CHAIN_BUDGET_MS);
+  if (chainResult) return chainResult;
+
+  return realizedRungs(args, await realizedP);
+}
+
+/**
+ * Rungs 1 and 2: a real option chain, which beats any model when it answers.
+ * Resolves to `undefined` when neither source produced one.
+ */
+async function chainRungs(args: VolPipelineArgs): Promise<VolPipelineResult | undefined> {
+  const { symbol, spot, tenorYears, rate } = args;
 
   // Rung 1: marketdata.app chain, keyless.
   try {
@@ -206,30 +270,81 @@ async function runLadder(args: VolPipelineArgs): Promise<VolPipelineResult> {
     // Fall through to the realized-based rungs.
   }
 
+  return undefined;
+}
+
+/**
+ * Rungs 3 to 7: the model built from price history, then the flat backstops.
+ *
+ * `realized` is whatever the price-history fetch produced, started before the
+ * chain rungs ran. Undefined means no history was reachable, which leaves only
+ * the flat rungs. The OHLC path (Yang-Zhang level plus GARCH(1,1) term
+ * structure, see ./realizedVolFetch.ts) is preferred over the close-only
+ * trailing windows, and that preference is expressed where the promise is
+ * built.
+ */
+async function realizedRungs(
+  args: VolPipelineArgs,
+  realized: RealizedVolStatsResult | Awaited<ReturnType<typeof fetchRealizedStats>> | undefined,
+): Promise<VolPipelineResult> {
+  const { symbol, spot, tenorYears, rate, fallbackVol } = args;
   const ownIndexSymbol = volIndexSymbolFor(symbol);
 
-  // Rungs 3, 4 and 5 need this underlying's realized moments. A failure here
-  // used to throw out of the whole pipeline, which left the pricer with no
-  // surface at all whenever the daily-close fetch was rate-limited or blocked.
-  // It now falls through to the flat rungs, which need no price history.
-  //
-  // The OHLC path (Yang-Zhang level + GARCH(1,1) term structure — see
-  // ./realizedVolFetch.ts) is tried first, because it is the genuine model:
-  // range-based instead of close-only, and mean-reverting instead of four
-  // overlapping trailing windows. `fetchRealizedStats` (close-only,
-  // trailing windows) is the fallback when the OHLC fetch itself fails, for
-  // example a source that serves close but not open/high/low.
-  let realized: RealizedVolStatsResult | Awaited<ReturnType<typeof fetchRealizedStats>> | undefined;
-  try {
-    realized = await fetchRealizedVolStats(symbol);
-  } catch {
-    try {
-      realized = await fetchRealizedStats(symbol);
-    } catch {
-      realized = undefined;
-    }
-  }
   const modelLabel = realized && 'modelLabel' in realized ? realized.modelLabel : 'close-to-close (trailing windows)';
+
+  // A dividend yield measured from price history, for the rungs that have no
+  // chain to imply one from. The yield enters the drift as
+  // `rate - divYield - borrow`, so leaving it at a stale typed value biases the
+  // forward and every price with it. Undefined when it cannot be measured,
+  // which leaves the caller's existing yield untouched rather than replacing it
+  // with a guess.
+  let measuredDivYield: number | undefined;
+  let divYieldNote: string | undefined;
+  try {
+    // Prefer the payload the vol model already fetched. It is the SAME two
+    // years of the SAME symbol, and the adjusted close the yield needs rides in
+    // it, so refetching would spend a request on identical data. Fall back to a
+    // dedicated fetch only when there is no payload, which is the index case,
+    // where the yield genuinely needs a second symbol.
+    const payload = realized && 'payload' in realized ? realized.payload : undefined;
+    const dy =
+      payload !== undefined && !isIndexSymbol(symbol)
+        ? divYieldFromChartPayload(symbol, payload)
+        : await fetchRealizedDivYield(symbol);
+    measuredDivYield = dy.divYield;
+    divYieldNote = `div ${(dy.divYield * 100).toFixed(2)}% realized over ${dy.years.toFixed(1)}y (${dy.source})`;
+  } catch {
+    // No total-return series for this underlying. Keep the entered yield.
+  }
+  /**
+   * The smile for a realized-derived rung.
+   *
+   * The LEVEL and the TERM STRUCTURE stay exactly as the rung computed them,
+   * from Yang-Zhang plus GARCH with the risk-premium scaling. Only the SHAPE
+   * changes: it now comes from a direct slope in log-moneyness decaying as the
+   * square root of maturity, rather than from realized third and fourth
+   * moments through a Gram-Charlier expansion.
+   *
+   * Realized skewness is roughly an order of magnitude shallower than the
+   * risk-neutral skewness options actually price, and the wing it produced was
+   * therefore far too flat exactly where knock-in barriers sit. So this MOVES
+   * PRICES on any note with a barrier, and it moves them in the direction the
+   * economics say: a steeper downside wing means a more valuable short put and
+   * a higher solved coupon.
+   */
+  const smileFor = (terms: { tYears: number; vol: number }[], source: string) =>
+    buildSkewSurface(
+      spot,
+      terms,
+      effectiveBeta1y(isIndexSymbol(symbol)),
+      rate,
+      measuredDivYield ?? 0,
+      source,
+    );
+
+  /** Appends the dividend provenance to a rung's note, so a MEASURED yield is
+   * never applied silently. */
+  const withDivNote = (note: string) => (divYieldNote ? `${note} · ${divYieldNote}` : note);
 
   if (realized) {
     // Rung 3: a listed vol index for THIS underlying.
@@ -239,13 +354,14 @@ async function runLadder(args: VolPipelineArgs): Promise<VolPipelineResult> {
         const anchor = nearestAnchorTerm(realized.terms);
         const ratio = vrpRatio(idx.vol, anchor.vol);
         const scaled = applyVrp(realized, ratio);
-        const surface = buildRealizedSurface(spot, scaled, `${idx.symbol}-scaled realized`);
+        const surface = smileFor(scaled.terms, `${idx.symbol}-scaled realized`);
         return {
           surface,
           atmVol: volAtPctOfSpot(surface, 100, tenorYears),
-          kind: 'vol-index',
+          divYield: measuredDivYield,
+        kind: 'vol-index',
           label: `${idx.symbol}-scaled realized (${modelLabel})`,
-          note: `Realized moments (${modelLabel}) scaled by a ${ratio.toFixed(2)}x ${idx.symbol}/realized premium`,
+          note: withDivNote(`Realized moments (${modelLabel}) scaled by a ${ratio.toFixed(2)}x ${idx.symbol}/realized premium`),
         };
       } catch {
         // Fall through to the market-wide ratio.
@@ -258,11 +374,12 @@ async function runLadder(args: VolPipelineArgs): Promise<VolPipelineResult> {
     try {
       const marketRatio = await getMarketVrpRatio();
       const scaled = applyVrp(realized, marketRatio);
-      const surface = buildRealizedSurface(spot, scaled, 'VIX-scaled realized (market-wide premium)');
+      const surface = smileFor(scaled.terms, 'VIX-scaled realized (market-wide premium)');
       return {
         surface,
         atmVol: volAtPctOfSpot(surface, 100, tenorYears),
-        kind: 'realized-scaled',
+        divYield: measuredDivYield,
+      kind: 'realized-scaled',
         label: `VIX-scaled realized (${modelLabel})`,
         // Rung 3 either found no index for this name or could not fetch the
         // one it found. Both land here, so the note names the substitute
@@ -274,13 +391,14 @@ async function runLadder(args: VolPipelineArgs): Promise<VolPipelineResult> {
     }
 
     // Rung 5: plain realized vol, unscaled.
-    const surface = buildRealizedSurface(spot, realized, `${realized.source} surface`);
+    const surface = smileFor(realized.terms, `${realized.source} surface`);
     return {
       surface,
       atmVol: volAtPctOfSpot(surface, 100, tenorYears),
-      kind: 'realized',
+      divYield: measuredDivYield,
+    kind: 'realized',
       label: `${realized.source} (${modelLabel})`,
-      note: 'Realized vol carries no volatility risk premium, so it typically sits below traded implied levels',
+      note: withDivNote('Realized vol carries no volatility risk premium, so it typically sits below traded implied levels'),
     };
   }
 
@@ -294,6 +412,7 @@ async function runLadder(args: VolPipelineArgs): Promise<VolPipelineResult> {
       return {
         surface: flatSurface(spot, idx.vol, tenorYears, `${idx.symbol} flat`),
         atmVol: idx.vol,
+        divYield: measuredDivYield,
         kind: 'vol-index-flat',
         label: `${idx.symbol} implied`,
         note: `No price history available, so the smile is flat at the ${idx.symbol} level`,

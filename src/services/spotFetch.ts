@@ -33,15 +33,26 @@ export async function fetchWithTimeout(url: string, ms: number, external?: Abort
 }
 
 /**
- * Public CORS relays, tried in order after a direct request fails. None needs a
- * key. They are listed most-reliable-first and deliberately more than two deep:
- * these services rate-limit and disappear without notice, and a single dead
- * relay used to take the whole fetch down with it.
+ * Public CORS relays, hedged behind a direct request. None needs a key. Listed
+ * most-reliable-first and deliberately more than two deep: these services
+ * rate-limit and disappear without notice, and a single dead relay used to take
+ * the whole fetch down with it.
+ *
+ * corsproxy.io was removed after it began answering 403 with "Server-side
+ * requests are not allowed on your plan". That is a paywall, not a rate limit,
+ * so retrying it can never succeed and it only wasted a hedge slot.
+ *
+ * MEASURED STATE, and the reason this list should not be trusted: against a
+ * target that answered a direct request in 318 ms, allorigins returned 500
+ * after 12 seconds, codetabs timed out at 20 seconds, and thingproxy failed.
+ * All three do work intermittently. So the relay tier is a best effort, and any
+ * source that sends its own `access-control-allow-origin` should be preferred
+ * over anything reached through here. A small self-hosted relay would remove
+ * this whole class of failure.
  */
 const PROXIES = [
   (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
   (url: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
-  (url: string) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
   (url: string) => `https://thingproxy.freeboard.io/fetch/${url}`,
 ];
 
@@ -100,6 +111,8 @@ export async function fetchTextWithCorsFallback(
   // Preferred route first, then the rest in their declared order.
   const order = [preferred, ...targets.map((_, i) => i).filter((i) => i !== preferred)];
 
+  const callStart = performance.now();
+
   return new Promise<{ text: string; proxied: boolean }>((resolve, reject) => {
     const controllers: AbortController[] = [];
     let settled = false;
@@ -133,6 +146,12 @@ export async function fetchTextWithCorsFallback(
           settled = true;
           preferredRoute.set(origin, idx);
           finish();
+          recordRouteAttempt({
+            origin,
+            winner: routeLabel(wrap, url),
+            ms: performance.now() - callStart,
+            routesStarted: started,
+          });
           resolve({ text, proxied: idx !== 0 });
         })
         .catch((e) => {
@@ -144,7 +163,15 @@ export async function fetchTextWithCorsFallback(
           else if (failed === order.length) {
             settled = true;
             finish();
-            reject(lastErr instanceof Error ? lastErr : new Error('fetch failed'));
+            const err = lastErr instanceof Error ? lastErr : new Error('fetch failed');
+            recordRouteAttempt({
+              origin,
+              winner: null,
+              ms: performance.now() - callStart,
+              routesStarted: started,
+              error: err.message,
+            });
+            reject(err);
           }
         });
     }
@@ -156,6 +183,58 @@ export async function fetchTextWithCorsFallback(
 /** Clears the remembered routes. Tests only. */
 export function __resetPreferredRoutes(): void {
   preferredRoute.clear();
+}
+
+/**
+ * One completed call to `fetchTextWithCorsFallback`, for diagnostics. This is
+ * the record a user's bug report cannot give us directly: which network route
+ * actually served the data, how long the call took end to end, and how many
+ * routes had to start before one worked. Route names read as the origin's
+ * label ('direct' or the relay's host), not the target's origin, so multiple
+ * calls to different data sources still show which relay carried them.
+ */
+export interface RouteAttempt {
+  /** Origin of the REQUESTED url, e.g. "https://query1.finance.yahoo.com". */
+  origin: string;
+  /** 'direct', a relay hostname, or null when every route failed. */
+  winner: string | null;
+  /** Total wall time for the call, in milliseconds. */
+  ms: number;
+  /** Count of routes started before the call settled. */
+  routesStarted: number;
+  /** Set only when every route failed: the last route's error message. */
+  error?: string;
+}
+
+/** Fixed-size ring buffer of the most recent route attempts. Old entries
+ * fall off the front so a long session cannot grow this without bound. */
+const ROUTE_ATTEMPT_LIMIT = 50;
+const routeAttempts: RouteAttempt[] = [];
+
+function recordRouteAttempt(attempt: RouteAttempt): void {
+  routeAttempts.push(attempt);
+  if (routeAttempts.length > ROUTE_ATTEMPT_LIMIT) routeAttempts.shift();
+}
+
+/** A route's short label for diagnostics: 'direct' for the plain request,
+ * else the relay's own host, e.g. "api.allorigins.win". */
+function routeLabel(wrap: ((u: string) => string) | null, url: string): string {
+  if (!wrap) return 'direct';
+  try {
+    return new URL(wrap(url)).host;
+  } catch {
+    return 'relay';
+  }
+}
+
+/** Snapshot of the most recent route attempts, oldest first. */
+export function recentRouteAttempts(): RouteAttempt[] {
+  return routeAttempts.slice();
+}
+
+/** Clears the diagnostics buffer. Tests only. */
+export function __clearRouteAttempts(): void {
+  routeAttempts.length = 0;
 }
 
 function parseStooqCsv(csv: string): { close: number; date: string } {

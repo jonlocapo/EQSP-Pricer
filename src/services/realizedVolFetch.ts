@@ -12,7 +12,7 @@
  * and returns a result shaped so `./volPipeline.ts` can feed it straight
  * into `buildRealizedSurface`, exactly like the close-only path did.
  */
-import { fetchDailyBars } from './ohlcFetch';
+import { fetchDailyChart } from './ohlcFetch';
 import { yangZhangVar } from '../model/volEstimators';
 import { dailyReturnMoments, realizedTermStructure } from '../model/realizedSurface';
 import { garchTermStructure } from '../model/garch';
@@ -28,6 +28,14 @@ export interface RealizedVolStatsResult {
   /** Which estimator gave the level and which model gave the term-structure
    * shape, for the UI, e.g. "Yang-Zhang + GARCH(1,1)". */
   modelLabel: string;
+  /** The raw chart response this was built from.
+   *
+   * The dividend yield is measured from the ADJUSTED close, which rides in this
+   * same payload (see ../model/divYield). Handing it back lets the caller
+   * measure the yield without spending a second identical request, which
+   * matters because Yahoo rate-limits per IP and one Fetch press already makes
+   * several calls. */
+  payload: unknown;
 }
 
 /** Horizons the term structure is tabulated at, matching
@@ -46,7 +54,7 @@ const MIN_BARS_FOR_GARCH = 90;
 const MIN_BARS = 30;
 
 export async function fetchRealizedVolStats(yahooSymbol: string): Promise<RealizedVolStatsResult> {
-  const bars = await fetchDailyBars(yahooSymbol);
+  const { bars, payload } = await fetchDailyChart(yahooSymbol);
   if (bars.length < MIN_BARS) {
     throw new Error(`Only ${bars.length} OHLC bars for "${yahooSymbol}", not enough for a vol estimate`);
   }
@@ -69,6 +77,7 @@ export async function fetchRealizedVolStats(yahooSymbol: string): Promise<Realiz
       days: logReturns.length,
       source: 'yahoo OHLC (trailing windows: too few bars for GARCH)',
       modelLabel: 'close-to-close (trailing windows)',
+      payload,
     };
   }
 
@@ -91,5 +100,6 @@ export async function fetchRealizedVolStats(yahooSymbol: string): Promise<Realiz
     days: logReturns.length,
     source: 'yahoo OHLC realized',
     modelLabel: converged ? 'Yang-Zhang + GARCH(1,1)' : 'Yang-Zhang + EWMA (flat)',
+    payload,
   };
 }
