@@ -11,6 +11,7 @@
 import { fetchTextWithCorsFallback } from './spotFetch';
 import { dailyReturnMoments, realizedTermStructure } from '../model/realizedSurface';
 import { toStooqSymbol } from './symbols';
+import { fetchDailyChart } from './ohlcFetch';
 
 /** Stooq serves an HTML bot-challenge with HTTP 200 to some IPs. Treat any
  * non-CSV body as a failed attempt, so the proxy fallback kicks in. */
@@ -536,11 +537,23 @@ export interface RealizedStatsResult {
   vol: number;
   days: number;
   source: string;
+  /** The raw chart response this was built from.
+   *
+   * The dividend yield is measured from the ADJUSTED close, which rides in
+   * this same payload (see ../model/divYield). Carrying it back means the
+   * measurement does not care WHICH realized estimator ran: the OHLC path
+   * (fetchRealizedVolStats) and this close-only fallback both hand the
+   * caller a payload, so the dividend never triggers a second, identical
+   * request to the rate-limited chart endpoint. This uses the shared
+   * `fetchDailyChart` (two years, `events=div`, adjusted close) rather than
+   * the close-only fetch, which has none of the three.
+   */
+  payload: unknown;
 }
 
 export async function fetchRealizedStats(yahooSymbol: string): Promise<RealizedStatsResult> {
-  const closes = await fetchDailyCloses(yahooSymbol);
-  const px = closes.map((c) => c.close).filter((c) => c > 0);
+  const { bars, payload } = await fetchDailyChart(yahooSymbol);
+  const px = bars.map((b) => b.close);
   if (px.length < 30) {
     throw new Error(`Only ${px.length} closes for "${yahooSymbol}", not enough for a vol estimate`);
   }
@@ -558,6 +571,7 @@ export async function fetchRealizedStats(yahooSymbol: string): Promise<RealizedS
     excessKurtDaily,
     vol: terms[terms.length - 1].vol,
     days: logReturns.length,
-    source: 'yahoo 1Y realized',
+    source: 'yahoo close-to-close realized',
+    payload,
   };
 }

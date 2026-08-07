@@ -318,8 +318,8 @@ async function realizedRungs(
     // No total-return series for this underlying. A PRICE INDEX with no
     // total-return counterpart (e.g. ^STOXX50E, which has no ^...TR twin on
     // Yahoo) cannot use the pair-of-indices method at all. Fall back to its
-    // tracking ETF's adjusted close â€” the yield comes out net of the fund
-    // fee, and the note says so â€” see trackingIndexDivYield.
+    // tracking ETF's adjusted close — the yield comes out net of the fund
+    // fee, and the note says so — see trackingIndexDivYield.
     if (isIndexSymbol(symbol)) {
       const etfDiv = await trackingIndexDivYield(symbol);
       if (etfDiv) {
