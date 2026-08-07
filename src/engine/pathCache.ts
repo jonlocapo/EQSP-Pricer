@@ -102,22 +102,13 @@ export function gridTimesDigest(grid: PricingGrid): string {
 }
 
 /** Cache key: market data + MC settings + grid shape — everything path
- * generation depends on, and nothing product-specific. `volPerStep` is
- * included: a per-step vol schedule changes every path, even when
- * `market.vol` (the flat anchor) is unchanged. The borrow cost is included
- * too: it enters `riskNeutralDrift` as an extra dividend, so it moves every
- * path — a change that used to leave the cache warm and silently reuse stale
- * paths. (Funding spread and fee only move discounting and valuation, which
- * the path cache does not own, so they are deliberately absent.) */
+ * generation depends on, and nothing product-specific. */
 export function computeCacheKey(p: CacheKeyParams): string {
   return stableStringify({
     spot: p.s0,
     vol: p.market.vol,
-    volPerStep: p.market.volPerStep,
     rate: p.market.rate,
-    rateCurve: p.market.rateCurve,
     divYield: p.market.divYield,
-    borrowCost: p.market.costs?.borrowCostBp ?? 0,
     quanto: p.market.quanto
       ? {
           rateUnderlying: p.market.quanto.rateUnderlying,

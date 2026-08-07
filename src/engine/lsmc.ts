@@ -1,5 +1,6 @@
 import type { MarketData } from '../model/market';
 import { makeDf } from './discount';
+import { discountRate } from '../model/market';
 import { PathBatchGenerator } from './gbm';
 import type { CashflowExtractor, PathCashflows, PricingGrid } from './payoffs/types';
 
@@ -131,7 +132,7 @@ export function priceIssuerCallable(opts: LsmcOptions): LsmcResult {
   // rest of the engine's timeOf(gridIndex, grid) convention.
   const { times } = opts.grid;
 
-  const df = makeDf(market.rate, market.rateCurve, market.costs?.fundingSpreadBp ?? 0);
+  const df = makeDf(discountRate(market));
   const callablePeriods = callObs
     .map((gridIdx, i) => ({ period: i + 1, gridIdx }))
     .filter((c) => c.period >= callFromPeriod);

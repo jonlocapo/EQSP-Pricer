@@ -45,7 +45,6 @@ import { fetchRealizedVolStats, type RealizedVolStatsResult } from './realizedVo
 import { fetchVolIndexLevel, volIndexSymbolFor } from './volIndex';
 import { divYieldFromChartPayload, fetchRealizedDivYield } from './divYieldFetch';
 import { isIndexSymbol } from './symbols';
-import { trackingIndexDivYield } from './ohlcFetch';
 
 export type VolSourceKind =
   | 'chain-free-marketdata'
@@ -255,7 +254,7 @@ async function chainRungs(args: VolPipelineArgs): Promise<VolPipelineResult | un
   try {
     // fetchImpliedFromOptions already runs impliedFromChain internally to
     // get r.divYield (parity on prices), before this ever touches
-    // buildVolSurface Î“Ã‡Ã¶ see impliedFetch.ts. Reuse it rather than deriving
+    // buildVolSurface — see impliedFetch.ts. Reuse it rather than deriving
     // it twice.
     const r = await fetchImpliedFromOptions(symbol, tenorYears, rate);
     const surface = buildVolSurface(r.chain, { rate, divYield: r.divYield });
@@ -314,30 +313,8 @@ async function realizedRungs(
         : await fetchRealizedDivYield(symbol);
     measuredDivYield = dy.divYield;
     divYieldNote = `div ${(dy.divYield * 100).toFixed(2)}% realized over ${dy.years.toFixed(1)}y (${dy.source})`;
-  } catch (e) {
-    // No total-return series for this underlying. A PRICE INDEX with no
-    // total-return counterpart (e.g. ^STOXX50E, which has no ^...TR twin on
-    // Yahoo) cannot use the pair-of-indices method at all. Fall back to its
-    // tracking ETF's adjusted close — the yield comes out net of the fund
-    // fee, and the note says so — see trackingIndexDivYield.
-    if (isIndexSymbol(symbol)) {
-      const etfDiv = await trackingIndexDivYield(symbol);
-      if (etfDiv) {
-        measuredDivYield = etfDiv.divYield;
-        divYieldNote = `div ${(etfDiv.divYield * 100).toFixed(2)}% from ${etfDiv.etf} adjusted close (net of fund fee)`;
-      }
-    }
-    // REPORT the failure. A yield that cannot be measured leaves the user's
-    // typed value in force, and that is the correct behavior, but it must not
-    // be silent: an unchanged yield looks identical to a yield the model chose
-    // to keep. Without this the only visible symptom is a dividend field that
-    // never moves, which gives nobody a reason to look at. The stock path used
-    // to swallow every failure here, because only the index branch above did
-    // anything with the error.
-    if (measuredDivYield === undefined) {
-      const why = e instanceof Error ? e.message : 'measurement failed';
-      divYieldNote = `div not measured (${why}), keeping the entered yield`;
-    }
+  } catch {
+    // No total-return series for this underlying. Keep the entered yield.
   }
   /**
    * The smile for a realized-derived rung.
@@ -382,7 +359,7 @@ async function realizedRungs(
           surface,
           atmVol: volAtPctOfSpot(surface, 100, tenorYears),
           divYield: measuredDivYield,
-                  kind: 'vol-index',
+        kind: 'vol-index',
           label: `${idx.symbol}-scaled realized (${modelLabel})`,
           note: withDivNote(`Realized moments (${modelLabel}) scaled by a ${ratio.toFixed(2)}x ${idx.symbol}/realized premium`),
         };
@@ -402,14 +379,12 @@ async function realizedRungs(
         surface,
         atmVol: volAtPctOfSpot(surface, 100, tenorYears),
         divYield: measuredDivYield,
-        kind: 'realized-scaled',
+      kind: 'realized-scaled',
         label: `VIX-scaled realized (${modelLabel})`,
         // Rung 3 either found no index for this name or could not fetch the
         // one it found. Both land here, so the note names the substitute
         // rather than claiming a reason it cannot know.
-        note: withDivNote(
-          `Realized moments (${modelLabel}) scaled by the broad-market ${marketRatio.toFixed(2)}x VIX/realized premium, because no vol index reading was available for "${symbol}"`,
-        ),
+        note: `Realized moments (${modelLabel}) scaled by the broad-market ${marketRatio.toFixed(2)}x VIX/realized premium, because no vol index reading was available for "${symbol}"`,
       };
     } catch {
       // Fall through to plain realized, the last rung that uses history.
@@ -421,7 +396,7 @@ async function realizedRungs(
       surface,
       atmVol: volAtPctOfSpot(surface, 100, tenorYears),
       divYield: measuredDivYield,
-      kind: 'realized',
+    kind: 'realized',
       label: `${realized.source} (${modelLabel})`,
       note: withDivNote('Realized vol carries no volatility risk premium, so it typically sits below traded implied levels'),
     };
@@ -440,7 +415,7 @@ async function realizedRungs(
         divYield: measuredDivYield,
         kind: 'vol-index-flat',
         label: `${idx.symbol} implied`,
-        note: withDivNote(`No price history available, so the smile is flat at the ${idx.symbol} level`),
+        note: `No price history available, so the smile is flat at the ${idx.symbol} level`,
       };
     } catch {
       // Fall through to the entered vol.

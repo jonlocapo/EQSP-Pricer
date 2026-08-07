@@ -33,15 +33,12 @@
 
 /** One trading day's open, high, low and close. All four fields must be
  * strictly positive — a zero or negative print cannot come from a real
- * market and would make every log() below non-finite. `adjClose`, when the
- * source provided it, is the dividend/split-adjusted close, used to
- * estimate a dividend yield (see services/ohlcFetch.ts). */
+ * market and would make every log() below non-finite. */
 export interface Bar {
   open: number;
   high: number;
   low: number;
   close: number;
-  adjClose?: number;
 }
 
 function assertUsableBars(bars: Bar[], minBars: number, name: string): void {

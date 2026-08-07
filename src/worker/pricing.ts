@@ -121,11 +121,7 @@ async function priceOnce(
   wantDistribution = false,
 ): Promise<CoreResult> {
   const grid = buildGrid(spec);
-  const ctx: EvaluatorContext = {
-    market,
-    grid,
-    df: makeDf(market.rate, market.rateCurve, market.costs?.fundingSpreadBp ?? 0),
-  };
+  const ctx: EvaluatorContext = { market, grid, df: makeDf(discountRate(market)) };
 
   if (spec.kind === 'coupon' && spec.callType === 'issuerCallable') {
     // LSMC runs in one synchronous shot (no mid-run cancellation in v1).
@@ -373,11 +369,7 @@ export function evaluatePriceSlice(
   sliceIndex: number,
 ): McRunResult {
   const grid = buildGrid(spec);
-  const ctx: EvaluatorContext = {
-    market,
-    grid,
-    df: makeDf(market.rate, market.rateCurve, market.costs?.fundingSpreadBp ?? 0),
-  };
+  const ctx: EvaluatorContext = { market, grid, df: makeDf(discountRate(market)) };
   const split = makeSplitEvaluator(spec, ctx);
   const evaluator = split ? undefined : makeEvaluator(spec, ctx);
   const nSlices = Math.max(1, Math.ceil(numPaths / SLICE_PATHS));
@@ -631,59 +623,13 @@ function effectiveMarketFor(
   }
   const { strikePct, reason } = riskStrikeFor(spec);
   const volUsed = volAtPctOfSpot(market.volSurface, strikePct, spec.tenorYears);
-  // Per-step term structure at the risk strike. One piecewise-constant vol
-  // per grid step, chosen to PRESERVE the surface's forward total variance
-  // over each step: volPerStep[i]^2 * (t_{i+1} - t_i) equals w(t_{i+1}) -
-  // w(t_i), where w(t) = iv^2(t) * t is the surface's own (piecewise
-  // linear, calendar-repaired) total-variance curve. This is exact for the
-  // surface's interpolation model, not an approximation, and it collapses
-  // to the single flat `volUsed` when the surface has no term structure —
-  // the diffCoeff/drift arrays then equal the flat-vol engine's, byte for
-  // byte (see PathBatchGenerator's BIT-IDENTITY note). Without this, a
-  // 5-year autocall that may call in year one is simulated entirely on
-  // 5-year vol, because one sigma covered the whole life.
-  const surface = market.volSurface;
-  const grid = buildGrid(spec);
-  const volPerStep: number[] = new Array(grid.nSteps);
-  const totalVarAt = (t: number): number => {
-    const v = volAtPctOfSpot(surface, strikePct, t);
-    return v * v * t;
-  };
-  let wPrev = 0;
-  let firstVol = -1;
-  let hasTermStructure = false;
-  for (let i = 0; i < grid.nSteps; i++) {
-    const wNext = totalVarAt(grid.times[i + 1]);
-    const v = Math.sqrt(Math.max(0, wNext - wPrev) / (grid.times[i + 1] - grid.times[i]));
-    volPerStep[i] = v;
-    if (firstVol < 0) firstVol = v;
-    else if (Math.abs(v - firstVol) > 1e-12) hasTermStructure = true;
-    wPrev = wNext;
-  }
-  // A constant per-step array IS the flat-vol engine (bit-identical paths).
-  // Only attach the schedule when it genuinely varies, so a
-  // term-structure-free surface keeps the exact pre-change code path.
-  if (!hasTermStructure) {
-    return {
-      market: { ...market, vol: volUsed },
-      basis: {
-        volUsed,
-        volSource: 'surface',
-        riskStrikePct: strikePct,
-        riskStrikeReason: reason,
-        discountRate: dr,
-        feePct,
-      },
-    };
-  }
   return {
-    market: { ...market, vol: volUsed, volPerStep },
+    market: { ...market, vol: volUsed },
     basis: {
       volUsed,
       volSource: 'surface',
       riskStrikePct: strikePct,
       riskStrikeReason: reason,
-      volStepwise: true,
       discountRate: dr,
       feePct,
     },
@@ -761,7 +707,6 @@ export async function executePriceRequest(req: PriceRequest, hooks: PricingHooks
       hardHi,
       req.solve.kind,
       req.warmStartValue,
-      targetPct,
     );
     solvedValue = root;
     solveIterations = iter;
@@ -816,15 +761,8 @@ export async function executePriceRequest(req: PriceRequest, hooks: PricingHooks
     // in riskNeutralDrift). So under a quanto, this vega is the *total* vega:
     // vol's effect on both the diffusion and the drift. This is intentional.
     // It is the correct sensitivity to a re-quoted equity vol, not a bug.
-    // When the path runs on a per-step vol schedule (volPerStep), the bump
-    // shifts the WHOLE schedule by the same amount — a parallel vol shock —
-    // or the diffusion would not move at all and vega would report ~0.
-    const bumpVol = (m: MarketData, dVol: number): MarketData =>
-      m.volPerStep
-        ? { ...m, vol: m.vol + dVol, volPerStep: m.volPerStep.map((v) => v + dVol) }
-        : { ...m, vol: m.vol + dVol };
-    const vu = await bump(bumpVol(market, 0.01), 0);
-    const vd = await bump(bumpVol(market, -0.01), 1);
+    const vu = await bump({ ...market, vol: market.vol + 0.01 }, 0);
+    const vd = await bump({ ...market, vol: Math.max(0.001, market.vol - 0.01) }, 1);
     if ([vu, vd].some((r) => r.cancelled) || hooks.isCancelled()) return null;
     greeks = {
       deltaPct: 0,
@@ -920,10 +858,7 @@ async function riddersLoop(
  * - Cold start: bracket expansion from [lo, hi] toward [hardLo, hardHi],
  *   until the signs of f at the two ends differ, then the Ridders' loop.
  *
- * tolY is in PV percentage points. `targetPct` is used only to turn a
- * no-solution failure into actionable guidance: the PV at the ends of the
- * explored bracket, so the user learns whether the structure can reach the
- * target at all, instead of hitting a dead end.
+ * tolY is in PV percentage points.
  */
 async function asyncRootFind(
   f: (x: number) => Promise<number>,
@@ -933,7 +868,6 @@ async function asyncRootFind(
   hardHi: number,
   label: string,
   guess?: number,
-  targetPct?: number,
   tolX = 1e-4,
   tolY = 0.01,
   maxIter = 40,
@@ -966,21 +900,8 @@ async function asyncRootFind(
   let guard = 0;
   while (Math.sign(fa) === Math.sign(fb)) {
     if ((a <= hardLo && b >= hardHi) || guard++ >= 12) {
-      // f is monotone in the solve variable (every target is chosen for
-      // that), so PV(hardLo) and PV(hardHi) bound the whole reachable
-      // range. Report it: "no solution" is a dead end, a range is
-      // guidance. The leading phrase keeps matching NO_SOLUTION_RE (see
-      // runPricing.ts), so live passes still classify this as the calm
-      // "no solution at current terms" outcome.
-      const pvLo = fa + (targetPct ?? 0);
-      const pvHi = fb + (targetPct ?? 0);
-      const below = pvLo < pvHi ? pvLo : pvHi;
-      const above = pvLo < pvHi ? pvHi : pvLo;
       throw new Error(
-        `No solution for ${label} in [${hardLo}, ${hardHi}] — the target level is not reachable with these terms. ` +
-          `Across that range the note is worth ${below.toFixed(2)}% to ${above.toFixed(2)}% of notional` +
-          (targetPct !== undefined ? `; the ${targetPct.toFixed(2)}% target is outside it` : '') +
-          `.`,
+        `No solution for ${label} in [${hardLo}, ${hardHi}] — the target level is not reachable with these terms`,
       );
     }
     const width = Math.max(b - a, 1e-3);
