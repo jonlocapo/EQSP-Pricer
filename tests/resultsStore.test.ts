@@ -114,4 +114,55 @@ describe('resultsStore soft live-unsolvable state', () => {
     store.finishRun('fresh', freshResult);
     expect(useResultsStore.getState().result).toBe(freshResult);
   });
+
+  it('every terminal transition clears the pending flag, so a dropped pass cannot stick the spinner', () => {
+    const store = useResultsStore.getState();
+    store.beginPending('full');
+
+    // The gated-pass failure mode: beginPending raised the flag, but the
+    // pass never started (runPricing's explicit-in-flight guard drops it),
+    // so an unrelated run's terminal transition is what settles the state.
+    store.startRun('other', 'explicit', 'full');
+    store.failRun('other', 'boom');
+    expect(useResultsStore.getState().pending).toBe(false);
+    expect(useResultsStore.getState().pendingScope).toBeNull();
+
+    store.beginPending('cached');
+    store.startRun('r1', 'explicit', 'full');
+    store.failRun('r1', 'boom');
+    expect(useResultsStore.getState().pending).toBe(false);
+
+    store.beginPending('cached');
+    store.startRun('r2', 'live', 'full');
+    store.failLiveRun('r2', 'No solution at current terms.');
+    expect(useResultsStore.getState().pending).toBe(false);
+
+    store.beginPending('full');
+    store.startRun('r3', 'live', 'full');
+    store.cancelRun('r3');
+    expect(useResultsStore.getState().pending).toBe(false);
+
+    store.beginPending('cached');
+    store.startRun('r4', 'explicit', 'full');
+    store.finishRun('r4', makeResult());
+    expect(useResultsStore.getState().pending).toBe(false);
+  });
+
+  it('a newer pending edit survives an older run\'s terminal transition, because its pass re-raises pending in the debounce window', () => {
+    const store = useResultsStore.getState();
+    // Older run settles while a newer edit is pending (no run of its own
+    // started yet, so runId still matches the older run).
+    store.startRun('older', 'explicit', 'full');
+    store.beginPending('cached');
+
+    store.failRun('older', 'boom');
+    const afterFail = useResultsStore.getState();
+    expect(afterFail.pending).toBe(false);
+    expect(afterFail.running).toBe(false);
+
+    // The newer edit's pass starts normally afterwards and shows a run.
+    store.startRun('newer', 'live', 'cached');
+    expect(useResultsStore.getState().running).toBe(true);
+    expect(useResultsStore.getState().pending).toBe(false);
+  });
 });

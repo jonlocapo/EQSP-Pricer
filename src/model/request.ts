@@ -136,6 +136,10 @@ export interface PricingBasis {
   riskStrikePct?: number;
   /** Why that strike governs this product (see engine/riskStrike). */
   riskStrikeReason?: string;
+  /** True when the surface had a term structure and the path was simulated
+   * on a per-step vol schedule at the risk strike, instead of one vol taken
+   * at the final tenor (surface only). */
+  volStepwise?: boolean;
   /** Discount rate applied to the note's cashflows: risk-free + funding spread. */
   discountRate: number;
   /** Fee retained upfront, % of notional. */

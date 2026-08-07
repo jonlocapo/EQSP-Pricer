@@ -26,7 +26,7 @@ export interface RealizedVolStatsResult {
   days: number;
   source: string;
   /** Which estimator gave the level and which model gave the term-structure
-   * shape, for the UI, e.g. "Yang-Zhang + GARCH(1,1)". */
+   * shape, for the UI, e.g. "Yang-Zhang + GJR-GARCH(1,1)". */
   modelLabel: string;
   /** The raw chart response this was built from.
    *
@@ -81,9 +81,9 @@ export async function fetchRealizedVolStats(yahooSymbol: string): Promise<Realiz
     };
   }
 
-  // The GARCH long-run level is anchored on Yang-Zhang, not on the sample
+  // The GJR long-run level is anchored on Yang-Zhang, not on the sample
   // variance of close-to-close returns GARCH would otherwise default to
-  // (see fitGarch11's `targetVar`) — the whole point of leading with the
+  // (see fitGjr's `targetVar`) — the whole point of leading with the
   // more efficient range-based estimator.
   const targetVar = yangZhangVar(bars);
   const { terms, converged } = garchTermStructure(logReturns, HORIZONS_DAYS, targetVar);
@@ -99,7 +99,7 @@ export async function fetchRealizedVolStats(yahooSymbol: string): Promise<Realiz
     vol: usableTerms[usableTerms.length - 1].vol,
     days: logReturns.length,
     source: 'yahoo OHLC realized',
-    modelLabel: converged ? 'Yang-Zhang + GARCH(1,1)' : 'Yang-Zhang + EWMA (flat)',
+    modelLabel: converged ? 'Yang-Zhang + GJR-GARCH(1,1)' : 'Yang-Zhang + EWMA (flat)',
     payload,
   };
 }
