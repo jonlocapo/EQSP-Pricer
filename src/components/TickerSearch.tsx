@@ -35,7 +35,13 @@ export function TickerSearch({ ticker, displayName, onPick }: Props) {
       setSearching(true);
       setError(null);
       try {
-        const res = await searchSymbols(query);
+        // Local hits paint at once, so a name the built-in list knows appears
+        // instantly instead of behind up to four seconds of relay spinner.
+        const res = await searchSymbols(query, (localMatches) => {
+          if (seq !== seqRef.current) return;
+          setMatches(localMatches);
+          setHighlight(0);
+        });
         if (seq !== seqRef.current) return;
         setMatches(res);
         setHighlight(0);
