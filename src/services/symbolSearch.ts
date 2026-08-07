@@ -39,6 +39,20 @@ const SEARCH_TIMEOUT_MS = 4000;
  * watches a spinner for. */
 const SEARCH_HEDGE_MS = 400;
 
+/**
+ * Accepts only a body that actually looks like a Yahoo search response.
+ *
+ * This runs inside the hedged race, so it decides which route WINS. The old
+ * check was "starts with a brace", which a relay's own JSON error envelope
+ * satisfies. That envelope therefore won the race, aborted the routes still in
+ * flight, and produced zero matches for a real ticker. Requiring the `quotes`
+ * key means a relay error loses the race and a working route can still win.
+ */
+function isSearchResponse(text: string): boolean {
+  const t = text.trimStart();
+  return t.startsWith('{') && t.includes('"quotes"');
+}
+
 /** Name/ticker autocomplete via Yahoo Finance's public search endpoint. */
 export async function searchSymbols(query: string): Promise<SymbolMatch[]> {
   const q = query.trim();
@@ -50,11 +64,18 @@ export async function searchSymbols(query: string): Promise<SymbolMatch[]> {
   const { text } = await fetchTextWithCorsFallback(
     url,
     SEARCH_TIMEOUT_MS,
-    (t) => t.trimStart().startsWith('{'),
+    isSearchResponse,
     SEARCH_HEDGE_MS,
   );
   const parsed = JSON.parse(text) as { quotes?: YahooSearchQuote[] };
-  const out = (parsed.quotes ?? [])
+  // A response with no `quotes` key at all is a FAILED response, not an empty
+  // result set. Yahoo sends `"quotes":[]` when it genuinely knows nothing. So
+  // throw here, which lets the caller report that search is unavailable rather
+  // than telling the user a real ticker does not exist.
+  if (!Array.isArray(parsed.quotes)) {
+    throw new Error('Search response carried no quotes list');
+  }
+  const out = parsed.quotes
     .filter(
       (m): m is YahooSearchQuote & { symbol: string } =>
         !!m.symbol && (m.quoteType === 'EQUITY' || m.quoteType === 'INDEX' || m.quoteType === 'ETF'),
@@ -66,6 +87,15 @@ export async function searchSymbols(query: string): Promise<SymbolMatch[]> {
       quoteType: m.quoteType as SymbolMatch['quoteType'],
       currency: normalizeQuoteCurrency(m.currency).currency,
     }));
-  searchCache.set(key, out);
+  // Cache HITS only. An empty result is not worth remembering, and remembering
+  // it is actively harmful: an empty array is truthy, so it would be served
+  // from the cache for the rest of the session and no later attempt could ever
+  // replace it. One bad answer must not poison a query permanently.
+  if (out.length > 0) searchCache.set(key, out);
   return out;
+}
+
+/** Empties the query cache. Tests only. */
+export function __clearSearchCacheForTests(): void {
+  searchCache.clear();
 }

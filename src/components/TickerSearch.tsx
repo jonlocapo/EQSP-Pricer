@@ -43,7 +43,11 @@ export function TickerSearch({ ticker, displayName, onPick }: Props) {
       } catch (e) {
         if (seq !== seqRef.current) return;
         setMatches([]);
-        setError(e instanceof Error ? `Search failed: ${e.message}` : 'Search failed');
+        // Name the cause and give the way out. Search rides public CORS relays,
+        // which rate-limit and go down, but pricing never needs the lookup: an
+        // exact Yahoo-style symbol typed straight in works without it.
+        const why = e instanceof Error ? e.message : 'failed';
+        setError(`Search unavailable (${why}). Type the exact symbol, e.g. RHM.DE`);
       } finally {
         if (seq === seqRef.current) setSearching(false);
       }
