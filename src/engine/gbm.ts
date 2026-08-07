@@ -113,6 +113,17 @@ export class PathBatchGenerator {
 
     const { vol, volPerStep, rateCurve, divYield } = market;
     const borrow = (market.costs?.borrowCostBp ?? 0) / 10_000;
+    // The rate curve drives DISCOUNTING and the drift, but only on a
+    // single-currency note. `rateCurve` holds the NOTE currency's zero
+    // curve. A quanto note's underlying grows at the UNDERLYING currency's
+    // rate, `quanto.rateUnderlying`, with the equity-FX correlation
+    // correction that `riskNeutralDrift` applies. Feeding the note curve
+    // into the drift makes two errors at once: it substitutes the wrong
+    // currency's rate, and it drops the correlation term. So the drift
+    // ignores the curve whenever the note is quanto, exactly as
+    // MarketData.rateCurve's doc states. Discounting still uses the curve,
+    // because a quanto note discounts on the note currency.
+    const driftUsesCurve = !!rateCurve && rateCurve.length > 0 && !market.quanto;
     const muDt = riskNeutralDrift(market) - 0.5 * vol * vol;
     this.drift = new Float64Array(nSteps);
     this.diffCoeff = new Float64Array(nSteps);
@@ -155,7 +166,7 @@ export class PathBatchGenerator {
       // With a rate curve too, the drift composes: the curve's forward rate
       // for the step replaces the flat `rate` (the same substitution the
       // curve-only branch below makes), on top of the per-step vol.
-      const hasCurve = !!rateCurve && rateCurve.length > 0;
+      const hasCurve = driftUsesCurve;
       const q = divYield;
       if (volPerStep.length !== nSteps) {
         throw new Error(`volPerStep has ${volPerStep.length} entries for ${nSteps} steps`);
@@ -187,7 +198,7 @@ export class PathBatchGenerator {
       return;
     }
 
-    if (rateCurve && rateCurve.length > 0) {
+    if (driftUsesCurve && rateCurve) {
       // Rate-curve drift: the risk-neutral drift at step i uses the
       // INSTANTANEOUS FORWARD rate of that step, not the zero rate. The
       // curve's points are zero rates z(t), so the discount factor of a
@@ -197,8 +208,9 @@ export class PathBatchGenerator {
       // path. That is what makes the curve cancel out of the forward:
       // E[S_T]*df(T) = S0*exp(-q*T), exactly as with a flat rate. With a
       // piecewise-linear zero curve, the average forward over a step is
-      // (z(t2)*t2 - z(t1)*t1)/(t2 - t1), exact — no quadrature. The quanto
-      // drift keeps the flat underlying rate (MarketData.rateCurve's doc).
+      // (z(t2)*t2 - z(t1)*t1)/(t2 - t1), exact — no quadrature. A quanto
+      // note never reaches this branch: `driftUsesCurve` excludes it, so
+      // the quanto drift keeps the flat underlying rate.
       const q = divYield;
       if (typeof stepDt === 'number') {
         const dt = stepDt;

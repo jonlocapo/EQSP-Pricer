@@ -3,7 +3,9 @@ import { makeDf, rateAt } from '../src/engine/discount';
 import { runMc } from '../src/engine/mc';
 import { buildGrid } from '../src/engine/schedule';
 import { DEFAULT_COUPON_SPEC } from '../src/state/tradeStore';
+import { riskNeutralDrift } from '../src/model/market';
 import type { MarketData } from '../src/model/market';
+import { PathBatchGenerator } from '../src/engine/gbm';
 import type { PathOutcome } from '../src/engine/payoffs/types';
 import { computeCacheKey, gridTimesDigest } from '../src/engine/pathCache';
 
@@ -103,3 +105,54 @@ describe('rate curve cache key', () => {
 function spec() {
   return { ...DEFAULT_COUPON_SPEC, callType: 'none' as const, barrierType: 'european' as const };
 }
+
+describe('rate curve on a quanto note', () => {
+  /**
+   * `rateCurve` holds the NOTE currency's zero curve. A quanto note's
+   * underlying grows at the UNDERLYING currency's rate, with the equity-FX
+   * correlation correction. So the curve must not reach the drift here.
+   *
+   * The regression this pins let the curve branch compute
+   * `forward - divYield - borrow` directly, which both substituted the note
+   * currency's rate for `quanto.rateUnderlying` and dropped the correlation
+   * term. On a EUR note over a USD underlying that moved the drift by 3.4%
+   * a year, which compounds into a badly wrong forward at five years.
+   */
+  const QUANTO = { rateUnderlying: 0.045, fxVol: 0.1, corrEqFx: -0.35 };
+  const qMarket: MarketData = { ...MARKET, quanto: QUANTO };
+  /** Flat AT the note rate, so the curve carries no term structure at all.
+   * Anything it changes is therefore a bug, not a curve effect. */
+  const FLAT_AT_NOTE_RATE = [
+    { tYears: 0.25, rate: MARKET.rate },
+    { tYears: 5, rate: MARKET.rate },
+  ];
+
+  it('leaves the quanto drift untouched when a note-currency curve is attached', () => {
+    const drifts = (m: MarketData) => {
+      const g = new PathBatchGenerator(1, 4, 100, m, 0.25) as unknown as { drift: Float64Array };
+      return Array.from(g.drift);
+    };
+    expect(drifts({ ...qMarket, rateCurve: FLAT_AT_NOTE_RATE })).toEqual(drifts(qMarket));
+    // And a curve that DOES slope still cannot move a quanto drift.
+    expect(drifts({ ...qMarket, rateCurve: CURVE })).toEqual(drifts(qMarket));
+  });
+
+  it('keeps the correlation term and the underlying rate in the drift', () => {
+    const g = new PathBatchGenerator(1, 1, 100, { ...qMarket, rateCurve: CURVE }, 1) as unknown as {
+      drift: Float64Array;
+    };
+    const expected = riskNeutralDrift(qMarket) - 0.5 * qMarket.vol * qMarket.vol;
+    expect(g.drift[0]).toBe(expected);
+    // The correlation term is genuinely present: zeroing it moves the drift.
+    const noCorr = { ...qMarket, quanto: { ...QUANTO, corrEqFx: 0 } };
+    expect(riskNeutralDrift(noCorr)).not.toBe(riskNeutralDrift(qMarket));
+  });
+
+  it('still discounts a quanto note on the note-currency curve', () => {
+    // Only the DRIFT ignores the curve. A quanto note is a liability in the
+    // note currency, so its cashflows discount on the note curve as usual.
+    const df = makeDf(MARKET.rate, CURVE, 0);
+    expect(df(1)).toBe(Math.exp(-rateAt(CURVE, 1) * 1));
+    expect(df(1)).not.toBe(Math.exp(-MARKET.rate * 1));
+  });
+});
