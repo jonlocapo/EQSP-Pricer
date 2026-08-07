@@ -1,4 +1,4 @@
-import type { AccumulatorSpec, CouponProductSpec, ParticipationSpec } from '../model/product';
+import type { AccumulatorSpec, CouponProductSpec, ParticipationSpec, Underlying } from '../model/product';
 import type { MarketData } from '../model/market';
 
 export type FieldErrors = Record<string, string>;
@@ -96,6 +96,62 @@ export function validateParticipation(spec: ParticipationSpec, market: MarketDat
 
   const valid = Object.keys(errors).length === 0;
   return { errors, valid };
+}
+
+/**
+ * Rules for a worst-of basket (two or more legs). Returns no errors at all
+ * for a single leg: today's behavior stays untouched.
+ *
+ * `rawCorrelation` is the matrix as the user typed it, before
+ * `repairCorrelation` runs. The [-1, 1] bound is checked here, on the raw
+ * entry, because repair always produces entries inside that range by
+ * construction (a valid correlation matrix cannot hold one outside it), so
+ * checking the repaired matrix could never catch a bad typed value.
+ */
+export function validateBasket(
+  underlyings: Underlying[],
+  rawCorrelation: number[][] | undefined,
+  market: MarketData
+): ValidationResult {
+  const errors: FieldErrors = {};
+  if (underlyings.length >= 2) {
+    const seen = new Set<string>();
+    underlyings.forEach((u, i) => {
+      const name = u.name.trim();
+      if (!name) {
+        errors[`underlying${i}`] = 'Underlying name is required.';
+        return;
+      }
+      const key = name.toLowerCase();
+      // A "worst-of X and X" is just X: two legs on the same name add no
+      // diversification and the engine gains nothing from pricing them as
+      // a basket, so this is rejected rather than silently priced.
+      if (seen.has(key)) {
+        errors[`underlying${i}`] = 'Duplicate underlying: a worst-of basket needs distinct legs.';
+      }
+      seen.add(key);
+    });
+
+    if (rawCorrelation) {
+      outer: for (const row of rawCorrelation) {
+        for (const v of row) {
+          if (!Number.isFinite(v) || v < -1 || v > 1) {
+            errors.correlation = 'Correlation entries must be between -1 and 1.';
+            break outer;
+          }
+        }
+      }
+    }
+
+    // A basket cannot be quanto: the engine throws (see model/market.ts,
+    // riskNeutralDrift). Quanto needs one equity-FX correlation per leg,
+    // which this model does not carry, so the two features are mutually
+    // exclusive rather than combinable.
+    if (market.quanto) {
+      errors.basket = 'Worst-of baskets must be single-currency. Resolve the quanto mismatch first.';
+    }
+  }
+  return { errors, valid: Object.keys(errors).length === 0 };
 }
 
 export function validateAccumulator(spec: AccumulatorSpec, market: MarketData): ValidationResult {

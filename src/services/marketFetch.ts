@@ -505,6 +505,59 @@ export function realizedCorrelation(a: DatedClose[], b: DatedClose[]): number {
   return Math.min(1, Math.max(-1, corr));
 }
 
+export interface RealizedCorrelationMatrixResult {
+  /** Pairwise Pearson correlation of daily log-returns, symmetric, unit
+   * diagonal, one row/column per ticker in input order. Not necessarily
+   * PSD at N >= 3 legs — repair it with model/correlation.ts before pricing. */
+  matrix: number[][];
+  /** One message per ticker or pair that failed, e.g. no history, or too
+   * few overlapping trading days. That entry is left at 0 correlation
+   * rather than blocking the whole matrix. */
+  errors: string[];
+}
+
+/**
+ * Realized correlation for every pair of a basket's legs, from about 1 year
+ * of Yahoo daily closes. Reuses `realizedCorrelation`'s date alignment for
+ * each pair, so European and US holiday calendars, which do not share every
+ * trading day, are handled the same way a single-pair fetch already handles
+ * them: a day only one side has is dropped from that pair, not reused to
+ * shift the rest of the series. A ticker that fails to fetch, or a pair with
+ * too little overlap, is reported and left at 0 correlation rather than
+ * aborting every other pair.
+ */
+export async function realizedCorrelationMatrix(tickers: string[]): Promise<RealizedCorrelationMatrixResult> {
+  const n = tickers.length;
+  const matrix: number[][] = Array.from({ length: n }, (_, i) =>
+    Array.from({ length: n }, (_, j) => (i === j ? 1 : 0))
+  );
+  const errors: string[] = [];
+  const closes: (DatedClose[] | undefined)[] = [];
+  for (const t of tickers) {
+    try {
+      closes.push(await fetchDailyCloses(t));
+    } catch (e) {
+      closes.push(undefined);
+      errors.push(e instanceof Error ? e.message : `Daily closes unavailable for "${t}"`);
+    }
+  }
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const a = closes[i];
+      const b = closes[j];
+      if (!a || !b) continue;
+      try {
+        const corr = realizedCorrelation(a, b);
+        matrix[i][j] = corr;
+        matrix[j][i] = corr;
+      } catch (e) {
+        errors.push(`${tickers[i]}/${tickers[j]}: ${e instanceof Error ? e.message : 'failed'}`);
+      }
+    }
+  }
+  return { matrix, errors };
+}
+
 export interface FxRealizedResult {
   fxVol: number;
   corrEqFx: number;

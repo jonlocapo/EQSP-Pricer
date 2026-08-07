@@ -10,7 +10,7 @@ import { TenorField } from '../components/TenorField';
 import { ActionRow } from '../components/ActionRow';
 import { PricingGrid } from '../components/PricingGrid';
 import { noteEditSource } from '../state/editSource';
-import { validateCoupon } from '../services/validation';
+import { validateCoupon, validateBasket } from '../services/validation';
 import { runPricing } from '../services/runPricing';
 import { useLiveReprice } from '../hooks/useLiveReprice';
 import type { AcCouponType, BarrierMonitoring, CallType, CouponType, Frequency } from '../model/product';
@@ -38,7 +38,15 @@ export function CouponPage() {
   const setSolve = useTradeStore((s) => s.setCouponSolve);
   const market = useMarketStore((s) => s.market);
   const underlyingName = useMarketStore((s) => s.underlyingName);
+  const extraLegs = useMarketStore((s) => s.extraLegs);
+  const basketCorrelation = useMarketStore((s) => s.basketCorrelation);
   const running = useResultsStore((s) => s.running);
+
+  // The live leg list, primary leg first, so it always reflects whatever
+  // TickerSearch and the basket panel currently show — spec.underlyings is
+  // never edited directly, only assembled here (see model/basket.ts).
+  const underlyings = [{ name: underlyingName }, ...extraLegs.map((l) => ({ name: l.name }))];
+  const pricingSpec = { ...spec, underlyings };
 
   const [greeks, setGreeks] = useState(false);
   const [gridOpen, setGridOpen] = useState(false);
@@ -95,6 +103,7 @@ export function CouponPage() {
   }, [couponFreqAuto, spec.callFrequency, spec.callType, spec.couponFrequency]);
 
   const validation = validateCoupon(spec, market);
+  const basketValidation = validateBasket(underlyings, basketCorrelation, market);
 
   // Per-field solve availability, mirroring the old solveOptions.ts helper.
   // Under issuerCallable (LSMC pricing; v1 supports Price only), nothing
@@ -122,12 +131,12 @@ export function CouponPage() {
     if (!available) setSolve({ kind: 'none' });
   }, [solve.kind, canCouponPa, canAcCoupon, canCouponBarrier, canCallBarrier, canKiBarrier, canPutStrike, setSolve]);
 
-  const priceDisabled = !validation.valid;
+  const priceDisabled = !validation.valid || !basketValidation.valid;
   const priceLabel = solve.kind === 'none' ? 'Price' : 'Solve';
 
   useLiveReprice({
     page: 'coupon',
-    product: spec,
+    product: pricingSpec,
     market,
     underlyingName,
     solve,
@@ -162,7 +171,7 @@ export function CouponPage() {
   function handleRun() {
     runPricing({
       page: 'coupon',
-      product: spec,
+      product: pricingSpec,
       market,
       underlyingName,
       solve,
@@ -534,6 +543,12 @@ export function CouponPage() {
         </Card>
       )}
 
+      {Object.keys(basketValidation.errors).length > 0 && (
+        <div style={{ gridColumn: '1 / -1' }} className="status-line error">
+          {Object.values(basketValidation.errors).join(' ')}
+        </div>
+      )}
+
       <div style={{ gridColumn: '1 / -1' }}>
         <ActionRow
           label={priceLabel}
@@ -550,7 +565,7 @@ export function CouponPage() {
 
       {gridOpen && (
         <div style={{ gridColumn: '1 / -1' }}>
-          <PricingGrid page="coupon" spec={spec} market={market} underlyingName={underlyingName} />
+          <PricingGrid page="coupon" spec={pricingSpec} market={market} underlyingName={underlyingName} />
         </div>
       )}
     </div>

@@ -8,6 +8,8 @@ import { NumericField } from './NumericField';
 import { SelectField } from './SelectField';
 import { Segmented } from './Segmented';
 import { TickerSearch } from './TickerSearch';
+import { BasketPanel } from './BasketPanel';
+import { buildBasket } from '../model/basket';
 import { NO_COSTS, SUPPORTED_CURRENCIES as CURRENCIES, type CostParams } from '../model/market';
 import { skewPoints } from '../model/volSurface';
 
@@ -317,10 +319,14 @@ export function MarketPanel() {
   const underlyingCurrency = useMarketStore((s) => s.underlyingCurrency);
   const setMarket = useMarketStore((s) => s.setMarket);
   const setQuanto = useMarketStore((s) => s.setQuanto);
+  const setBasket = useMarketStore((s) => s.setBasket);
   const setUnderlying = useMarketStore((s) => s.setUnderlying);
 
   const assetType = useMarketStore((s) => s.assetType);
   const setAssetType = useMarketStore((s) => s.setAssetType);
+  const extraLegs = useMarketStore((s) => s.extraLegs);
+  const basketCorrelation = useMarketStore((s) => s.basketCorrelation);
+  const activePage = useTradeStore((s) => s.activePage);
 
   const [fetching, setFetching] = useState(false);
   const [fetchLines, setFetchLines] = useState<FetchLine[]>([]);
@@ -454,6 +460,23 @@ export function MarketPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [quantoMismatch, market.quanto]);
 
+  // Rebuilds MarketData.basket whenever a leg or the correlation matrix
+  // changes. The accumulator page forces it undefined regardless of how
+  // many legs are configured: AccumulatorSpec keeps exactly one underlying
+  // (see model/product.ts), so a basket must never reach an accumulator
+  // request even if the user added legs while on another tab.
+  useEffect(() => {
+    const legs =
+      activePage === 'accumulator'
+        ? [{ name: underlyingName, vol: market.vol, divYield: market.divYield }]
+        : [{ name: underlyingName, vol: market.vol, divYield: market.divYield }, ...extraLegs];
+    const { basket } = buildBasket(legs, basketCorrelation);
+    if (JSON.stringify(basket ?? null) !== JSON.stringify(market.basket ?? null)) {
+      setBasket(basket);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePage, underlyingName, market.vol, market.divYield, extraLegs, basketCorrelation, market.basket]);
+
   return (
     <div>
       <h3 className="sidebar-title">Market Data</h3>
@@ -558,6 +581,11 @@ export function MarketPanel() {
           suffix="%"
           onChange={(v) => setMarket({ divYield: v / 100 })}
         />
+
+        {/* Worst-of legs. Not offered on the accumulator page: an
+         * accumulator keeps exactly one underlying, permanently (see
+         * model/product.ts's AccumulatorSpec comment). */}
+        {activePage !== 'accumulator' && <BasketPanel />}
 
         {quantoMismatch && market.quanto && (
           <div className="field-group">

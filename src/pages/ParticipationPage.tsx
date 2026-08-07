@@ -8,7 +8,7 @@ import { NumericField } from '../components/NumericField';
 import { TenorField } from '../components/TenorField';
 import { ActionRow } from '../components/ActionRow';
 import { PricingGrid } from '../components/PricingGrid';
-import { validateParticipation } from '../services/validation';
+import { validateParticipation, validateBasket } from '../services/validation';
 import { runPricing } from '../services/runPricing';
 import { useLiveReprice } from '../hooks/useLiveReprice';
 import type { BarrierMonitoring, UpsideVariant } from '../model/product';
@@ -32,7 +32,14 @@ export function ParticipationPage() {
   const setSolve = useTradeStore((s) => s.setParticipationSolve);
   const market = useMarketStore((s) => s.market);
   const underlyingName = useMarketStore((s) => s.underlyingName);
+  const extraLegs = useMarketStore((s) => s.extraLegs);
+  const basketCorrelation = useMarketStore((s) => s.basketCorrelation);
   const running = useResultsStore((s) => s.running);
+
+  // See CouponPage: the live leg list, assembled fresh each render, rather
+  // than a stored spec field the basket panel would have to keep in sync.
+  const underlyings = [{ name: underlyingName }, ...extraLegs.map((l) => ({ name: l.name }))];
+  const pricingSpec = { ...spec, underlyings };
 
   const [greeks, setGreeks] = useState(false);
   const [gridOpen, setGridOpen] = useState(false);
@@ -81,6 +88,7 @@ export function ParticipationPage() {
   }, [leverageAuto, spec.downside.strikePct]);
 
   const validation = validateParticipation(spec, market);
+  const basketValidation = validateBasket(underlyings, basketCorrelation, market);
 
   const isCallSpread = spec.upside.variant.variant === 'callSpread';
   const isKoRebate = spec.upside.variant.variant === 'koRebate';
@@ -103,12 +111,12 @@ export function ParticipationPage() {
     if (!available) setSolve({ kind: 'none' });
   }, [solve.kind, hasBarrier, isCallSpread, isKoRebate, setSolve]);
 
-  const priceDisabled = !validation.valid;
+  const priceDisabled = !validation.valid || !basketValidation.valid;
   const priceLabel = solve.kind === 'none' ? 'Price' : 'Solve';
 
   useLiveReprice({
     page: 'participation',
-    product: spec,
+    product: pricingSpec,
     market,
     underlyingName,
     solve,
@@ -214,7 +222,7 @@ export function ParticipationPage() {
   }
 
   function handleRun() {
-    runPricing({ page: 'participation', product: spec, market, underlyingName, solve, greeks });
+    runPricing({ page: 'participation', product: pricingSpec, market, underlyingName, solve, greeks });
   }
 
   const kgKiNeverBites = spec.protectionPct >= 100 && spec.downside.barrierType !== 'none' && spec.downside.twinWinPct === 0;
@@ -505,6 +513,12 @@ export function ParticipationPage() {
         )}
       </Card>
 
+      {Object.keys(basketValidation.errors).length > 0 && (
+        <div style={{ gridColumn: '1 / -1' }} className="status-line error">
+          {Object.values(basketValidation.errors).join(' ')}
+        </div>
+      )}
+
       <div style={{ gridColumn: '1 / -1' }}>
         <ActionRow
           label={priceLabel}
@@ -521,7 +535,7 @@ export function ParticipationPage() {
 
       {gridOpen && (
         <div style={{ gridColumn: '1 / -1' }}>
-          <PricingGrid page="participation" spec={spec} market={market} underlyingName={underlyingName} />
+          <PricingGrid page="participation" spec={pricingSpec} market={market} underlyingName={underlyingName} />
         </div>
       )}
     </div>
