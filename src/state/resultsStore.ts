@@ -50,15 +50,9 @@ interface ResultsState {
   expanded: boolean;
   /** Marks an edit as queued for repricing, immediately, before either
    * debounce elapses. Cleared the moment the pass it anticipates actually
-   * starts (startRun), and on every terminal transition (finish/fail/cancel,
-   * see below), so a dropped pass can never leave the spinner stuck.
-   *
-   * The id guard on the terminal transitions is what keeps them safe for a
-   * NEWER pending edit: a superseded run settling late is a no-op entirely,
-   * and a current run's transition only clears pending when no newer edit
-   * has raised it again since — in which case the newer edit's own pass
-   * re-raises it within the debounce window. A brief spinner blink is
-   * preferable to a stuck one. */
+   * starts (startRun). Never touched by finishRun/failRun/cancelRun, so a
+   * newer edit's pending state cannot be clobbered by an older, superseded
+   * run settling late. */
   beginPending: (scope: 'full' | 'cached') => void;
   startRun: (id: string, kind: 'live' | 'explicit', scope: 'full' | 'cached') => void;
   setProgress: (p: ProgressState) => void;
@@ -71,14 +65,7 @@ interface ResultsState {
    * with no mid-run cancellation check. So its "cancelled" message can
    * arrive well after a newer run has already become current. Without this
    * guard, a slow, already-superseded run's late result, error, or
-   * cancellation would clobber whatever the newer run already produced.
-   *
-   * Every terminal transition also clears `pending`. Without it, an edit
-   * whose pass was dropped — a live pass gated by an in-flight explicit
-   * run, see runPricing — would leave `pending` true forever, because no
-   * run of its own ever starts to clear it. The spinner would stay stuck
-   * after the run that superseded it finished. See beginPending's comment
-   * for why this does not clobber a newer edit's pending state. */
+   * cancellation would clobber whatever the newer run already produced. */
   finishRun: (id: string, result: PriceResult) => void;
   failRun: (id: string, message: string) => void;
   /** Soft counterpart to failRun for live, button-less, passes. Keeps
@@ -117,27 +104,12 @@ export const useResultsStore = create<ResultsState>((set) => ({
     }),
   setProgress: (progress) => set({ progress }),
   finishRun: (id, result) =>
-    set((s) =>
-      s.runId === id
-        ? { running: false, result, progress: null, pending: false, pendingScope: null, liveUnsolvable: null }
-        : {},
-    ),
+    set((s) => (s.runId === id ? { running: false, result, progress: null, liveUnsolvable: null } : {})),
   failRun: (id, message) =>
-    set((s) =>
-      s.runId === id
-        ? { running: false, error: message, progress: null, pending: false, pendingScope: null, liveUnsolvable: null }
-        : {},
-    ),
+    set((s) => (s.runId === id ? { running: false, error: message, progress: null, liveUnsolvable: null } : {})),
   failLiveRun: (id, message) =>
-    set((s) =>
-      s.runId === id
-        ? { running: false, progress: null, pending: false, pendingScope: null, liveUnsolvable: message }
-        : {},
-    ),
-  cancelRun: (id) =>
-    set((s) =>
-      s.runId === id ? { running: false, progress: null, pending: false, pendingScope: null } : {},
-    ),
+    set((s) => (s.runId === id ? { running: false, progress: null, liveUnsolvable: message } : {})),
+  cancelRun: (id) => set((s) => (s.runId === id ? { running: false, progress: null } : {})),
   toggleExpanded: () => set((s) => ({ expanded: !s.expanded })),
   setExpanded: (expanded) => set({ expanded }),
 }));

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMarketStore } from '../state/marketStore';
 import { fetchSpot, recentRouteAttempts, type RouteAttempt } from '../services/spotFetch';
-import { fetchFxRealizedVolAndCorr, fetchRateCurve, fetchRefRate, REF_RATE_CCYS } from '../services/marketFetch';
+import { fetchFxRealizedVolAndCorr, fetchRefRate, REF_RATE_CCYS } from '../services/marketFetch';
 import { fetchVolPipeline, type VolSourceKind } from '../services/volPipeline';
 import { useTradeStore } from '../state/tradeStore';
 import { NumericField } from './NumericField';
@@ -155,34 +155,6 @@ async function fetchLiveData(
     lines.push({ kind: 'err', msg: `Rate: ${msg} after ${fmtMs(rateT.ms)}` });
   }
 
-  // The rate CURVE, best-effort: 3M/1Y/2Y/5Y zero rates for the note
-  // currency, so discounting and the path drift follow the term structure
-  // instead of one overnight fixing held flat to the final tenor. Only EUR
-  // and USD have a keyless source; the other currencies keep the flat rate
-  // and the model reports flat discounting, honestly. A failed curve fetch
-  // is reported but never fatal: flat pricing remains correct, just less
-  // exact at long tenors.
-  if (isCurrent()) {
-    try {
-      const rc = await fetchRateCurve(finalCcy);
-      if (isCurrent()) {
-        useMarketStore.setState((s) => ({ market: { ...s.market, rateCurve: rc.curve } }));
-        lines.push({
-          kind: 'ok',
-          msg: `Rate curve ${rc.curve.map((p) => `${p.tYears}y ${(p.rate * 100).toFixed(2)}%`).join(' / ')} · ${rc.source}`,
-          short: `curve ${rc.curve.map((p) => `${(p.rate * 100).toFixed(2)}%`).join('/')}`,
-        });
-      }
-    } catch (rcErr) {
-      if (isCurrent()) {
-        lines.push({
-          kind: 'info',
-          msg: `Rate curve: ${rcErr instanceof Error ? rcErr.message : 'failed'}. Discounting stays flat.`,
-        });
-      }
-    }
-  }
-
   if (!isCurrent()) { finalizeSummary(); return { lines }; }
 
   let volSource: VolSourceInfo | undefined;
@@ -242,16 +214,7 @@ async function fetchLiveData(
   // rate, not the note rate. Fetch it when there is a mismatch and an open
   // source exists. FX vol and Eq-FX correlation are auto-filled from Yahoo
   // 1Y realized FX/equity closes, best-effort; manual edits still override.
-  //
-  // Compare against `finalCcy`, the currency the note ended up in, not the
-  // entry-time `noteCcy`. The spot fetch can switch the note currency to
-  // match the underlying (applyFetchedSpot's currency-follows logic), so a
-  // same-currency note is easy to mistake for a cross-currency one if the
-  // comparison uses the stale value. That mistake fired the quanto branch —
-  // and its FX vol/correlation fetch and drift write — on a Swiss stock in
-  // a Swiss note, exactly like the stale rate did before the finalCcy fix
-  // below.
-  if (underlyingCcy && underlyingCcy !== finalCcy && isCurrent()) {
+  if (underlyingCcy && underlyingCcy !== noteCcy && isCurrent()) {
     const cur = useMarketStore.getState().market.quanto;
     if ((REF_RATE_CCYS as readonly string[]).includes(underlyingCcy)) {
       const urStart = performance.now();
@@ -281,7 +244,7 @@ async function fetchLiveData(
 
     const fxStart = performance.now();
     try {
-      const fx = await fetchFxRealizedVolAndCorr(underlyingCcy, finalCcy, ticker);
+      const fx = await fetchFxRealizedVolAndCorr(underlyingCcy, noteCcy, ticker);
       const fxMs = performance.now() - fxStart;
       if (!isCurrent()) { finalizeSummary(); return { lines, volSource }; }
       const latest = useMarketStore.getState().market.quanto;
@@ -358,15 +321,7 @@ export function MarketPanel() {
           : trade.accumulatorSpec;
     const { lines, volSource: vs } = await fetchLiveData(
       sym,
-      // Read the currency from the STORE, not the render closure. The picker
-      // sets the note currency synchronously in setUnderlying before calling
-      // this handler, but the closure's `market` still holds the pre-pick
-      // value. Passing that stale value made the fetch treat a freshly
-      // same-currency note as cross-currency: a Swiss stock picked into a
-      // CHF note ran the quanto branch against the old EUR note, fetched FX
-      // vol/correlation, and reported an FX line that never should have
-      // existed.
-      useMarketStore.getState().market.currency,
+      market.currency,
       spec.tenorYears,
       market.rate,
       () => fetchGeneration.current === generation,
@@ -399,33 +354,13 @@ export function MarketPanel() {
       const r = await fetchRefRate(next);
       if (rateGeneration.current !== generation) return;
       setMarket({ rate: r.rate });
-      const lines: FetchLine[] = [
+      setFetchLines([
         {
           kind: 'ok',
           msg: `Rate ${(r.rate * 100).toFixed(3)}% · ${r.source} ${r.asOf}`,
           short: `rate ${(r.rate * 100).toFixed(3)}%`,
         },
-      ];
-      // The note currency changed, so the discount curve must change with
-      // it. Best-effort like the fetch path; a failure keeps the flat rate.
-      try {
-        const rc = await fetchRateCurve(next);
-        if (rateGeneration.current !== generation) return;
-        setMarket({ rate: r.rate, rateCurve: rc.curve });
-        lines.push({
-          kind: 'ok',
-          msg: `Rate curve ${rc.curve.map((p) => `${p.tYears}y ${(p.rate * 100).toFixed(2)}%`).join(' / ')} · ${rc.source}`,
-          short: `curve ${rc.curve.map((p) => `${(p.rate * 100).toFixed(2)}%`).join('/')}`,
-        });
-      } catch (rcErr) {
-        if (rateGeneration.current !== generation) return;
-        setMarket({ rate: r.rate, rateCurve: undefined });
-        lines.push({
-          kind: 'info',
-          msg: `Rate curve for ${next}: ${rcErr instanceof Error ? rcErr.message : 'failed'}. Discounting stays flat.`,
-        });
-      }
-      setFetchLines(lines);
+      ]);
     } catch (e) {
       if (rateGeneration.current !== generation) return;
       setFetchLines([

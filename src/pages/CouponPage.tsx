@@ -183,7 +183,7 @@ export function CouponPage() {
             label="Notional"
             value={spec.notional}
             step={10000}
-            suffix={market.currency}
+            suffix={spec.currency}
             onChange={(v) => setSpec({ notional: v })}
             error={validation.errors.notional}
           />

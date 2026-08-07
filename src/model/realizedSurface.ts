@@ -136,14 +136,11 @@ export function buildRealizedSurface(
   // smile instead of an actively wrong one.
   const skewDailyUsed = Math.min(0, moments.skewDaily);
 
-  let anySmile = false;
   const slices = moments.terms.map(({ tYears, vol }) => {
     const n = Math.max(1, tYears * DAYS_PER_YEAR);
     const skewT = skewDailyUsed / Math.sqrt(n);
     const exKurtT = moments.excessKurtDaily / n;
     const sqrtT = Math.sqrt(tYears);
-
-    if (skewT !== 0) anySmile = true;
 
     // Level factor at d = 0, used to re-anchor the smile to the measured ATM.
     const atmFactor = 1 - exKurtT / 24;
@@ -166,7 +163,7 @@ export function buildRealizedSurface(
   // every point on every slice carries the same vol as its own ATM level.
   // A term structure can still vary maturity to maturity — "flat" here
   // means no STRIKE skew, not a single number across the whole surface.
-  const isFlat = !anySmile && moments.excessKurtDaily === 0;
+  const isFlat = skewDailyUsed === 0 && moments.excessKurtDaily === 0;
 
   return { spotRef: spot, slices, source, isFlat };
 }

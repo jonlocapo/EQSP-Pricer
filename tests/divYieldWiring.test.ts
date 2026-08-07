@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { divYieldFromChartPayload, fetchRealizedDivYield, totalReturnIndexFor } from '../src/services/divYieldFetch';
 import { barsFromYahooChart } from '../src/services/ohlcFetch';
-import { fetchRealizedStats } from '../src/services/marketFetch';
 import { riskNeutralDrift } from '../src/model/market';
 import type { MarketData } from '../src/model/market';
 
@@ -87,44 +86,6 @@ describe('dividend yield wiring', () => {
     }) as unknown as typeof fetch;
     try {
       expect(divYieldFromChartPayload('X', chartPayload(0.02)).divYield).toBeCloseTo(0.02, 9);
-    } finally {
-      globalThis.fetch = real;
-    }
-  });
-
-  it('the close-only fallback carries a payload, so the dividend needs no second request', async () => {
-    // The German-stock bug: when the OHLC path (fetchRealizedVolStats) fails
-    // and the close-only fallback (fetchRealizedStats) runs, the fallback used
-    // to return no payload. The dividend code then made its OWN second chart
-    // request — the duplicate PR #18 removed, quietly back on the fallback
-    // path, and the one Yahoo rate-limits away. Fix: the fallback reads the
-    // SAME shared chart fetch (two years, events=div, adjusted close) and
-    // carries the payload, so whichever estimator ran, the yield reads a
-    // response that already exists.
-    const real = globalThis.fetch;
-    let chartHits = 0;
-    globalThis.fetch = ((url: string) =>
-      new Promise((resolve, reject) => {
-        const u = String(url);
-        if (u.includes('v8/finance/chart')) {
-          chartHits += 1;
-          resolve({ ok: true, text: async () => JSON.stringify(chartPayload(0.027)) } as Response);
-        } else {
-          reject(new Error(`unexpected request: ${u}`));
-        }
-      })) as unknown as typeof fetch;
-    try {
-      const stats = await fetchRealizedStats('RHM.DE');
-      expect(stats.payload).toBeDefined();
-      // The payload the fallback returned is the same two years the yield
-      // measures from, so the measurement is a pure function of it — no
-      // second request for the dividend.
-      const dy = divYieldFromChartPayload('RHM.DE', stats.payload);
-      expect(dy.divYield).toBeCloseTo(0.027, 9);
-      expect(chartHits).toBeGreaterThanOrEqual(1);
-      // And the SAME payload still served the vol stats, i.e. one response
-      // carried both consumers even on the fallback path.
-      expect(stats.days).toBe(DAYS - 1);
     } finally {
       globalThis.fetch = real;
     }

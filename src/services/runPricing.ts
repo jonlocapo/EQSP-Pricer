@@ -210,7 +210,6 @@ function envFingerprint(market: MarketData, product: ProductSpec): string {
     spot: market.spot,
     vol: market.vol,
     rate: market.rate,
-    rateCurve: market.rateCurve ?? null,
     divYield: market.divYield,
     quanto: market.quanto ?? null,
     tenorYears: product.tenorYears,
@@ -279,16 +278,7 @@ export async function runPricing({
   // corner case.
   if (live) {
     const current = useResultsStore.getState();
-    if (current.running && current.runKind === 'explicit') {
-      // This live pass is dropped, not deferred: no later pass is scheduled
-      // for the edit that raised `pending`. The explicit run settles with
-      // its own authoritative result, so clear the pending flag here rather
-      // than letting the spinner stick once that run terminates — none of
-      // this edit's own passes will ever start to clear it (see
-      // resultsStore's terminal transitions).
-      useResultsStore.setState({ pending: false, pendingScope: null });
-      return;
-    }
+    if (current.running && current.runKind === 'explicit') return;
   }
 
   const id = crypto.randomUUID();

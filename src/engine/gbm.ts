@@ -1,6 +1,5 @@
 import type { MarketData } from '../model/market';
 import { riskNeutralDrift } from '../model/market';
-import { rateAt } from './discount';
 import { normals } from './rng';
 
 /** Daily simulation frequency used throughout the engine (for products that
@@ -111,127 +110,10 @@ export class PathBatchGenerator {
       this.nextNormal = normals(seed);
     }
 
-    const { vol, volPerStep, rateCurve, divYield } = market;
-    const borrow = (market.costs?.borrowCostBp ?? 0) / 10_000;
-    // The rate curve drives DISCOUNTING and the drift, but only on a
-    // single-currency note. `rateCurve` holds the NOTE currency's zero
-    // curve. A quanto note's underlying grows at the UNDERLYING currency's
-    // rate, `quanto.rateUnderlying`, with the equity-FX correlation
-    // correction that `riskNeutralDrift` applies. Feeding the note curve
-    // into the drift makes two errors at once: it substitutes the wrong
-    // currency's rate, and it drops the correlation term. So the drift
-    // ignores the curve whenever the note is quanto, exactly as
-    // MarketData.rateCurve's doc states. Discounting still uses the curve,
-    // because a quanto note discounts on the note currency.
-    const driftUsesCurve = !!rateCurve && rateCurve.length > 0 && !market.quanto;
+    const { vol } = market;
     const muDt = riskNeutralDrift(market) - 0.5 * vol * vol;
     this.drift = new Float64Array(nSteps);
     this.diffCoeff = new Float64Array(nSteps);
-
-    // Per-step drift needs each step's start time, for the rate curve's
-    // forward rates and for the vol schedule's midpoints (cumulative
-    // times of the grid, computed once here, never per path).
-    const stepStartTimes = (() => {
-      const out = new Float64Array(nSteps);
-      let t = 0;
-      if (typeof stepDt === 'number') {
-        for (let i = 0; i < nSteps; i++) {
-          out[i] = t;
-          t += stepDt;
-        }
-      } else {
-        for (let i = 0; i < nSteps; i++) {
-          out[i] = t;
-          t += stepDt[i];
-        }
-      }
-      return out;
-    })();
-
-    if (volPerStep) {
-      // Piecewise-constant vol across the path: step i diffuses at
-      // volPerStep[i]. The drift's Ito correction uses the step's own vol
-      // too, (mu - 0.5*v_i^2) per step, so the log-Euler step stays exact
-      // for the piecewise-constant-vol model. The quanto correlation term
-      // inside riskNeutralDrift keeps the single flat `vol` — a cross-asset
-      // covariance anchor, see MarketData.volPerStep's doc.
-      //
-      // BIT-IDENTITY: when every volPerStep[i] equals `vol` and no rate
-      // curve is set, each (riskNeutralDrift - 0.5*v_i^2) is the same double
-      // as the scalar branch's muDt (identical operand order), so a constant
-      // per-step array reproduces the flat-vol engine byte for byte. A
-      // constant array is exactly what a term-structure-free surface
-      // produces.
-      //
-      // With a rate curve too, the drift composes: the curve's forward rate
-      // for the step replaces the flat `rate` (the same substitution the
-      // curve-only branch below makes), on top of the per-step vol.
-      const hasCurve = driftUsesCurve;
-      const q = divYield;
-      if (volPerStep.length !== nSteps) {
-        throw new Error(`volPerStep has ${volPerStep.length} entries for ${nSteps} steps`);
-      }
-      const driftPerStep = (i: number, dt: number): number => {
-        const v = volPerStep[i];
-        const base = hasCurve
-          ? (() => {
-              const t1 = stepStartTimes[i];
-              const t2 = t1 + dt;
-              return (rateAt(rateCurve!, t2) * t2 - rateAt(rateCurve!, t1) * t1) / dt - q - borrow;
-            })()
-          : riskNeutralDrift(market);
-        return (base - 0.5 * v * v) * dt;
-      };
-      if (typeof stepDt === 'number') {
-        for (let i = 0; i < nSteps; i++) {
-          const v = volPerStep[i];
-          this.drift[i] = driftPerStep(i, stepDt);
-          this.diffCoeff[i] = v * Math.sqrt(stepDt);
-        }
-      } else {
-        for (let i = 0; i < nSteps; i++) {
-          const v = volPerStep[i];
-          this.drift[i] = driftPerStep(i, stepDt[i]);
-          this.diffCoeff[i] = v * Math.sqrt(stepDt[i]);
-        }
-      }
-      return;
-    }
-
-    if (driftUsesCurve && rateCurve) {
-      // Rate-curve drift: the risk-neutral drift at step i uses the
-      // INSTANTANEOUS FORWARD rate of that step, not the zero rate. The
-      // curve's points are zero rates z(t), so the discount factor of a
-      // cashflow at t is exp(-z(t)*t). The drift must run on the same
-      // curve: E[S_{t2}/S_{t1}] = exp(integral of forward) = exp(z(t2)*t2 -
-      // z(t1)*t1), which telescopes to exp(z(T)*T - q*T) over the whole
-      // path. That is what makes the curve cancel out of the forward:
-      // E[S_T]*df(T) = S0*exp(-q*T), exactly as with a flat rate. With a
-      // piecewise-linear zero curve, the average forward over a step is
-      // (z(t2)*t2 - z(t1)*t1)/(t2 - t1), exact — no quadrature. A quanto
-      // note never reaches this branch: `driftUsesCurve` excludes it, so
-      // the quanto drift keeps the flat underlying rate.
-      const q = divYield;
-      if (typeof stepDt === 'number') {
-        const dt = stepDt;
-        for (let i = 0; i < nSteps; i++) {
-          const t1 = stepStartTimes[i];
-          const t2 = t1 + dt;
-          const fwd = (rateAt(rateCurve, t2) * t2 - rateAt(rateCurve, t1) * t1) / dt;
-          this.drift[i] = (fwd - q - borrow - 0.5 * vol * vol) * dt;
-          this.diffCoeff[i] = vol * Math.sqrt(dt);
-        }
-      } else {
-        for (let i = 0; i < nSteps; i++) {
-          const t1 = stepStartTimes[i];
-          const t2 = t1 + stepDt[i];
-          const fwd = (rateAt(rateCurve, t2) * t2 - rateAt(rateCurve, t1) * t1) / stepDt[i];
-          this.drift[i] = (fwd - q - borrow - 0.5 * vol * vol) * stepDt[i];
-          this.diffCoeff[i] = vol * Math.sqrt(stepDt[i]);
-        }
-      }
-      return;
-    }
 
     if (typeof stepDt === 'number') {
       const drift = muDt * stepDt;

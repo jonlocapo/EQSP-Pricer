@@ -48,13 +48,6 @@ export interface CostParams {
 
 export const NO_COSTS: CostParams = { fundingSpreadBp: 0, borrowCostBp: 0, feePct: 0 };
 
-/** One point of a zero-coupon rate curve: continuously-compounded rate at a
- * maturity. Rates are decimals (0.02 = 2%). */
-export interface RatePoint {
-  tYears: number;
-  rate: number;
-}
-
 /** Market data for pricing. All rates/vols are decimals (0.25 = 25%). */
 export interface MarketData {
   /** Spot price of the underlying, absolute. */
@@ -63,38 +56,9 @@ export interface MarketData {
   vol: number;
   /** Continuously-compounded risk-free rate, decimal (note currency; used for discounting). */
   rate: number;
-  /**
-   * Zero-coupon rate curve for the note currency, ascending by tYears. When
-   * present, discounting uses the curve's interpolated rate at each cashflow
-   * date (see engine/discount.ts's `rateAt`), and the path drift uses the
-   * forward rate of each simulation step, instead of one overnight fixing
-   * applied flat to every tenor — a 5-year capital-guaranteed note's bond
-   * floor is most of its price, and the overnight rate is increasingly wrong
-   * there. Absent means the flat `rate` for the whole life, today's
-   * behavior. Never set for the underlying currency of a quanto note: the
-   * quanto drift keeps the flat `rateUnderlying`.
-   */
-  rateCurve?: RatePoint[];
   /** Continuously-compounded dividend yield, decimal. */
   divYield: number;
   currency: string;
-  /**
-   * Per-step piecewise-constant volatility, decimal, length nSteps, one
-   * entry per simulation step. Absent means the flat `vol` for the whole
-   * life, today's behavior. Present means the path's diffusion uses
-   * `volPerStep[i]` on step i, so a multi-step product can be simulated on
-   * the vol of ITS OWN step horizon instead of one vol taken at the final
-   * tenor — a 5-year autocall that may call in year one no longer runs the
-   * whole path on 5-year vol. Built by `effectiveMarketFor` (see
-   * worker/pricing.ts) from the vol surface's term structure at the
-   * product's risk strike, total-variance preserving per step (a step's
-   * vol^2 * dt equals the surface's forward total variance over that step),
-   * which makes it exact, not an approximation, and identical to the flat
-   * case when the surface has no term structure. The quanto drift's
-   * equity-FX correlation term deliberately keeps the single `vol` — it is
-   * a cross-asset covariance anchor, held constant per step.
-   */
-  volPerStep?: number[];
   /**
    * Present only for a cross-currency (quanto) note, where the underlying and
    * note currencies differ. Absent means a single-currency note: today's
