@@ -28,6 +28,21 @@
   gap: 8px;
 }
 
+/* The build stamp. Present but quiet: it must be readable when someone looks
+   for it, and must not compete with the product tabs. */
+.app-version {
+  font-weight: 500;
+  font-size: 11px;
+  letter-spacing: 0;
+  color: var(--text-faint);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 7px;
+  cursor: help;
+  font-variant-numeric: tabular-nums;
+}
+
 .app-title .dot {
   width: 8px;
   height: 8px;

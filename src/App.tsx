@@ -10,6 +10,7 @@ import { LabModal } from './components/LabModal';
 import { CouponPage } from './pages/CouponPage';
 import { ParticipationPage } from './pages/ParticipationPage';
 import { AccumulatorPage } from './pages/AccumulatorPage';
+import { fullVersionLabel, shortVersionLabel } from './version';
 
 const TABS: { id: PageId; label: string }[] = [
   { id: 'coupon', label: 'Coupon (RC/AC)' },
@@ -32,6 +33,12 @@ export default function App() {
         <div className="app-title">
           <span className="dot" />
           EQSP Pricer
+          {/* The build stamp. A static site redeploys silently, so the running
+              version has to be readable from the page. The tooltip carries the
+              commit, which identifies the exact build. */}
+          <span className="app-version" title={fullVersionLabel()}>
+            {shortVersionLabel()}
+          </span>
         </div>
         <nav className="tab-bar">
           {TABS.map((t) => (
