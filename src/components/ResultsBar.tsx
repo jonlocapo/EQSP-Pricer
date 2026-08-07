@@ -183,13 +183,17 @@ export function ResultsBar() {
               <h4 className="detail-block-title">Pricing basis</h4>
               <div
                 className="detail-stat-row"
-                title={result.basis.riskStrikeReason ?? 'Flat volatility as entered in the market panel.'}
+                title={
+                  result.basis.volStepwise
+                    ? 'Per-step vol schedule read off the surface term structure at the risk strike. Path steps diffuse at the vol of their own horizon, not one vol taken at the final tenor.'
+                    : (result.basis.riskStrikeReason ?? 'Flat volatility as entered in the market panel.')
+                }
               >
                 <span>Volatility used</span>
                 <span>
                   {(result.basis.volUsed * 100).toFixed(2)}%
                   {result.basis.volSource === 'surface' && result.basis.riskStrikePct !== undefined
-                    ? ` @ ${result.basis.riskStrikePct}%`
+                    ? ` @ ${result.basis.riskStrikePct}%${result.basis.volStepwise ? ' · per-step' : ''}`
                     : ' (flat)'}
                 </span>
               </div>
