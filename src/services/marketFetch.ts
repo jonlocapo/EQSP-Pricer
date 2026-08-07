@@ -17,7 +17,33 @@ import { fetchDailyChart } from './ohlcFetch';
  * non-CSV body as a failed attempt, so the proxy fallback kicks in. */
 function looksLikeCsv(text: string): boolean {
   const head = text.trimStart().slice(0, 1);
-  return head !== '<' && text.includes(',');
+  // Rejects a JSON body too, not only HTML. A relay that is rate-limited often
+  // answers 200 with its own JSON error, and `{"error":"...","code":429}` both
+  // avoids a leading '<' and contains a comma, so the older check passed it.
+  return head !== '<' && head !== '{' && head !== '[' && text.includes(',');
+}
+
+/**
+ * Accepts only the ECB's csvdata shape, which every ECB parser here reads by
+ * column name (see `parseEcbLatest` and `fetchRefRate`'s EUR branch).
+ *
+ * WHY A VALIDATOR AT ALL: this predicate runs inside the hedged race in
+ * `fetchTextWithCorsFallback`, so it decides which route WINS. A route left
+ * unvalidated accepts anything with HTTP 200, including a relay's own error
+ * page. That body then wins, aborts the routes still in flight, and the fetch
+ * fails even though a working relay was mid-answer. The parser downstream is
+ * strict enough that no wrong RATE can result, so this is about availability,
+ * not correctness.
+ */
+function isEcbCsv(text: string): boolean {
+  return looksLikeCsv(text) && text.includes('OBS_VALUE') && text.includes('TIME_PERIOD');
+}
+
+/** Accepts only the NY Fed's SOFR payload, which `fetchRefRate` reads as
+ * `refRates[0].percentRate`. Same reasoning as `isEcbCsv`. */
+function isSofrJson(text: string): boolean {
+  const t = text.trimStart();
+  return t.startsWith('{') && t.includes('"refRates"');
 }
 
 export interface HistVolResult {
@@ -238,7 +264,7 @@ export const REF_RATE_CCYS = ['EUR', 'USD', 'GBP', 'CHF', 'JPY'] as const;
 
 export async function fetchRefRate(currency: string): Promise<RefRateResult> {
   if (currency === 'EUR') {
-    const { text, proxied } = await fetchTextWithCorsFallback(ESTR_URL, 8000);
+    const { text, proxied } = await fetchTextWithCorsFallback(ESTR_URL, 8000, isEcbCsv);
     const lines = text.trim().split('\n');
     if (lines.length < 2) throw new Error('empty ECB response');
     const header = lines[0].split(',');
@@ -249,7 +275,7 @@ export async function fetchRefRate(currency: string): Promise<RefRateResult> {
     return { rate: value / 100, asOf, source: proxied ? 'ECB €STR (proxied)' : 'ECB €STR' };
   }
   if (currency === 'USD') {
-    const { text, proxied } = await fetchTextWithCorsFallback(SOFR_URL, 8000);
+    const { text, proxied } = await fetchTextWithCorsFallback(SOFR_URL, 8000, isSofrJson);
     const data = JSON.parse(text) as {
       refRates?: { effectiveDate: string; percentRate: number }[];
     };
@@ -385,7 +411,7 @@ export async function fetchRateCurve(currency: string): Promise<RateCurveResult>
     const points = await Promise.all(
       src.keys.map(async (key, i) => {
         const url = `https://data-api.ecb.europa.eu/service/data/YC.B.U2.EUR.4F.G_N_A.SV_C_YM.${key}?lastNObservations=1&format=csvdata`;
-        const { text } = await fetchTextWithCorsFallback(url, 8000);
+        const { text } = await fetchTextWithCorsFallback(url, 8000, isEcbCsv);
         const { asOf: a, ratePercent } = parseEcbLatest(text);
         asOf = a;
         return { tYears: src.tenorsYears[i], rate: clamp(ratePercent / 100) };
