@@ -314,7 +314,7 @@ async function realizedRungs(
         : await fetchRealizedDivYield(symbol);
     measuredDivYield = dy.divYield;
     divYieldNote = `div ${(dy.divYield * 100).toFixed(2)}% realized over ${dy.years.toFixed(1)}y (${dy.source})`;
-  } catch {
+  } catch (e) {
     // No total-return series for this underlying. A PRICE INDEX with no
     // total-return counterpart (e.g. ^STOXX50E, which has no ^...TR twin on
     // Yahoo) cannot use the pair-of-indices method at all. Fall back to its
@@ -326,6 +326,17 @@ async function realizedRungs(
         measuredDivYield = etfDiv.divYield;
         divYieldNote = `div ${(etfDiv.divYield * 100).toFixed(2)}% from ${etfDiv.etf} adjusted close (net of fund fee)`;
       }
+    }
+    // REPORT the failure. A yield that cannot be measured leaves the user's
+    // typed value in force, and that is the correct behavior, but it must not
+    // be silent: an unchanged yield looks identical to a yield the model chose
+    // to keep. Without this the only visible symptom is a dividend field that
+    // never moves, which gives nobody a reason to look at. The stock path used
+    // to swallow every failure here, because only the index branch above did
+    // anything with the error.
+    if (measuredDivYield === undefined) {
+      const why = e instanceof Error ? e.message : 'measurement failed';
+      divYieldNote = `div not measured (${why}), keeping the entered yield`;
     }
   }
   /**
@@ -396,7 +407,9 @@ async function realizedRungs(
         // Rung 3 either found no index for this name or could not fetch the
         // one it found. Both land here, so the note names the substitute
         // rather than claiming a reason it cannot know.
-        note: `Realized moments (${modelLabel}) scaled by the broad-market ${marketRatio.toFixed(2)}x VIX/realized premium, because no vol index reading was available for "${symbol}"`,
+        note: withDivNote(
+          `Realized moments (${modelLabel}) scaled by the broad-market ${marketRatio.toFixed(2)}x VIX/realized premium, because no vol index reading was available for "${symbol}"`,
+        ),
       };
     } catch {
       // Fall through to plain realized, the last rung that uses history.
@@ -427,7 +440,7 @@ async function realizedRungs(
         divYield: measuredDivYield,
         kind: 'vol-index-flat',
         label: `${idx.symbol} implied`,
-        note: `No price history available, so the smile is flat at the ${idx.symbol} level`,
+        note: withDivNote(`No price history available, so the smile is flat at the ${idx.symbol} level`),
       };
     } catch {
       // Fall through to the entered vol.
