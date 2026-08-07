@@ -125,7 +125,6 @@ describe('executePriceRequest with quanto market', () => {
   const capGuar: ParticipationSpec = {
     kind: 'participation',
     underlyings: [{ name: 'TEST' }],
-    currency: 'EUR',
     notional: 1_000_000,
     tenorYears: 1,
     reofferPct: 100,

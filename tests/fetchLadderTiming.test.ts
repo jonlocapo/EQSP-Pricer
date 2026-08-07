@@ -53,31 +53,29 @@ function fakeFetch(routes: { match: string; delayMs: number; body?: string; fail
 
 describe('fetch ladder timing diagnostics', () => {
   it('is not dramatically slower cold (empty route memo) than warm (remembered route)', async () => {
-    // Direct fails instantly; the first relay (allorigins) answers in 300ms.
+    // Direct fails instantly; the first relay (proxy.cors.sh) answers in 150ms.
     // Cold: the memo is empty, so this call starts at 'direct' and hedges
-    // into allorigins after the hedge delay. Warm: the memo already points
-    // at allorigins, so it is tried first with no hedge wait at all. The
-    // user's report that this claim needed verifying, not assuming, is the
-    // reason this test exists: assert cold is not dramatically slower, not
-    // that it is identical.
+    // into the relay after the hedge delay. Warm: the memo already points at
+    // it, so it is tried first with no hedge wait at all. The user's report
+    // that this claim needed verifying, not assuming, is the reason this test
+    // exists: assert cold is not dramatically slower, not that it is identical.
     // The relay delay (150ms) stays under the hedge interval (200ms) counted
     // from when the relay itself started, so no third route is hedged in
     // before the relay answers. That keeps routesStarted deterministic: 2
-    // cold (direct fails, then allorigins wins), 1 warm (allorigins wins
-    // outright).
+    // cold (direct fails, then the relay wins), 1 warm (relay wins outright).
     fakeFetch([
       { match: 'query1.finance.yahoo.com', delayMs: 5, fail: true },
-      { match: 'api.allorigins.win', delayMs: 150, body: '{"cold":1}' },
+      { match: 'proxy.cors.sh', delayMs: 150, body: '{"cold":1}' },
     ]);
     const coldStart = performance.now();
     const cold = await fetchTextWithCorsFallback('https://query1.finance.yahoo.com/x', 5000, () => true, 200);
     const coldMs = performance.now() - coldStart;
     expect(cold.text).toBe('{"cold":1}');
 
-    // Warm: same routes, but the memo now points straight at allorigins.
+    // Warm: same routes, but the memo now points straight at the relay.
     fakeFetch([
       { match: 'query1.finance.yahoo.com', delayMs: 5, fail: true },
-      { match: 'api.allorigins.win', delayMs: 150, body: '{"warm":1}' },
+      { match: 'proxy.cors.sh', delayMs: 150, body: '{"warm":1}' },
     ]);
     const warmStart = performance.now();
     const warm = await fetchTextWithCorsFallback('https://query1.finance.yahoo.com/x', 5000, () => true, 200);
@@ -95,20 +93,20 @@ describe('fetch ladder timing diagnostics', () => {
 
     const attempts = recentRouteAttempts();
     expect(attempts).toHaveLength(2);
-    expect(attempts[0].winner).toBe('api.allorigins.win');
-    expect(attempts[0].routesStarted).toBe(2); // direct started, failed, then allorigins started
-    expect(attempts[1].winner).toBe('api.allorigins.win');
-    expect(attempts[1].routesStarted).toBe(1); // memo sent allorigins first, and it answered
+    expect(attempts[0].winner).toBe('proxy.cors.sh');
+    expect(attempts[0].routesStarted).toBe(2); // direct started, failed, then the relay started
+    expect(attempts[1].winner).toBe('proxy.cors.sh');
+    expect(attempts[1].routesStarted).toBe(1); // memo sent the relay first, and it answered
   });
 
   it('overtakes a stalled first relay instead of waiting it out', async () => {
     // Direct fails instantly. Relay 1 (allorigins) takes 9s, far past any
-    // sane hedge. Relay 2 (codetabs) answers in 200ms. The hedge must start
-    // codetabs without waiting for allorigins, so the call completes in well
-    // under 9s.
+    // sane hedge. A later relay (codetabs) answers in 150ms. The hedge must
+    // start codetabs without waiting for the stalled one, so the call
+    // completes in well under 9s.
     fakeFetch([
       { match: 'query1.finance.yahoo.com', delayMs: 5, fail: true },
-      { match: 'api.allorigins.win', delayMs: 9000, body: '{"slow":1}' },
+      { match: 'proxy.cors.sh', delayMs: 9000, body: '{"slow":1}' },
       { match: 'api.codetabs.com', delayMs: 150, body: '{"fast":1}' },
     ]);
     const t0 = performance.now();
@@ -120,8 +118,9 @@ describe('fetch ladder timing diagnostics', () => {
     const attempts = recentRouteAttempts();
     expect(attempts).toHaveLength(1);
     expect(attempts[0].winner).toBe('api.codetabs.com');
-    // direct, then allorigins, then codetabs all started before codetabs won.
-    expect(attempts[0].routesStarted).toBe(3);
+    // direct, cors.sh (stalled), allorigins (unmatched -> default slow), then
+    // codetabs all started before codetabs won.
+    expect(attempts[0].routesStarted).toBe(4);
     expect(attempts[0].ms).toBeLessThan(3000);
   });
 
@@ -139,7 +138,7 @@ describe('fetch ladder timing diagnostics', () => {
     const attempts = recentRouteAttempts();
     expect(attempts).toHaveLength(1);
     expect(attempts[0].winner).toBeNull();
-    expect(attempts[0].routesStarted).toBe(4); // direct + 3 relays, all started
+    expect(attempts[0].routesStarted).toBe(5); // direct + 4 relays, all started
     expect(attempts[0].error).toBeTruthy();
     expect(attempts[0].ms).toBeGreaterThan(0);
     expect(attempts[0].ms).toBeLessThan(2000);

@@ -26,7 +26,6 @@ export function rebuildCustomCallSchedule(
 export const DEFAULT_COUPON_SPEC: CouponProductSpec = {
   kind: 'coupon',
   underlyings: [{ name: 'SPX Index' }],
-  currency: 'EUR',
   notional: 1_000_000,
   tenorYears: 1,
   reofferPct: 98.5,
@@ -55,7 +54,6 @@ export const DEFAULT_COUPON_SPEC: CouponProductSpec = {
 
 const commonDefaults = {
   underlyings: [{ name: 'SPX Index' }],
-  currency: 'EUR',
   notional: 1_000_000,
   tenorYears: 1,
   reofferPct: 100,
@@ -169,7 +167,6 @@ export const DEFAULT_ACCUMULATOR: AccumulatorSpec = {
   kind: 'accumulator',
   direction: 'accumulate',
   underlyings: [{ name: 'SPX Index' }],
-  currency: 'EUR',
   strikePct: 100,
   upfrontPct: 0.5,
   tenorYears: 0.5,

@@ -40,7 +40,6 @@ describe('adaptive grid — compact grid price agrees with the daily grid to wit
     const spec: CouponProductSpec = {
       kind: 'coupon',
       underlyings: [{ name: 'TEST' }],
-      currency: 'EUR',
       notional: 1_000_000,
       tenorYears: 1,
       reofferPct: 98.5,
@@ -103,7 +102,6 @@ describe('adaptive grid — compact grid price agrees with the daily grid to wit
     const spec: ParticipationSpec = {
       kind: 'participation',
       underlyings: [{ name: 'TEST' }],
-      currency: 'EUR',
       notional: 1_000_000,
       tenorYears: 1,
       reofferPct: 100,
@@ -155,7 +153,6 @@ describe('adaptive grid — compact grid price agrees with the daily grid to wit
     const capGuar: ParticipationSpec = {
       kind: 'participation',
       underlyings: [{ name: 'TEST' }],
-      currency: 'EUR',
       notional: 1_000_000,
       tenorYears: 1,
       reofferPct: 100,

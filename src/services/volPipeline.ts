@@ -279,7 +279,7 @@ async function chainRungs(args: VolPipelineArgs): Promise<VolPipelineResult | un
  *
  * `realized` is whatever the price-history fetch produced, started before the
  * chain rungs ran. Undefined means no history was reachable, which leaves only
- * the flat rungs. The OHLC path (Yang-Zhang level plus GARCH(1,1) term
+ * the flat rungs. The OHLC path (Yang-Zhang level plus GJR-GARCH(1,1) term
  * structure, see ./realizedVolFetch.ts) is preferred over the close-only
  * trailing windows, and that preference is expressed where the promise is
  * built.
@@ -382,7 +382,7 @@ async function realizedRungs(
           surface,
           atmVol: volAtPctOfSpot(surface, 100, tenorYears),
           divYield: measuredDivYield,
-                  kind: 'vol-index',
+          kind: 'vol-index',
           label: `${idx.symbol}-scaled realized (${modelLabel})`,
           note: withDivNote(`Realized moments (${modelLabel}) scaled by a ${ratio.toFixed(2)}x ${idx.symbol}/realized premium`),
         };

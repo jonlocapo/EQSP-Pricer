@@ -2,8 +2,8 @@
  * Nelder-Mead derivative-free simplex minimizer.
  *
  * WHY a new optimizer: `../engine/solver.ts` already has `brent`, but Brent
- * finds a ROOT of a one-dimensional function on a bracket. The GARCH(1,1)
- * fit in `./garch.ts` MINIMIZES a two-parameter negative log-likelihood, a
+ * finds a ROOT of a one-dimensional function on a bracket. The GJR-GARCH(1,1)
+ * fit in `./garch.ts` MINIMIZES a three-parameter negative log-likelihood, a
  * different problem in more than one dimension, so Brent cannot serve it.
  * Nelder-Mead needs no gradient (the likelihood is not convenient to
  * differentiate by hand) and is standard for a small, low-dimensional fit

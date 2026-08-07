@@ -12,7 +12,6 @@ const market: MarketData = { spot: 100, vol: 0.25, rate: 0.02, divYield: 0.02, c
 const product: CouponProductSpec = {
   kind: 'coupon',
   underlyings: [{ name: 'TEST' }],
-  currency: 'EUR',
   notional: 1_000_000,
   tenorYears: 1,
   reofferPct: 98.5,

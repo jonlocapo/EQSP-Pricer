@@ -144,7 +144,6 @@ describe('riskStrikeFor — which strike the dominant leg lives at', () => {
   const coupon: CouponProductSpec = {
     kind: 'coupon',
     underlyings: [{ name: 'T' }],
-    currency: 'EUR',
     notional: 1e6,
     tenorYears: 1,
     reofferPct: 98.5,
@@ -179,7 +178,6 @@ describe('riskStrikeFor — which strike the dominant leg lives at', () => {
     const base: ParticipationSpec = {
       kind: 'participation',
       underlyings: [{ name: 'T' }],
-      currency: 'EUR',
       notional: 1e6,
       tenorYears: 1,
       reofferPct: 100,
@@ -202,7 +200,6 @@ describe('riskStrikeFor — which strike the dominant leg lives at', () => {
       kind: 'accumulator',
       direction: 'accumulate',
       underlyings: [{ name: 'T' }],
-      currency: 'EUR',
       strikePct: 92,
       upfrontPct: 0,
       tenorYears: 0.5,

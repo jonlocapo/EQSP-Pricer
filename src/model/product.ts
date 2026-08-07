@@ -26,7 +26,6 @@ export interface Underlying {
 
 export interface CommonTerms {
   underlyings: Underlying[];
-  currency: string;
   notional: number;
   tenorYears: number;
   /** Target PV as % of notional for solve-for (reoffer). */
@@ -159,7 +158,6 @@ export interface AccumulatorSpec {
   kind: 'accumulator';
   direction: AccumulatorDirection;
   underlyings: Underlying[];
-  currency: string;
   strikePct: number;
   /** Upfront value target, % of estimated notional (0 = zero-cost). */
   upfrontPct: number;

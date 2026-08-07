@@ -1,8 +1,8 @@
 /**
  * This underlying's realized volatility statistics, built from daily OHLC
  * bars: the Yang-Zhang estimator (`../model/volEstimators.ts`) for the
- * variance LEVEL, and a GARCH(1,1) term structure (`../model/garch.ts`) for
- * the maturity SHAPE, in place of `../model/realizedSurface.ts`'s four
+ * variance LEVEL, and a GJR-GARCH(1,1) term structure (`../model/garch.ts`)
+ * for the maturity SHAPE, in place of `../model/realizedSurface.ts`'s four
  * overlapping trailing windows.
  *
  * WHY a separate file from `./marketFetch.ts`: that file already has a
@@ -43,7 +43,7 @@ export interface RealizedVolStatsResult {
  * from either path looks the same shape of the answer. */
 const HORIZONS_DAYS = [21, 63, 126, 252];
 
-/** Below this many bars, a GARCH(1,1) fit has too few return observations
+/** Below this many bars, a GJR-GARCH(1,1) fit has too few return observations
  * to trust (see `../model/garch.ts`'s own MIN_OBS_FOR_FIT), so this falls
  * back to the trailing-window term structure — the same one the close-only
  * path already uses and that `realizedSurface.test.ts` pins. */

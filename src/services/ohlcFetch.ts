@@ -14,7 +14,7 @@
 import { fetchTextWithCorsFallback } from './spotFetch';
 import type { Bar } from '../model/volEstimators';
 
-/** About 2 years of daily bars: a GARCH(1,1) fit needs enough return
+/** About 2 years of daily bars: a GJR-GARCH(1,1) fit needs enough return
  * observations to separate the ARCH and GARCH effects from noise (see
  * `../model/garch.ts`'s MIN_OBS_FOR_FIT), so this fetches more history than
  * the 1-year window the close-only path uses. */

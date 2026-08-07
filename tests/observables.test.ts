@@ -46,7 +46,6 @@ function baseCoupon(overrides: Partial<CouponProductSpec> = {}): CouponProductSp
   return {
     kind: 'coupon',
     underlyings: [{ name: 'TEST' }],
-    currency: 'EUR',
     notional: 1_000_000,
     tenorYears: 2,
     reofferPct: 98.5,
@@ -75,7 +74,6 @@ function baseParticipation(overrides: Partial<ParticipationSpec> = {}): Particip
   return {
     kind: 'participation',
     underlyings: [{ name: 'TEST' }],
-    currency: 'EUR',
     notional: 1_000_000,
     tenorYears: 2,
     reofferPct: 100,

@@ -39,9 +39,3 @@ export function noteEditSource(source: EditSource): void {
 export function peekEditSource(): EditSource {
   return Date.now() - lastAt < FRESHNESS_MS ? lastSource : 'type';
 }
-
-/** Test-only: clears the marker so cases don't leak state into each other. */
-export function __resetEditSourceForTests(): void {
-  lastSource = 'type';
-  lastAt = 0;
-}

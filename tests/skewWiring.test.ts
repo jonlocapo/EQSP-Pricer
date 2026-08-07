@@ -71,7 +71,6 @@ describe('skew wiring', () => {
     const spec: CouponProductSpec = {
       kind: 'coupon',
       underlyings: [{ name: 'T' }],
-      currency: 'EUR',
       notional: 1_000_000,
       tenorYears: 1,
       reofferPct: 98.5,

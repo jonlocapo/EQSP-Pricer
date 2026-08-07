@@ -22,7 +22,6 @@ const decumulator: AccumulatorSpec = {
   kind: 'accumulator',
   direction: 'decumulate',
   underlyings: [{ name: 'NESN' }],
-  currency: 'CHF',
   strikePct: 103,
   upfrontPct: 0.93,
   tenorYears: 0.5,

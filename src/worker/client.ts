@@ -9,9 +9,10 @@ export interface ProgressUpdate {
 }
 
 /**
- * Abstraction over the pricing engine. In phase 1, MockPricerClient backs
- * it. A real Web Worker-backed implementation arrives later, and can be
- * swapped in via setPricerClient without touching UI code.
+ * Abstraction over the pricing engine. The real Web Worker-backed client
+ * (`WorkerPricerClient`, installed in main.tsx) is the only implementation;
+ * the interface exists so tests and tooling can swap in a fake without
+ * touching UI code.
  */
 export interface PricerClient {
   price(req: PriceRequest, onProgress: (p: ProgressUpdate) => void): Promise<PriceResult>;
