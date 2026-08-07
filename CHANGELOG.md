@@ -41,6 +41,14 @@ three bugs that made a price silently wrong are fixed.
   total-return counterpart, and the fallback volatility estimator no longer
   fires a second identical request at the rate-limited chart endpoint.
 - A failed solve now reports the range the note can actually reach.
+- Type a name, not just a ticker, with no network at all. A built-in list of
+  the underlyings a desk actually uses is searched locally and painted
+  instantly, so "Rheinmetall" finds RHM.DE even when every relay is down.
+  Yahoo still covers everything outside the list and its rows win on merge.
+- Fixed: ticker search reported "No matches" for real tickers. A relay error
+  body passed the response check, won the hedged race, and aborted the routes
+  still in flight. The empty result was then cached, and an empty array is
+  truthy, so the query stayed broken until a page reload.
 - Worst-of prerequisites: bivariate normal CDF, a two-asset worst-of digital and
   the Stulz formula as references, plus a draw-order fingerprint, cache-key
   coverage and frozen single-asset golden prices.
