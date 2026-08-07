@@ -55,6 +55,42 @@ export interface RatePoint {
   rate: number;
 }
 
+/**
+ * One leg of a worst-of basket.
+ *
+ * Deliberately NOT carrying a spot. Every payoff here reads relative
+ * performance `S(t)/S(0)`, so a leg's starting level cancels and cannot move a
+ * price. Storing it would be a field nothing reads, and the panel keeps the
+ * quoted levels for display on its own.
+ */
+export interface BasketAsset {
+  /** Flat implied volatility for this leg, decimal. */
+  vol: number;
+  /** Continuously-compounded dividend yield for this leg, decimal. */
+  divYield: number;
+}
+
+/**
+ * A worst-of basket. Present only when the product has two or more
+ * underlyings.
+ *
+ * The engine simulates each leg's PERFORMANCE and hands the payoff the worst
+ * of them at each step (see engine/gbm.ts). That collapse is exact for a
+ * worst-of, because no worst-of payoff asks WHICH leg is worst, only how far
+ * down it is.
+ *
+ * `correlation` must be a valid correlation matrix: square, unit diagonal,
+ * positive semi-definite. Repair it with `repairCorrelation` before it reaches
+ * here, because a non-PSD matrix has no Cholesky factor and cannot be
+ * simulated at all.
+ */
+export interface BasketParams {
+  /** One entry per underlying, in the same order as `spec.underlyings`. */
+  assets: BasketAsset[];
+  /** `correlation[i][j]` between legs i and j. */
+  correlation: number[][];
+}
+
 /** Market data for pricing. All rates/vols are decimals (0.25 = 25%). */
 export interface MarketData {
   /** Spot price of the underlying, absolute. */
@@ -77,6 +113,17 @@ export interface MarketData {
   rateCurve?: RatePoint[];
   /** Continuously-compounded dividend yield, decimal. */
   divYield: number;
+  /**
+   * Worst-of basket legs and their correlations. Absent, or shorter than two
+   * entries, means a single underlying and today's behavior exactly: the
+   * engine keeps the scalar `vol` and `divYield` and never enters the basket
+   * branch, so single-asset paths stay bit-identical.
+   *
+   * `vol` and `divYield` above remain the FIRST leg's values, so anything that
+   * reads them without knowing about baskets still sees a sensible number
+   * rather than a stale one.
+   */
+  basket?: BasketParams;
   currency: string;
   /**
    * Per-step piecewise-constant volatility, decimal, length nSteps, one

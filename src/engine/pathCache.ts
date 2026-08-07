@@ -117,6 +117,16 @@ export function computeCacheKey(p: CacheKeyParams): string {
     rate: p.market.rate,
     rateCurve: p.market.rateCurve,
     divYield: p.market.divYield,
+    // Every basket leg's vol and dividend, and the whole correlation matrix.
+    // Two DIFFERENT baskets can share the same scalar spot, vol and divYield
+    // above, so without this the cache would hand one basket's paths to the
+    // other and price it confidently wrong with nothing logged.
+    basket: p.market.basket
+      ? {
+          assets: p.market.basket.assets.map((a) => ({ vol: a.vol, divYield: a.divYield })),
+          correlation: p.market.basket.correlation,
+        }
+      : undefined,
     borrowCost: p.market.costs?.borrowCostBp ?? 0,
     quanto: p.market.quanto
       ? {
@@ -186,6 +196,10 @@ export interface NormalsKeyParams {
   seed: number;
   antithetic: boolean;
   nSteps: number;
+  /** Draws per step: one per basket leg, so 1 for a single underlying. A slice
+   * drawn for one leg count has the wrong LENGTH for another and must not be
+   * replayed across them. */
+  drawsPerStep?: number;
 }
 
 /** Cache key for the normals cache. It deliberately excludes market data
@@ -193,7 +207,13 @@ export interface NormalsKeyParams {
  * Normals do not depend on either. They depend only on how many values are
  * drawn, and in what shape (see module doc above). */
 export function computeNormalsKey(p: NormalsKeyParams): string {
-  return stableStringify({ numPaths: p.numPaths, seed: p.seed, antithetic: p.antithetic, nSteps: p.nSteps });
+  return stableStringify({
+    numPaths: p.numPaths,
+    seed: p.seed,
+    antithetic: p.antithetic,
+    nSteps: p.nSteps,
+    drawsPerStep: p.drawsPerStep ?? 1,
+  });
 }
 
 /** Draws a fresh `ZSlice` via Box-Muller, in exactly the order
@@ -203,22 +223,33 @@ export function computeNormalsKey(p: NormalsKeyParams): string {
  * matches `evaluatePathSource`'s consumption counts exactly —
  * `nPairs = Math.max(1, Math.ceil(numPaths / 2))` for pairs, `numPaths` for
  * singles. So the result is bit-identical to the live draw it replaces. */
-function generateZSlice(sliceSeed: number, nSteps: number, antithetic: boolean, slicePaths: number): ZSlice {
+function generateZSlice(
+  sliceSeed: number,
+  nSteps: number,
+  antithetic: boolean,
+  slicePaths: number,
+  drawsPerStep = 1,
+): ZSlice {
   const draw = normals(sliceSeed);
+  // A basket consumes `drawsPerStep` normals per step, one per leg, and
+  // `PathBatchGenerator.liveZ` fills its buffer in exactly this order: step by
+  // step, legs innermost. At one leg this is `nSteps` draws, the original
+  // length and the original order, so a single underlying replays unchanged.
+  const perPath = nSteps * drawsPerStep;
   if (antithetic) {
     const nPairs = Math.max(1, Math.ceil(slicePaths / 2));
     const pairs: Float64Array[] = new Array(nPairs);
     for (let p = 0; p < nPairs; p++) {
-      const z = new Float64Array(nSteps);
-      for (let i = 0; i < nSteps; i++) z[i] = draw();
+      const z = new Float64Array(perPath);
+      for (let i = 0; i < perPath; i++) z[i] = draw();
       pairs[p] = z;
     }
     return { antithetic: true, pairs };
   }
   const singles: Float64Array[] = new Array(slicePaths);
   for (let p = 0; p < slicePaths; p++) {
-    const z = new Float64Array(nSteps);
-    for (let i = 0; i < nSteps; i++) z[i] = draw();
+    const z = new Float64Array(perPath);
+    for (let i = 0; i < perPath; i++) z[i] = draw();
     singles[p] = z;
   }
   return { antithetic: false, singles };
@@ -235,13 +266,14 @@ function getOrCreateZSlice(
   slicePaths: number,
   antithetic: boolean,
   nSteps: number,
+  drawsPerStep = 1,
 ): ZSlice {
   if (!normalsEntry || normalsEntry.key !== key) {
     normalsEntry = { key, slices: [] };
   }
   const existing = normalsEntry.slices[sliceIndex];
   if (existing) return existing;
-  const z = generateZSlice(sliceSeed, nSteps, antithetic, slicePaths);
+  const z = generateZSlice(sliceSeed, nSteps, antithetic, slicePaths, drawsPerStep);
   normalsEntry.slices[sliceIndex] = z;
   return z;
 }
@@ -331,7 +363,15 @@ export function evaluateCachedSlice(
   // handy. Omitting it just means every call draws fresh normals, the
   // pre-normals-cache behavior.
   const zSlice = normalsKey
-    ? getOrCreateZSlice(normalsKey, sliceIndex, sliceSeed, slicePaths, antithetic, nSteps)
+    ? getOrCreateZSlice(
+        normalsKey,
+        sliceIndex,
+        sliceSeed,
+        slicePaths,
+        antithetic,
+        nSteps,
+        market.basket && market.basket.assets.length >= 2 ? market.basket.assets.length : 1,
+      )
     : undefined;
   const gen = new PathBatchGenerator(sliceSeed, nSteps, s0, market, stepDt, zSlice);
   const recorder = new RecordingPathSource(gen);
@@ -437,7 +477,15 @@ export function evaluateCachedSliceSplit(
   // miss path with the monolithic evaluator. It reuses the normals cache the
   // same way evaluateCachedSlice does — see its comment.
   const zSlice = normalsKey
-    ? getOrCreateZSlice(normalsKey, sliceIndex, sliceSeed, slicePaths, antithetic, nSteps)
+    ? getOrCreateZSlice(
+        normalsKey,
+        sliceIndex,
+        sliceSeed,
+        slicePaths,
+        antithetic,
+        nSteps,
+        market.basket && market.basket.assets.length >= 2 ? market.basket.assets.length : 1,
+      )
     : undefined;
   const gen = new PathBatchGenerator(sliceSeed, nSteps, s0, market, stepDt, zSlice);
   const recorder = new RecordingPathSource(gen);

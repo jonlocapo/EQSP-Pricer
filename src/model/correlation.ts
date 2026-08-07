@@ -209,3 +209,48 @@ function identity(n: number): number[][] {
   for (let i = 0; i < n; i++) m[i][i] = 1;
   return m;
 }
+
+/**
+ * Lower-triangular Cholesky factor `L` with `L * L^T = matrix`.
+ *
+ * Turning independent standard normals `z` into correlated ones is `L * z`,
+ * which is what the basket path generator needs (see engine/gbm.ts).
+ *
+ * A correlation matrix that is only positive SEMI-definite, for example one
+ * with a pair at correlation exactly 1, has a zero on the diagonal of `L`.
+ * That is legitimate and must not throw: the leg is then a deterministic
+ * multiple of an earlier one, which is exactly what correlation 1 means. So a
+ * non-positive pivot clamps to zero and the remaining entries of that column
+ * stay zero, rather than taking a square root of a negative number.
+ *
+ * Throws only on a matrix that is not square or not finite, because those are
+ * caller mistakes rather than legitimate degenerate cases. Repair the matrix
+ * with `repairCorrelation` first: this function assumes PSD and does not check
+ * it, since the clamp silently absorbs a small negative eigenvalue and would
+ * hide a badly wrong input.
+ */
+export function choleskyLower(matrix: number[][]): number[][] {
+  const n = matrix.length;
+  if (n === 0) throw new Error('cannot factor an empty matrix');
+  for (const row of matrix) {
+    if (row.length !== n) throw new Error('correlation matrix must be square');
+    for (const v of row) {
+      if (!Number.isFinite(v)) throw new Error('correlation matrix has a non-finite entry');
+    }
+  }
+  const L = alloc(n);
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j <= i; j++) {
+      let sum = matrix[i][j];
+      for (let k = 0; k < j; k++) sum -= L[i][k] * L[j][k];
+      if (i === j) {
+        // Clamp rather than throw: a zero pivot is the perfectly-correlated
+        // case, not an error.
+        L[i][j] = sum > 0 ? Math.sqrt(sum) : 0;
+      } else {
+        L[i][j] = L[j][j] > 0 ? sum / L[j][j] : 0;
+      }
+    }
+  }
+  return L;
+}

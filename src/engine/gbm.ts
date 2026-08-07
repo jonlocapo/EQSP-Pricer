@@ -1,6 +1,7 @@
 import type { MarketData } from '../model/market';
 import { riskNeutralDrift } from '../model/market';
 import { rateAt } from './discount';
+import { choleskyLower } from '../model/correlation';
 import { normals } from './rng';
 
 /** Daily simulation frequency used throughout the engine (for products that
@@ -31,6 +32,65 @@ export function fillPath(
   const nSteps = z.length;
   for (let i = 0; i < nSteps; i++) {
     spots[i + 1] = spots[i] * Math.exp(drift[i] + diffCoeff[i] * sign * z[i]);
+  }
+}
+
+/**
+ * Fills `out`, length nSteps+1, with a WORST-OF path: at each step, the lowest
+ * performance across the basket's legs, scaled by `s0`.
+ *
+ * WHY ONE ARRAY IS ENOUGH. Every payoff here reads relative performance
+ * `path[i] / path[0]`, and a worst-of payoff is a function of
+ * `min_j S_j(t)/S_j(0)` alone. A knock-in watches the lowest the worst leg
+ * ever went, and the lowest over time of the worst over legs is the lowest
+ * over both. Redemption and autocall triggers read the worst leg on their own
+ * dates. None of them asks WHICH leg is worst, only how far down it is. So
+ * collapsing to one number per step loses nothing, and every evaluator, the
+ * observables cache and the slice pooling keep working untouched.
+ *
+ * `drift` and `diffCoeff` are STEP-MAJOR, `nSteps * nAssets` entries, so leg
+ * `j` of step `i` is at `i * nAssets + j`. `z` uses the same layout, which
+ * makes the inner correlation loop read contiguous memory. `chol` is the
+ * lower-triangular Cholesky factor of the correlation matrix, row-major, so
+ * `chol[j * nAssets + k]` multiplies the independent normal `k`.
+ *
+ * NOT BIT-IDENTICAL TO `fillPath` AT ONE ASSET, deliberately. This routine
+ * accumulates each leg's LOG performance and exponentiates once per step,
+ * whereas `fillPath` multiplies the running level by an exponential each step.
+ * The two differ in the last bits, so a single-asset product must keep using
+ * `fillPath`. `PathBatchGenerator` guards on `nAssets >= 2` for exactly that
+ * reason.
+ *
+ * `logPerf` is caller-owned scratch of length nAssets, reused across paths.
+ */
+export function fillBasketPath(
+  out: Float64Array,
+  s0: number,
+  drift: Float64Array,
+  diffCoeff: Float64Array,
+  chol: Float64Array,
+  z: Float64Array,
+  nAssets: number,
+  logPerf: Float64Array,
+  sign: 1 | -1,
+): void {
+  out[0] = s0;
+  const nSteps = out.length - 1;
+  logPerf.fill(0);
+  for (let i = 0; i < nSteps; i++) {
+    const base = i * nAssets;
+    let worst = Infinity;
+    for (let j = 0; j < nAssets; j++) {
+      // Correlate: row j of the Cholesky factor against this step's normals.
+      // The factor is lower triangular, so only k <= j contribute.
+      let w = 0;
+      const crow = j * nAssets;
+      for (let k = 0; k <= j; k++) w += chol[crow + k] * z[base + k];
+      logPerf[j] += drift[base + j] + diffCoeff[base + j] * sign * w;
+      const p = Math.exp(logPerf[j]);
+      if (p < worst) worst = p;
+    }
+    out[i + 1] = s0 * worst;
   }
 }
 
@@ -67,6 +127,12 @@ export class PathBatchGenerator {
   private readonly nextNormal?: () => number;
   private readonly zSlice?: ZSlice;
   private zIdx = 0;
+  /** Basket leg count. 1 means a single underlying and the scalar code path. */
+  private readonly basketN: number;
+  /** Lower-triangular Cholesky factor, row-major. Basket only. */
+  private readonly chol?: Float64Array;
+  /** Reused per-leg log-performance scratch. Basket only. */
+  private readonly logPerf?: Float64Array;
 
   /**
    * `stepDt` is either a single scalar — a uniform, daily, grid; every
@@ -103,30 +169,20 @@ export class PathBatchGenerator {
     this.s0 = s0;
     this.plusBuf = new Float64Array(nSteps + 1);
     this.minusBuf = new Float64Array(nSteps + 1);
+    // A basket draws one normal per leg per step, so the live buffer and the
+    // pre-drawn slice are both nSteps * nAssets long. At one leg that is
+    // nSteps, exactly as before, which is what keeps the scalar path untouched.
+    const nAssets = market.basket && market.basket.assets.length >= 2 ? market.basket.assets.length : 1;
     if (zSlice) {
       this.zSlice = zSlice;
       this.z = new Float64Array(0);
     } else {
-      this.z = new Float64Array(nSteps);
+      this.z = new Float64Array(nSteps * nAssets);
       this.nextNormal = normals(seed);
     }
 
     const { vol, volPerStep, rateCurve, divYield } = market;
     const borrow = (market.costs?.borrowCostBp ?? 0) / 10_000;
-    // The rate curve drives DISCOUNTING and the drift, but only on a
-    // single-currency note. `rateCurve` holds the NOTE currency's zero
-    // curve. A quanto note's underlying grows at the UNDERLYING currency's
-    // rate, `quanto.rateUnderlying`, with the equity-FX correlation
-    // correction that `riskNeutralDrift` applies. Feeding the note curve
-    // into the drift makes two errors at once: it substitutes the wrong
-    // currency's rate, and it drops the correlation term. So the drift
-    // ignores the curve whenever the note is quanto, exactly as
-    // MarketData.rateCurve's doc states. Discounting still uses the curve,
-    // because a quanto note discounts on the note currency.
-    const driftUsesCurve = !!rateCurve && rateCurve.length > 0 && !market.quanto;
-    const muDt = riskNeutralDrift(market) - 0.5 * vol * vol;
-    this.drift = new Float64Array(nSteps);
-    this.diffCoeff = new Float64Array(nSteps);
 
     // Per-step drift needs each step's start time, for the rate curve's
     // forward rates and for the vol schedule's midpoints (cumulative
@@ -147,6 +203,35 @@ export class PathBatchGenerator {
       }
       return out;
     })();
+
+    // A basket of two or more legs takes its own branch. One leg is NOT routed
+    // here: `fillBasketPath` accumulates log performance where `fillPath`
+    // multiplies levels, and the two differ in the last bits, so a single
+    // underlying keeps the exact code it has always used.
+    if (market.basket && nAssets >= 2) {
+      const b = buildBasketCoefficients(market, nAssets, nSteps, stepDt, stepStartTimes);
+      this.basketN = nAssets;
+      this.chol = b.chol;
+      this.logPerf = new Float64Array(nAssets);
+      this.drift = b.drift;
+      this.diffCoeff = b.diffCoeff;
+      return;
+    }
+    this.basketN = 1;
+    // The rate curve drives DISCOUNTING and the drift, but only on a
+    // single-currency note. `rateCurve` holds the NOTE currency's zero
+    // curve. A quanto note's underlying grows at the UNDERLYING currency's
+    // rate, `quanto.rateUnderlying`, with the equity-FX correlation
+    // correction that `riskNeutralDrift` applies. Feeding the note curve
+    // into the drift makes two errors at once: it substitutes the wrong
+    // currency's rate, and it drops the correlation term. So the drift
+    // ignores the curve whenever the note is quanto, exactly as
+    // MarketData.rateCurve's doc states. Discounting still uses the curve,
+    // because a quanto note discounts on the note currency.
+    const driftUsesCurve = !!rateCurve && rateCurve.length > 0 && !market.quanto;
+    const muDt = riskNeutralDrift(market) - 0.5 * vol * vol;
+    this.drift = new Float64Array(nSteps);
+    this.diffCoeff = new Float64Array(nSteps);
 
     if (volPerStep) {
       // Piecewise-constant vol across the path: step i diffuses at
@@ -252,6 +337,12 @@ export class PathBatchGenerator {
    * same. */
   nextPair(): { plus: Float64Array; minus: Float64Array } {
     const z = this.zSlice ? this.zSlice.pairs![this.zIdx++] : this.liveZ();
+    if (this.basketN >= 2) {
+      const { chol, logPerf, basketN } = this;
+      fillBasketPath(this.plusBuf, this.s0, this.drift, this.diffCoeff, chol!, z, basketN, logPerf!, 1);
+      fillBasketPath(this.minusBuf, this.s0, this.drift, this.diffCoeff, chol!, z, basketN, logPerf!, -1);
+      return { plus: this.plusBuf, minus: this.minusBuf };
+    }
     fillPath(this.plusBuf, this.s0, this.drift, this.diffCoeff, z, 1);
     fillPath(this.minusBuf, this.s0, this.drift, this.diffCoeff, z, -1);
     return { plus: this.plusBuf, minus: this.minusBuf };
@@ -260,6 +351,10 @@ export class PathBatchGenerator {
   /** Draws a single (non-antithetic) path, reusing the `plus` buffer. */
   nextSingle(): Float64Array {
     const z = this.zSlice ? this.zSlice.singles![this.zIdx++] : this.liveZ();
+    if (this.basketN >= 2) {
+      fillBasketPath(this.plusBuf, this.s0, this.drift, this.diffCoeff, this.chol!, z, this.basketN, this.logPerf!, 1);
+      return this.plusBuf;
+    }
     fillPath(this.plusBuf, this.s0, this.drift, this.diffCoeff, z, 1);
     return this.plusBuf;
   }
@@ -267,7 +362,90 @@ export class PathBatchGenerator {
   /** Draws nSteps fresh normals into the reusable `z` buffer. Live mode
    * only — see constructor. */
   private liveZ(): Float64Array {
-    for (let i = 0; i < this.nSteps; i++) this.z[i] = this.nextNormal!();
+    // `this.z` is nSteps * basketN long, so this fills the whole buffer either
+    // way and the draw order stays step-major with the legs innermost.
+    for (let i = 0; i < this.z.length; i++) this.z[i] = this.nextNormal!();
     return this.z;
   }
+}
+
+/**
+ * Per-leg drift and diffusion coefficients for a basket, plus the Cholesky
+ * factor of its correlation matrix. Computed ONCE per generator, never per
+ * path, exactly like the scalar branch's arrays.
+ *
+ * Both arrays are STEP-MAJOR: leg `j` of step `i` sits at `i * nAssets + j`.
+ *
+ * Each leg drifts at `rate - divYield_j - borrow`, with its own dividend, and
+ * carries its own Ito correction `-0.5 * vol_j^2`, so the log-Euler step is
+ * exact for the piecewise-constant model. A rate curve substitutes that step's
+ * instantaneous forward rate for the flat `rate`, the same substitution the
+ * scalar branch makes.
+ *
+ * Two combinations THROW rather than pricing something quietly wrong:
+ *
+ *  - Basket plus quanto. The quanto correction is `-rho_j * vol_j * fxVol` and
+ *    needs one correlation PER LEG against the exchange rate. `QuantoParams`
+ *    carries a single `corrEqFx`, which is the single-underlying case, so
+ *    there is no honest value to use for the other legs.
+ *  - Basket plus a per-step vol schedule. `volPerStep` is built from ONE
+ *    surface at ONE risk strike (see worker/pricing.ts's `effectiveMarketFor`)
+ *    and a basket needs a schedule per leg. A flat per-leg vol is the v1
+ *    scope, so a schedule reaching here means the caller built it wrongly.
+ */
+function buildBasketCoefficients(
+  market: MarketData,
+  nAssets: number,
+  nSteps: number,
+  stepDt: number | Float64Array | number[],
+  stepStartTimes: Float64Array,
+): { drift: Float64Array; diffCoeff: Float64Array; chol: Float64Array } {
+  const basket = market.basket!;
+  if (market.quanto) {
+    throw new Error('A worst-of basket cannot be quanto: the drift needs one equity-FX correlation per leg');
+  }
+  if (market.volPerStep) {
+    throw new Error('A worst-of basket cannot carry a per-step vol schedule: it is built for one underlying');
+  }
+  if (basket.assets.length !== nAssets) {
+    throw new Error(`basket has ${basket.assets.length} legs for ${nAssets} expected`);
+  }
+  if (basket.correlation.length !== nAssets) {
+    throw new Error(`correlation matrix is ${basket.correlation.length}x? for ${nAssets} legs`);
+  }
+
+  const borrow = (market.costs?.borrowCostBp ?? 0) / 10_000;
+  const rateCurve = market.rateCurve;
+  const useCurve = !!rateCurve && rateCurve.length > 0;
+
+  const drift = new Float64Array(nSteps * nAssets);
+  const diffCoeff = new Float64Array(nSteps * nAssets);
+  const dtOf = (i: number): number => (typeof stepDt === 'number' ? stepDt : stepDt[i]);
+
+  for (let i = 0; i < nSteps; i++) {
+    const dt = dtOf(i);
+    const sqrtDt = Math.sqrt(dt);
+    let rate = market.rate;
+    if (useCurve) {
+      const t1 = stepStartTimes[i];
+      const t2 = t1 + dt;
+      rate = (rateAt(rateCurve!, t2) * t2 - rateAt(rateCurve!, t1) * t1) / dt;
+    }
+    const base = i * nAssets;
+    for (let j = 0; j < nAssets; j++) {
+      const leg = basket.assets[j];
+      const v = leg.vol;
+      drift[base + j] = (rate - leg.divYield - borrow - 0.5 * v * v) * dt;
+      diffCoeff[base + j] = v * sqrtDt;
+    }
+  }
+
+  // Flatten the Cholesky factor row-major, so the inner loop reads one
+  // contiguous run per leg.
+  const L = choleskyLower(basket.correlation);
+  const chol = new Float64Array(nAssets * nAssets);
+  for (let j = 0; j < nAssets; j++) {
+    for (let k = 0; k <= j; k++) chol[j * nAssets + k] = L[j][k];
+  }
+  return { drift, diffCoeff, chol };
 }

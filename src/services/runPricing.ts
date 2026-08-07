@@ -213,6 +213,9 @@ function envFingerprint(market: MarketData, product: ProductSpec): string {
     rateCurve: market.rateCurve ?? null,
     divYield: market.divYield,
     quanto: market.quanto ?? null,
+    // A basket edit changes every path, so it must start a fresh pricing
+    // environment rather than reuse the last one.
+    basket: market.basket ?? null,
     tenorYears: product.tenorYears,
   });
 }
