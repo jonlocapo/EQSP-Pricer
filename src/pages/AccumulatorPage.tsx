@@ -173,7 +173,7 @@ export function AccumulatorPage() {
         <div className="computed-readout">
           <span>Estimated notional</span>
           <b>
-            {estimatedNotional.toLocaleString(undefined, { maximumFractionDigits: 0 })} {spec.currency}
+            {estimatedNotional.toLocaleString(undefined, { maximumFractionDigits: 0 })} {market.currency}
           </b>
         </div>
       </Card>

@@ -11,6 +11,7 @@
 import { fetchTextWithCorsFallback } from './spotFetch';
 import { dailyReturnMoments, realizedTermStructure } from '../model/realizedSurface';
 import { toStooqSymbol } from './symbols';
+import { fetchDailyChart } from './ohlcFetch';
 
 /** Stooq serves an HTML bot-challenge with HTTP 200 to some IPs. Treat any
  * non-CSV body as a failed attempt, so the proxy fallback kicks in. */
@@ -131,6 +132,13 @@ export async function fetchHistVol(symbol: string): Promise<HistVolResult> {
 export interface RefRateResult {
   /** Rate, decimal. */
   rate: number;
+  asOf: string;
+  source: string;
+}
+
+export interface RateCurveResult {
+  /** Zero-coupon rates, ascending by tYears. At least two points. */
+  curve: { tYears: number; rate: number }[];
   asOf: string;
   source: string;
 }
@@ -275,6 +283,130 @@ export async function fetchRefRate(currency: string): Promise<RefRateResult> {
   throw new Error(`No open reference-rate source for ${currency}. Enter the rate manually.`);
 }
 
+/** Zero-coupon curve points, per currency, keyed by the ECB SDW series
+ * suffix for EUR and the FRED series id for USD. Currencies without a
+ * keyless multi-tenor curve (GBP, CHF, JPY) keep the flat overnight rate —
+ * see `fetchRateCurve`'s doc. */
+const RATE_CURVE_SOURCES: Record<
+  string,
+  { kind: 'ecb' | 'fred'; keys: string[]; tenorsYears: number[] }
+> = {
+  EUR: {
+    kind: 'ecb',
+    // ECB euro-area zero-coupon yield curve (4F = government-guaranteed
+    // AAA), the natural continuation of the €STR fixing the flat path uses.
+    keys: ['ZR_3M', 'ZR_1Y', 'ZR_2Y', 'ZR_5Y'],
+    tenorsYears: [0.25, 1, 2, 5],
+  },
+  USD: {
+    kind: 'fred',
+    // FRED Treasury constant-maturity par yields. Not OIS: a proxy for the
+    // risk-free curve, bootstrapped to zero rates below and labelled as
+    // such in the UI.
+    keys: ['DGS3MO', 'DGS1', 'DGS2', 'DGS5'],
+    tenorsYears: [0.25, 1, 2, 5],
+  },
+};
+
+/** Parses one ECB SDW CSV body into the latest (asOf, ratePercent) pair.
+ * SDW csvdata rows are `TIME_PERIOD,OBS_VALUE`. */
+function parseEcbLatest(text: string): { asOf: string; ratePercent: number } {
+  const lines = text.trim().split('\n');
+  if (lines.length < 2) throw new Error('empty ECB response');
+  const header = lines[0].split(',');
+  const obsIdx = header.indexOf('OBS_VALUE');
+  const timeIdx = header.indexOf('TIME_PERIOD');
+  if (obsIdx < 0 || timeIdx < 0) throw new Error('unexpected ECB CSV shape');
+  const row = lines[lines.length - 1].split(',');
+  const value = Number(row[obsIdx]);
+  if (!Number.isFinite(value)) throw new Error('no numeric observation in ECB response');
+  return { asOf: row[timeIdx], ratePercent: value };
+}
+
+/**
+ * Bootstraps annual-par yields to continuously-compounded zero rates.
+ *
+ * A par yield c(T) is the coupon that prices a bond at par; it is NOT the
+ * zero rate at T unless the curve is flat. With annual coupons, the zero
+ * rate z(T) solves
+ *
+ *   sum_{j=1}^{T} c(T) * exp(-z(j) * j) + exp(-z(T) * T) = 1
+ *
+ * which this function walks out in maturity order, reusing the already-
+ * known earlier zeros. Non-integer tenors (3M) bootstrap from the
+ * short zero directly, an approximation that keeps the code simple and the
+ * direction honest: on an upward curve the par yield UNDERSTATES the zero
+ * rate, and the bootstrap restores most of the difference.
+ */
+function parToZero(par: { tYears: number; rate: number }[]): { tYears: number; rate: number }[] {
+  const out: { tYears: number; rate: number }[] = [];
+  for (const p of par) {
+    if (p.tYears <= 1) {
+      // No coupon period inside the horizon (3M) or exactly one annual
+      // coupon (1Y). For T <= 1: exp(z*T) = 1 + c*T, so the zero rate is
+      // z = ln(1 + c*T)/T, which is ln(1+c) at T = 1 — consistent.
+      out.push({ tYears: p.tYears, rate: Math.log(1 + p.rate * p.tYears) / p.tYears });
+      continue;
+    }
+    const T = p.tYears;
+    const c = p.rate;
+    let sumPv = 0;
+    for (const prev of out) {
+      const j = prev.tYears;
+      if (j >= T) break;
+      sumPv += c * Math.exp(-prev.rate * j);
+    }
+    const z = -Math.log((1 - sumPv) / (1 + c)) / T;
+    out.push({ tYears: T, rate: z });
+  }
+  return out;
+}
+
+/**
+ * A zero-coupon rate curve at 3M/1Y/2Y/5Y for the note currency, from
+ * keyless official sources: ECB SDW (EUR zero curve) and FRED constant
+ * maturities (USD, bootstrapped). GBP, CHF and JPY have no free
+ * multi-tenor source, so they keep the flat overnight rate — the
+ * overnight-fixing caveat the curve exists to fix applies to them and the
+ * model reports it as flat pricing.
+ *
+ * The 3M/1Y/2Y/5Y points are clamped into a sane band before returning:
+ * a bad observation must not print a nonsense curve into the engine.
+ * Throws for currencies with no curve source; callers fall back to flat.
+ */
+export async function fetchRateCurve(currency: string): Promise<RateCurveResult> {
+  const src = RATE_CURVE_SOURCES[currency];
+  if (!src) {
+    throw new Error(`No open rate-curve source for ${currency}. Rates stay flat.`);
+  }
+  const clamp = (r: number) => Math.min(0.15, Math.max(-0.05, r));
+  let asOf = '';
+  if (src.kind === 'ecb') {
+    const points = await Promise.all(
+      src.keys.map(async (key, i) => {
+        const url = `https://data-api.ecb.europa.eu/service/data/YC.B.U2.EUR.4F.G_N_A.SV_C_YM.${key}?lastNObservations=1&format=csvdata`;
+        const { text } = await fetchTextWithCorsFallback(url, 8000);
+        const { asOf: a, ratePercent } = parseEcbLatest(text);
+        asOf = a;
+        return { tYears: src.tenorsYears[i], rate: clamp(ratePercent / 100) };
+      }),
+    );
+    return { curve: points, asOf, source: 'ECB zero curve' };
+  }
+  // USD: FRED constant-maturity par yields, bootstrapped to zeros.
+  const par = await Promise.all(
+    src.keys.map(async (id, i) => {
+      const url = `https://fred.stlouisfed.org/graph/fredgraph.csv?id=${id}&cosd=${isoDateDaysAgo(40)}`;
+      const { text } = await fetchTextWithCorsFallback(url, 8000, looksLikeCsv);
+      const { asOf: a, ratePercent } = parseFredLatestPercent(text);
+      asOf = a;
+      return { tYears: src.tenorsYears[i], rate: clamp(ratePercent / 100) };
+    }),
+  );
+  const curve = parToZero(par);
+  return { curve, asOf, source: 'FRED CMT bootstrapped' };
+}
+
 /**
  * Fetches about 1 year of daily (timestamp, close) bars for a Yahoo-style
  * symbol, via the same chart endpoint used for spot and hist-vol. Works for
@@ -405,11 +537,23 @@ export interface RealizedStatsResult {
   vol: number;
   days: number;
   source: string;
+  /** The raw chart response this was built from.
+   *
+   * The dividend yield is measured from the ADJUSTED close, which rides in
+   * this same payload (see ../model/divYield). Carrying it back means the
+   * measurement does not care WHICH realized estimator ran: the OHLC path
+   * (fetchRealizedVolStats) and this close-only fallback both hand the
+   * caller a payload, so the dividend never triggers a second, identical
+   * request to the rate-limited chart endpoint. This uses the shared
+   * `fetchDailyChart` (two years, `events=div`, adjusted close) rather than
+   * the close-only fetch, which has none of the three.
+   */
+  payload: unknown;
 }
 
 export async function fetchRealizedStats(yahooSymbol: string): Promise<RealizedStatsResult> {
-  const closes = await fetchDailyCloses(yahooSymbol);
-  const px = closes.map((c) => c.close).filter((c) => c > 0);
+  const { bars, payload } = await fetchDailyChart(yahooSymbol);
+  const px = bars.map((b) => b.close);
   if (px.length < 30) {
     throw new Error(`Only ${px.length} closes for "${yahooSymbol}", not enough for a vol estimate`);
   }
@@ -427,6 +571,7 @@ export async function fetchRealizedStats(yahooSymbol: string): Promise<RealizedS
     excessKurtDaily,
     vol: terms[terms.length - 1].vol,
     days: logReturns.length,
-    source: 'yahoo 1Y realized',
+    source: 'yahoo close-to-close realized',
+    payload,
   };
 }

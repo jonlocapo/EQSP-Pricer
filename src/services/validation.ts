@@ -63,8 +63,13 @@ export function validateParticipation(spec: ParticipationSpec, market: MarketDat
   const errors: FieldErrors = { ...commonErrors(spec.notional, spec.tenorYears), ...marketErrors(market) };
 
   if (spec.upside.variant.variant === 'callSpread') {
-    if (!(spec.upside.variant.upperStrikePct > spec.upside.strikePct)) {
-      errors.upperStrikePct = 'Must be above upside strike.';
+    // At or above, not strictly above. The airbag precedent: equal levels
+    // are a degenerate but legitimate structure. A call-spread cap EQUAL to
+    // the upside strike is a zero-width cap; the payoff is well-defined
+    // (no extra upside beyond the strike), and a solve-for that lands on
+    // the boundary must not be rejected after write-back.
+    if (!(spec.upside.variant.upperStrikePct >= spec.upside.strikePct)) {
+      errors.upperStrikePct = 'Must be at or above the upside strike.';
     }
   }
   if (spec.upside.variant.variant === 'koRebate') {
@@ -80,8 +85,12 @@ export function validateParticipation(spec: ParticipationSpec, market: MarketDat
   }
 
   if (spec.downside.putSpread) {
-    if (!(spec.downside.putSpread.lowerStrikePct < spec.downside.strikePct)) {
-      errors.lowerStrikePct = 'Must be below downside strike.';
+    // At or below, not strictly below — the airbag precedent again. A
+    // put-spread floor EQUAL to the downside strike leaves no floor beyond
+    // the strike itself; the payoff is well-defined, and a boundary solve
+    // must not be rejected after write-back.
+    if (!(spec.downside.putSpread.lowerStrikePct <= spec.downside.strikePct)) {
+      errors.lowerStrikePct = 'Must be at or below the downside strike.';
     }
   }
 
