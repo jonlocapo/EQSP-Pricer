@@ -197,7 +197,6 @@ async function priceOnce(
   // evicts the raw-path cache — still hits here. Regeneration then skips
   // Box-Muller entirely (see pathCache.ts's normals cache doc).
   const normalsKey = computeNormalsKey({
-    numPaths,
     seed,
     antithetic,
     nSteps: grid.nSteps,
@@ -403,7 +402,6 @@ export function evaluatePriceSlice(
   });
   const observablesKey = split ? computeObservablesKey(cacheKey, grid, observablesRequirementsOf(spec)) : '';
   const normalsKey = computeNormalsKey({
-    numPaths,
     seed,
     antithetic,
     nSteps: grid.nSteps,

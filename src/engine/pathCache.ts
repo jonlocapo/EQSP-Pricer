@@ -187,12 +187,16 @@ export function computeObservablesKey(pathKey: string, grid: PricingGrid, requir
 interface NormalsCacheEntry {
   key: string;
   slices: (ZSlice | undefined)[];
+  /** Paths each stored slice was DRAWN for. A slice drawn for more paths than
+   * a later call needs is still usable, because the draw is sequential per
+   * path: the first n paths of a longer slice are exactly the slice a run of n
+   * paths would have drawn on its own. See `getOrCreateZSlice`. */
+  drawnPaths: number[];
 }
 
 let normalsEntry: NormalsCacheEntry | null = null;
 
 export interface NormalsKeyParams {
-  numPaths: number;
   seed: number;
   antithetic: boolean;
   nSteps: number;
@@ -208,7 +212,6 @@ export interface NormalsKeyParams {
  * drawn, and in what shape (see module doc above). */
 export function computeNormalsKey(p: NormalsKeyParams): string {
   return stableStringify({
-    numPaths: p.numPaths,
     seed: p.seed,
     antithetic: p.antithetic,
     nSteps: p.nSteps,
@@ -269,12 +272,24 @@ function getOrCreateZSlice(
   drawsPerStep = 1,
 ): ZSlice {
   if (!normalsEntry || normalsEntry.key !== key) {
-    normalsEntry = { key, slices: [] };
+    normalsEntry = { key, slices: [], drawnPaths: [] };
   }
   const existing = normalsEntry.slices[sliceIndex];
-  if (existing) return existing;
+  // A slice drawn for AT LEAST as many paths as this call needs is reusable.
+  // `generateZSlice` consumes the seeded stream one path at a time, in order,
+  // so the first n entries of a longer slice are byte-identical to the slice a
+  // standalone n-path run would draw. The generator reads only as many as it
+  // is asked for, so the extra tail is simply never touched.
+  //
+  // This is what lets a preview pass and a full-precision pass share draws.
+  // They split into slices of the same size (SLICE_PATHS), so slice 0 of a
+  // 20k preview and slice 0 of a 100k settle are the same numbers. Keying on
+  // the path count made them different entries in a single-entry cache, so
+  // each evicted the other and every live edit redrew normals it already had.
+  if (existing && normalsEntry.drawnPaths[sliceIndex] >= slicePaths) return existing;
   const z = generateZSlice(sliceSeed, nSteps, antithetic, slicePaths, drawsPerStep);
   normalsEntry.slices[sliceIndex] = z;
+  normalsEntry.drawnPaths[sliceIndex] = slicePaths;
   return z;
 }
 
