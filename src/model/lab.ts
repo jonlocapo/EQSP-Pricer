@@ -119,7 +119,6 @@ export function makeBlock(t: LabBlock['t']): LabBlock {
 
 const commonDefaults: CommonTerms = {
   underlyings: [{ name: 'SPX' }],
-  currency: 'USD',
   notional: 1_000_000,
   tenorYears: 2,
   reofferPct: 98.5,

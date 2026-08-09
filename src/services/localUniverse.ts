@@ -24,7 +24,7 @@
  */
 import type { SymbolMatch } from './symbolSearch';
 
-export interface UniverseEntry extends SymbolMatch {
+interface UniverseEntry extends SymbolMatch {
   /** Extra spellings that should find this entry: short forms, former names,
    * index codes people say out loud ("SX5E", "SPX"). */
   aliases?: string[];

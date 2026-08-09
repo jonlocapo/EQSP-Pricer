@@ -196,7 +196,14 @@ async function priceOnce(
   // or div edit, or a greeks bump — which changes `cacheKey` above and
   // evicts the raw-path cache — still hits here. Regeneration then skips
   // Box-Muller entirely (see pathCache.ts's normals cache doc).
-  const normalsKey = computeNormalsKey({ numPaths, seed, antithetic, nSteps: grid.nSteps });
+  const normalsKey = computeNormalsKey({
+    seed,
+    antithetic,
+    nSteps: grid.nSteps,
+    // A basket draws one normal per leg per step, so its slices are longer and
+    // must not be replayed against a different leg count.
+    drawsPerStep: market.basket && market.basket.assets.length >= 2 ? market.basket.assets.length : 1,
+  });
   // Reference level for pLoss/ES: what the investor paid, for coupon or
   // participation, or 0 for accumulator. The accumulator's PV is already a
   // P&L-style value in % of estimated notional, not a price paid — see
@@ -394,7 +401,14 @@ export function evaluatePriceSlice(
     timesKey: gridTimesDigest(grid),
   });
   const observablesKey = split ? computeObservablesKey(cacheKey, grid, observablesRequirementsOf(spec)) : '';
-  const normalsKey = computeNormalsKey({ numPaths, seed, antithetic, nSteps: grid.nSteps });
+  const normalsKey = computeNormalsKey({
+    seed,
+    antithetic,
+    nSteps: grid.nSteps,
+    // A basket draws one normal per leg per step, so its slices are longer and
+    // must not be replayed against a different leg count.
+    drawsPerStep: market.basket && market.basket.assets.length >= 2 ? market.basket.assets.length : 1,
+  });
 
   return split
     ? evaluateCachedSliceSplit(
@@ -623,7 +637,13 @@ function effectiveMarketFor(
   // tests/costsAndSkew.test.ts's flat-surface-vs-no-surface parity check).
   // Treat it exactly like "no surface": same code path, and the reporting
   // says so honestly instead of claiming a skew that is not there.
-  if (!market.volSurface || market.volSurface.isFlat) {
+  // A basket prices on FLAT per-leg vols. The surface is built for one
+  // underlying at one risk strike, so it has nothing to say about leg two, and
+  // `volPerStep` derived from it would be a schedule for the wrong asset. The
+  // engine refuses that combination outright, so skip the surface here rather
+  // than build something it will reject.
+  const isBasket = !!market.basket && market.basket.assets.length >= 2;
+  if (isBasket || !market.volSurface || market.volSurface.isFlat) {
     return {
       market,
       basis: { volUsed: market.vol, volSource: 'flat', discountRate: dr, feePct },

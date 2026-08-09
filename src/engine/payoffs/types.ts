@@ -1,5 +1,4 @@
 import type { MarketData } from '../../model/market';
-import type { ProductSpec } from '../../model/product';
 
 /**
  * Contract between the MC engine (path generation, pricing loop, LSMC) and
@@ -154,16 +153,6 @@ export interface EvaluatorContext {
   /** Discount factor e^{-r t}. */
   df: (tYears: number) => number;
 }
-
-/**
- * Evaluator factory: precompute schedules and levels once, then evaluate
- * many paths. Implemented per product family in this directory. Dispatched
- * in index.ts on spec.kind.
- */
-export type EvaluatorFactory<S extends ProductSpec = ProductSpec> = (
-  spec: S,
-  ctx: EvaluatorContext,
-) => PayoffEvaluator;
 
 /**
  * Issuer-callable support (LSMC): the coupon evaluator additionally exposes

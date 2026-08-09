@@ -6,21 +6,12 @@ import { Card } from '../components/Card';
 import { Segmented } from '../components/Segmented';
 import { NumericField } from '../components/NumericField';
 import { TenorField } from '../components/TenorField';
-import { ActionRow } from '../components/ActionRow';
-import { PricingGrid } from '../components/PricingGrid';
-import { validateParticipation } from '../services/validation';
+import { PricingFooter } from '../components/PricingFooter';
+import { validateParticipation, validateBasket } from '../services/validation';
 import { runPricing } from '../services/runPricing';
 import { useLiveReprice } from '../hooks/useLiveReprice';
+import { AUTO_LEVERAGE_EPS, autoDownsideLeverage, makeFieldSolved, makeToggleSolve, priceLabelFor, usePricingSpec } from './pageHelpers';
 import type { BarrierMonitoring, UpsideVariant } from '../model/product';
-import type { SolveTarget } from '../model/request';
-
-/** Standard downside leverage: 1/downsideStrike so a 100% stock decline exhausts the leg. */
-function autoDownsideLeverage(downsideStrikePct: number): number {
-  if (!(downsideStrikePct > 0)) return 100;
-  return Math.round((10000 / downsideStrikePct) * 100) / 100;
-}
-
-const AUTO_LEVERAGE_EPS = 0.01;
 
 const PRESET_OPTIONS: ParticipationPreset[] = ['booster', 'bonus', 'capitalGuaranteed', 'twinWin', 'twkg'];
 
@@ -31,11 +22,15 @@ export function ParticipationPage() {
   const applyPreset = useTradeStore((s) => s.applyParticipationPreset);
   const setSolve = useTradeStore((s) => s.setParticipationSolve);
   const market = useMarketStore((s) => s.market);
-  const underlyingName = useMarketStore((s) => s.underlyingName);
+  const basketCorrelation = useMarketStore((s) => s.basketCorrelation);
   const running = useResultsStore((s) => s.running);
 
+  // See pageHelpers.usePricingSpec: the live leg list, assembled fresh each
+  // render, rather than a stored spec field the basket panel would have to
+  // keep in sync.
+  const { underlyingName, underlyings, pricingSpec } = usePricingSpec(spec);
+
   const [greeks, setGreeks] = useState(false);
-  const [gridOpen, setGridOpen] = useState(false);
   const [leverageAuto, setLeverageAuto] = useState(true);
 
   // Downside feature toggles — KI Barrier, Put Spread, Twin Win, KG — are
@@ -81,6 +76,7 @@ export function ParticipationPage() {
   }, [leverageAuto, spec.downside.strikePct]);
 
   const validation = validateParticipation(spec, market);
+  const basketValidation = validateBasket(underlyings, basketCorrelation, market);
 
   const isCallSpread = spec.upside.variant.variant === 'callSpread';
   const isKoRebate = spec.upside.variant.variant === 'koRebate';
@@ -103,27 +99,20 @@ export function ParticipationPage() {
     if (!available) setSolve({ kind: 'none' });
   }, [solve.kind, hasBarrier, isCallSpread, isKoRebate, setSolve]);
 
-  const priceDisabled = !validation.valid;
-  const priceLabel = solve.kind === 'none' ? 'Price' : 'Solve';
+  const priceDisabled = !validation.valid || !basketValidation.valid;
+  const priceLabel = priceLabelFor(solve);
 
   useLiveReprice({
     page: 'participation',
-    product: spec,
+    product: pricingSpec,
     market,
     underlyingName,
     solve,
     disabled: priceDisabled,
   });
 
-  function fieldSolved(kind: SolveTarget['kind']): boolean {
-    return solve.kind === kind;
-  }
-
-  // Radio semantics: clicking a chip activates that target and deactivates
-  // all others. Clicking the already-active chip falls back to Price.
-  function toggleSolve(kind: Exclude<SolveTarget['kind'], 'none'>) {
-    setSolve(solve.kind === kind ? { kind: 'none' } : ({ kind } as SolveTarget));
-  }
+  const fieldSolved = makeFieldSolved(solve);
+  const toggleSolve = makeToggleSolve(solve, setSolve);
 
   // "Price (reoffer)" is solve kind 'none'. Its output is the price shown in
   // the results panel, not a spec field. The Reoffer field is the closest
@@ -214,7 +203,7 @@ export function ParticipationPage() {
   }
 
   function handleRun() {
-    runPricing({ page: 'participation', product: spec, market, underlyingName, solve, greeks });
+    runPricing({ page: 'participation', product: pricingSpec, market, underlyingName, solve, greeks });
   }
 
   const kgKiNeverBites = spec.protectionPct >= 100 && spec.downside.barrierType !== 'none' && spec.downside.twinWinPct === 0;
@@ -505,25 +494,25 @@ export function ParticipationPage() {
         )}
       </Card>
 
-      <div style={{ gridColumn: '1 / -1' }}>
-        <ActionRow
-          label={priceLabel}
-          disabled={priceDisabled}
-          tooltip="Fix validation errors above."
-          onRun={handleRun}
-          greeks={greeks}
-          onGreeksChange={setGreeks}
-          running={running}
-          onToggleGrid={() => setGridOpen((v) => !v)}
-          gridOpen={gridOpen}
-        />
-      </div>
-
-      {gridOpen && (
-        <div style={{ gridColumn: '1 / -1' }}>
-          <PricingGrid page="participation" spec={spec} market={market} underlyingName={underlyingName} />
+      {Object.keys(basketValidation.errors).length > 0 && (
+        <div style={{ gridColumn: '1 / -1' }} className="status-line error">
+          {Object.values(basketValidation.errors).join(' ')}
         </div>
       )}
+
+      <PricingFooter
+        page="participation"
+        spec={pricingSpec}
+        market={market}
+        underlyingName={underlyingName}
+        priceLabel={priceLabel}
+        priceDisabled={priceDisabled}
+        tooltip="Fix validation errors above."
+        onRun={handleRun}
+        greeks={greeks}
+        onGreeksChange={setGreeks}
+        running={running}
+      />
     </div>
   );
 }

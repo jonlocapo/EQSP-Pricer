@@ -19,6 +19,7 @@
 import { fetchTextWithCorsFallback } from './spotFetch';
 import { realizedDivYield, type RealizedDivYieldResult } from '../model/divYield';
 import { isIndexSymbol } from './symbols';
+import { buildYahooChartUrl, parseYahooChartFields } from './yahooChart';
 
 /** Two years of history: long enough to average over several dividend cycles,
  * short enough that a payout policy change does not dominate the answer. */
@@ -53,38 +54,22 @@ interface ChartSeries {
  * align them by index. `realizedDivYield` drops unusable pairs together.
  */
 export function seriesFromYahooChart(json: unknown): ChartSeries {
-  const parsed = json as {
-    chart?: {
-      result?: {
-        indicators?: {
-          quote?: { close?: (number | null)[] }[];
-          adjclose?: { adjclose?: (number | null)[] }[];
-        };
-      }[];
-      error?: { description?: string } | null;
-    };
-  };
-  const result = parsed?.chart?.result?.[0];
-  if (!result) {
-    throw new Error(parsed?.chart?.error?.description ?? 'Yahoo chart response has no result');
-  }
-  const rawClose = result.indicators?.quote?.[0]?.close;
-  if (!Array.isArray(rawClose)) throw new Error('Yahoo chart response has no close series');
-  const close = rawClose.map((v) => (typeof v === 'number' ? v : NaN));
-  const rawAdj = result.indicators?.adjclose?.[0]?.adjclose;
-  const adjClose = Array.isArray(rawAdj) ? rawAdj.map((v) => (typeof v === 'number' ? v : NaN)) : undefined;
+  const fields = parseYahooChartFields(json);
+  if (!Array.isArray(fields.close)) throw new Error('Yahoo chart response has no close series');
+  const close = fields.close.map((v) => (typeof v === 'number' ? v : NaN));
+  const adjClose = Array.isArray(fields.adjClose)
+    ? fields.adjClose.map((v) => (typeof v === 'number' ? v : NaN))
+    : undefined;
   return { close, adjClose };
 }
 
 async function fetchChart(symbol: string): Promise<unknown> {
-  const url =
-    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}` +
-    `?range=${RANGE}&interval=1d&events=div`;
+  const url = buildYahooChartUrl(symbol, RANGE, { events: 'div' });
   const { text } = await fetchTextWithCorsFallback(url, 8000, (t) => t.trimStart().startsWith('{'));
   return JSON.parse(text);
 }
 
-export interface DivYieldFetchResult extends RealizedDivYieldResult {
+interface DivYieldFetchResult extends RealizedDivYieldResult {
   source: string;
 }
 

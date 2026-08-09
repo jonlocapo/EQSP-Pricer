@@ -203,7 +203,7 @@ export function gridToTsv(xValues: number[], yValues: number[], cells: GridCell[
 // Run loop
 // ---------------------------------------------------------------------------
 
-export interface RunGridParams {
+interface RunGridParams {
   client: PricerClient;
   baseSpec: ProductSpec;
   market: MarketData;

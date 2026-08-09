@@ -29,11 +29,12 @@ function fakeFetch(routes: { match: string; delayMs: number; body?: string; fail
 
 describe('hedged CORS fallback', () => {
   it('does not wait out a slow first route before trying the next', async () => {
-    // Direct is slow (3s). allorigins is fast (100ms). Sequentially this cost
-    // 3s; hedged it should cost about the hedge delay plus 100ms.
+    // Direct is slow (3s). The first relay (proxy.cors.sh) is fast (100ms).
+    // Sequentially this cost 3s; hedged it should cost about the hedge delay
+    // plus 100ms.
     const calls = fakeFetch([
       { match: 'query1.finance.yahoo.com', delayMs: 3000 },
-      { match: 'api.allorigins.win', delayMs: 100, body: '{"good":1}' },
+      { match: 'proxy.cors.sh', delayMs: 100, body: '{"good":1}' },
     ]);
     const t0 = Date.now();
     const { text, proxied } = await fetchTextWithCorsFallback('https://query1.finance.yahoo.com/x', 5000, () => true, 200);
@@ -47,7 +48,7 @@ describe('hedged CORS fallback', () => {
   it('starts the next route immediately on a failure, without waiting the hedge', async () => {
     const calls = fakeFetch([
       { match: 'query1.finance.yahoo.com', delayMs: 10, fail: true },
-      { match: 'api.allorigins.win', delayMs: 50, body: 'OK' },
+      { match: 'proxy.cors.sh', delayMs: 50, body: 'OK' },
     ]);
     const t0 = Date.now();
     const { text } = await fetchTextWithCorsFallback('https://query1.finance.yahoo.com/x', 5000, () => true, 5000);
@@ -59,23 +60,23 @@ describe('hedged CORS fallback', () => {
   it('remembers the winning route, so the next call skips the dead one', async () => {
     fakeFetch([
       { match: 'query1.finance.yahoo.com', delayMs: 10, fail: true },
-      { match: 'api.allorigins.win', delayMs: 20, body: 'OK' },
+      { match: 'proxy.cors.sh', delayMs: 20, body: 'OK' },
     ]);
     await fetchTextWithCorsFallback('https://query1.finance.yahoo.com/a', 5000, () => true, 5000);
     const calls2 = fakeFetch([
       { match: 'query1.finance.yahoo.com', delayMs: 10, fail: true },
-      { match: 'api.allorigins.win', delayMs: 20, body: 'OK2' },
+      { match: 'proxy.cors.sh', delayMs: 20, body: 'OK2' },
     ]);
     const { text } = await fetchTextWithCorsFallback('https://query1.finance.yahoo.com/b', 5000, () => true, 5000);
     expect(text).toBe('OK2');
     // The remembered relay is tried FIRST, so the dead direct route is not hit.
-    expect(calls2[0]).toContain('allorigins');
+    expect(calls2[0]).toContain('cors.sh');
   });
 
   it('treats a 200-with-garbage body as a failure and moves on', async () => {
     fakeFetch([
       { match: 'query1.finance.yahoo.com', delayMs: 10, body: '<html>bot challenge</html>' },
-      { match: 'api.allorigins.win', delayMs: 20, body: '{"real":1}' },
+      { match: 'proxy.cors.sh', delayMs: 20, body: '{"real":1}' },
     ]);
     const { text } = await fetchTextWithCorsFallback(
       'https://query1.finance.yahoo.com/x', 5000, (t) => t.trimStart().startsWith('{'), 5000,
@@ -88,5 +89,41 @@ describe('hedged CORS fallback', () => {
     await expect(
       fetchTextWithCorsFallback('https://query1.finance.yahoo.com/x', 300, () => true, 50),
     ).rejects.toThrow();
+  });
+
+  it('unwraps the allorigins /get JSON envelope before validating the body', async () => {
+    // allorigins' /get endpoint returns the target INSIDE a JSON envelope
+    // ({ "contents": "<the target body>" }), so consumers that validate the
+    // raw body (e.g. Yahoo's "starts with {" check) would reject it. The
+    // transport must unwrap it first. cors.sh and codetabs pass through
+    // untouched, so they must fail here to force the call down to allorigins.
+    const calls = fakeFetch([
+      { match: 'query1.finance.yahoo.com', delayMs: 10, fail: true },
+      { match: 'proxy.cors.sh', delayMs: 10, fail: true },
+      { match: 'api.allorigins.win', delayMs: 20, body: '{"contents":"{\\"chart\\":{\\"ok\\":1}}"}' },
+    ]);
+    const { text, proxied } = await fetchTextWithCorsFallback(
+      'https://query1.finance.yahoo.com/x',
+      5000,
+      (t) => t.trimStart().startsWith('{'),
+      5000,
+    );
+    expect(proxied).toBe(true);
+    expect(text).toBe('{"chart":{"ok":1}}');
+    expect(calls.some((u) => u.includes('api.allorigins.win/get'))).toBe(true);
+  });
+
+  it('leaves a non-allorigins relay body untouched', async () => {
+    fakeFetch([
+      { match: 'query1.finance.yahoo.com', delayMs: 10, fail: true },
+      { match: 'proxy.cors.sh', delayMs: 20, body: '{"direct":1}' },
+    ]);
+    const { text } = await fetchTextWithCorsFallback(
+      'https://query1.finance.yahoo.com/x',
+      5000,
+      (t) => t.trimStart().startsWith('{'),
+      5000,
+    );
+    expect(text).toBe('{"direct":1}');
   });
 });

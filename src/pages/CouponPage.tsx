@@ -7,22 +7,13 @@ import { Segmented } from '../components/Segmented';
 import { NumericField } from '../components/NumericField';
 import { nextStepValue } from '../components/numericStep';
 import { TenorField } from '../components/TenorField';
-import { ActionRow } from '../components/ActionRow';
-import { PricingGrid } from '../components/PricingGrid';
+import { PricingFooter } from '../components/PricingFooter';
 import { noteEditSource } from '../state/editSource';
-import { validateCoupon } from '../services/validation';
+import { validateCoupon, validateBasket } from '../services/validation';
 import { runPricing } from '../services/runPricing';
 import { useLiveReprice } from '../hooks/useLiveReprice';
+import { AUTO_LEVERAGE_EPS, autoDownsideLeverage, makeFieldSolved, makeToggleSolve, priceLabelFor, usePricingSpec } from './pageHelpers';
 import type { AcCouponType, BarrierMonitoring, CallType, CouponType, Frequency } from '../model/product';
-import type { SolveTarget } from '../model/request';
-
-/** Standard downside leverage: 1/putStrike so a 100% stock decline redeems to 0. */
-function autoDownsideLeverage(putStrikePct: number): number {
-  if (!(putStrikePct > 0)) return 100;
-  return Math.round((10000 / putStrikePct) * 100) / 100;
-}
-
-const AUTO_LEVERAGE_EPS = 0.01;
 
 const FREQ_OPTIONS: { value: Frequency; label: string }[] = [
   { value: 'monthly', label: 'Monthly' },
@@ -37,11 +28,12 @@ export function CouponPage() {
   const setSpec = useTradeStore((s) => s.setCouponSpec);
   const setSolve = useTradeStore((s) => s.setCouponSolve);
   const market = useMarketStore((s) => s.market);
-  const underlyingName = useMarketStore((s) => s.underlyingName);
+  const basketCorrelation = useMarketStore((s) => s.basketCorrelation);
   const running = useResultsStore((s) => s.running);
 
+  const { underlyingName, underlyings, pricingSpec } = usePricingSpec(spec);
+
   const [greeks, setGreeks] = useState(false);
-  const [gridOpen, setGridOpen] = useState(false);
   const [leverageAuto, setLeverageAuto] = useState(true);
   // Coupon and call (AC) observations almost always share a schedule, and a
   // mismatch is usually a mistake rather than an intent. AUTO keeps the coupon
@@ -95,6 +87,7 @@ export function CouponPage() {
   }, [couponFreqAuto, spec.callFrequency, spec.callType, spec.couponFrequency]);
 
   const validation = validateCoupon(spec, market);
+  const basketValidation = validateBasket(underlyings, basketCorrelation, market);
 
   // Per-field solve availability, mirroring the old solveOptions.ts helper.
   // Under issuerCallable (LSMC pricing; v1 supports Price only), nothing
@@ -122,27 +115,20 @@ export function CouponPage() {
     if (!available) setSolve({ kind: 'none' });
   }, [solve.kind, canCouponPa, canAcCoupon, canCouponBarrier, canCallBarrier, canKiBarrier, canPutStrike, setSolve]);
 
-  const priceDisabled = !validation.valid;
-  const priceLabel = solve.kind === 'none' ? 'Price' : 'Solve';
+  const priceDisabled = !validation.valid || !basketValidation.valid;
+  const priceLabel = priceLabelFor(solve);
 
   useLiveReprice({
     page: 'coupon',
-    product: spec,
+    product: pricingSpec,
     market,
     underlyingName,
     solve,
     disabled: priceDisabled,
   });
 
-  function fieldSolved(kind: SolveTarget['kind']): boolean {
-    return solve.kind === kind;
-  }
-
-  // Radio semantics: clicking a chip activates that target and deactivates
-  // all others. Clicking the already-active chip falls back to Price.
-  function toggleSolve(kind: Exclude<SolveTarget['kind'], 'none'>) {
-    setSolve(solve.kind === kind ? { kind: 'none' } : ({ kind } as SolveTarget));
-  }
+  const fieldSolved = makeFieldSolved(solve);
+  const toggleSolve = makeToggleSolve(solve, setSolve);
 
   // "Price (reoffer)" is solve kind 'none'. Its output is the price shown in
   // the results panel, not a spec field. The Reoffer field is the closest
@@ -162,7 +148,7 @@ export function CouponPage() {
   function handleRun() {
     runPricing({
       page: 'coupon',
-      product: spec,
+      product: pricingSpec,
       market,
       underlyingName,
       solve,
@@ -534,25 +520,25 @@ export function CouponPage() {
         </Card>
       )}
 
-      <div style={{ gridColumn: '1 / -1' }}>
-        <ActionRow
-          label={priceLabel}
-          disabled={priceDisabled}
-          tooltip="Fix validation errors above."
-          onRun={handleRun}
-          greeks={greeks}
-          onGreeksChange={setGreeks}
-          running={running}
-          onToggleGrid={() => setGridOpen((v) => !v)}
-          gridOpen={gridOpen}
-        />
-      </div>
-
-      {gridOpen && (
-        <div style={{ gridColumn: '1 / -1' }}>
-          <PricingGrid page="coupon" spec={spec} market={market} underlyingName={underlyingName} />
+      {Object.keys(basketValidation.errors).length > 0 && (
+        <div style={{ gridColumn: '1 / -1' }} className="status-line error">
+          {Object.values(basketValidation.errors).join(' ')}
         </div>
       )}
+
+      <PricingFooter
+        page="coupon"
+        spec={pricingSpec}
+        market={market}
+        underlyingName={underlyingName}
+        priceLabel={priceLabel}
+        priceDisabled={priceDisabled}
+        tooltip="Fix validation errors above."
+        onRun={handleRun}
+        greeks={greeks}
+        onGreeksChange={setGreeks}
+        running={running}
+      />
     </div>
   );
 }

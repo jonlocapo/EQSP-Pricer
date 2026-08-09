@@ -16,7 +16,6 @@ const hooks: PricingHooks = {
 const brc: CouponProductSpec = {
   kind: 'coupon',
   underlyings: [{ name: 'TEST' }],
-  currency: 'EUR',
   notional: 1_000_000,
   tenorYears: 1,
   reofferPct: 98.5,

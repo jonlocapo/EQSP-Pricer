@@ -28,7 +28,6 @@ function baseSpec(overrides: Partial<AccumulatorSpec> = {}): AccumulatorSpec {
     kind: 'accumulator',
     direction: 'accumulate',
     underlyings: [{ name: 'TEST' }],
-    currency: 'EUR',
     strikePct: 100,
     upfrontPct: 0,
     tenorYears: 20 / 252,

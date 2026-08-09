@@ -27,7 +27,7 @@ import {
   type OptionQuote,
 } from './optionChain';
 
-export interface ImpliedResult {
+interface ImpliedResult {
   divYield: number;
   atmVol: number;
   spot: number;

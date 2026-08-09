@@ -32,7 +32,7 @@ export const MAX_RATIO = 1.6;
  * calendar days, because that is the tenor a listed vol index quotes. */
 const ANCHOR_T_YEARS = 21 / 252;
 
-export interface VrpRatioOptions {
+interface VrpRatioOptions {
   minRatio?: number;
   maxRatio?: number;
 }

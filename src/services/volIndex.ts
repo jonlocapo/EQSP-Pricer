@@ -13,6 +13,7 @@
  */
 import { fetchTextWithCorsFallback } from './spotFetch';
 import { closesWithDatesFromYahooChart } from './marketFetch';
+import { buildYahooChartUrl } from './yahooChart';
 
 /**
  * Maps a Yahoo-style underlying symbol to its listed volatility index. Only
@@ -39,7 +40,7 @@ export function volIndexSymbolFor(underlying: string): string | undefined {
   return VOL_INDEX_BY_UNDERLYING[underlying.trim().toUpperCase()] ?? VOL_INDEX_BY_UNDERLYING[underlying.trim()];
 }
 
-export interface VolIndexLevel {
+interface VolIndexLevel {
   symbol: string;
   /** Decimal (0.1792 = 17.92 points). */
   vol: number;
@@ -56,7 +57,7 @@ export interface VolIndexLevel {
 export async function fetchVolIndexLevel(symbol: string): Promise<VolIndexLevel> {
   const sym = symbol.trim();
   if (!sym) throw new Error('No vol-index symbol given');
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=5d&interval=1d`;
+  const url = buildYahooChartUrl(sym, '5d');
   const { text, proxied } = await fetchTextWithCorsFallback(url, 8000, (t) => t.trimStart().startsWith('{'));
   const closes = closesWithDatesFromYahooChart(JSON.parse(text));
   if (closes.length === 0) throw new Error(`No level returned for vol index "${sym}"`);

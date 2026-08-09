@@ -44,7 +44,6 @@ function couponSpec(overrides: Partial<CouponProductSpec> = {}): CouponProductSp
   return {
     kind: 'coupon',
     underlyings: [{ name: 'TEST' }],
-    currency: 'EUR',
     notional: 1_000_000,
     tenorYears: 1,
     reofferPct: 100,

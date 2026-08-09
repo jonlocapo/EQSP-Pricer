@@ -33,7 +33,7 @@
  */
 import { volFromQuote } from './impliedFromQuote';
 
-export interface VolSlice {
+interface VolSlice {
   tYears: number;
   /** Ascending by strike. At least one point. */
   points: { strike: number; iv: number }[];
@@ -76,7 +76,7 @@ interface ChainLike {
   source: string;
 }
 
-export interface BuildVolSurfaceOpts {
+interface BuildVolSurfaceOpts {
   /** Continuously compounded rate, needed to invert a quote's PRICE. */
   rate?: number;
   /** Continuous dividend yield, needed to invert a quote's PRICE. */

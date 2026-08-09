@@ -1,15 +1,16 @@
 import { create } from 'zustand';
-import type {
-  AccumulatorSpec,
-  CouponProductSpec,
-  ParticipationSpec,
+import {
+  PERIODS_PER_YEAR,
+  type AccumulatorSpec,
+  type CouponProductSpec,
+  type ParticipationSpec,
 } from '../model/product';
 import type { SolveTarget } from '../model/request';
 
 export type PageId = 'coupon' | 'participation' | 'accumulator';
 
 function callObservationCount(spec: CouponProductSpec): number {
-  const perYear = { monthly: 12, quarterly: 4, semiannual: 2, annual: 1 }[spec.callFrequency];
+  const perYear = PERIODS_PER_YEAR[spec.callFrequency];
   return Math.max(1, Math.round(spec.tenorYears * perYear));
 }
 
@@ -26,7 +27,6 @@ export function rebuildCustomCallSchedule(
 export const DEFAULT_COUPON_SPEC: CouponProductSpec = {
   kind: 'coupon',
   underlyings: [{ name: 'SPX Index' }],
-  currency: 'EUR',
   notional: 1_000_000,
   tenorYears: 1,
   reofferPct: 98.5,
@@ -55,7 +55,6 @@ export const DEFAULT_COUPON_SPEC: CouponProductSpec = {
 
 const commonDefaults = {
   underlyings: [{ name: 'SPX Index' }],
-  currency: 'EUR',
   notional: 1_000_000,
   tenorYears: 1,
   reofferPct: 100,
@@ -169,7 +168,6 @@ export const DEFAULT_ACCUMULATOR: AccumulatorSpec = {
   kind: 'accumulator',
   direction: 'accumulate',
   underlyings: [{ name: 'SPX Index' }],
-  currency: 'EUR',
   strikePct: 100,
   upfrontPct: 0.5,
   tenorYears: 0.5,

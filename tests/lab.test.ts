@@ -62,7 +62,6 @@ describe('Contract Lab — reverse convertible preset == buildReverseConvertible
     const couponSpec: CouponProductSpec = {
       kind: 'coupon',
       underlyings: labSpec.underlyings,
-      currency: labSpec.currency,
       notional: labSpec.notional,
       tenorYears: labSpec.tenorYears,
       reofferPct: labSpec.reofferPct,
@@ -114,7 +113,6 @@ describe('Contract Lab — booster preset == buildParticipation/buildParticipati
     const participationSpec: ParticipationSpec = {
       kind: 'participation',
       underlyings: labSpec.underlyings,
-      currency: labSpec.currency,
       notional: labSpec.notional,
       tenorYears: labSpec.tenorYears,
       reofferPct: labSpec.reofferPct,
@@ -153,7 +151,6 @@ describe('Contract Lab — event merging', () => {
     return {
       kind: 'lab',
       underlyings: [{ name: 'TEST' }],
-      currency: 'EUR',
       notional: 1_000_000,
       tenorYears: 1,
       reofferPct: 100,
@@ -210,7 +207,6 @@ describe('Contract Lab — observablesRequirements', () => {
     return {
       kind: 'lab',
       underlyings: [{ name: 'TEST' }],
-      currency: 'EUR',
       notional: 1_000_000,
       tenorYears: 1,
       reofferPct: 100,
@@ -239,7 +235,6 @@ describe('Contract Lab — validation', () => {
     return {
       kind: 'lab',
       underlyings: [{ name: 'TEST' }],
-      currency: 'EUR',
       notional: 1_000_000,
       tenorYears: 1,
       reofferPct: 100,

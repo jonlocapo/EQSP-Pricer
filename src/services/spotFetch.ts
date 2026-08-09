@@ -1,6 +1,7 @@
 import { normalizeQuoteCurrency, toStooqSymbol } from './symbols';
+import { buildYahooChartUrl } from './yahooChart';
 
-export interface SpotFetchResult {
+interface SpotFetchResult {
   spot: number;
   asOf: string;
   source: string;
@@ -42,6 +43,18 @@ export async function fetchWithTimeout(url: string, ms: number, external?: Abort
  * requests are not allowed on your plan". That is a paywall, not a rate limit,
  * so retrying it can never succeed and it only wasted a hedge slot.
  *
+ * proxy.cors.sh (CORS.sh) is the current lead relay: it passes the target
+ * through RAW (no envelope) and sends `access-control-allow-origin: *`, and it
+ * was verified live against the Yahoo chart and ECB endpoints. It is another
+ * free service and will eventually rate-limit like the rest; the hedge is
+ * exactly for that day.
+ *
+ * allorigins is listed second and reached through its `/get` endpoint, which
+ * wraps the target in a `{ "contents": "..." }` JSON envelope that the
+ * transport unwraps (see `unwrapRelayBody`). Its `/raw` endpoint, which used
+ * to be used here, answers intermittently with a 12-second 500 and was
+ * dropped.
+ *
  * MEASURED STATE, and the reason this list should not be trusted: against a
  * target that answered a direct request in 318 ms, allorigins returned 500
  * after 12 seconds, codetabs timed out at 20 seconds, and thingproxy failed.
@@ -51,7 +64,8 @@ export async function fetchWithTimeout(url: string, ms: number, external?: Abort
  * this whole class of failure.
  */
 const PROXIES = [
-  (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  (url: string) => `https://proxy.cors.sh/${url}`,
+  (url: string) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
   (url: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
   (url: string) => `https://thingproxy.freeboard.io/fetch/${url}`,
 ];
@@ -142,7 +156,8 @@ export async function fetchTextWithCorsFallback(
       fetchWithTimeout(wrap ? wrap(url) : url, ms, controller.signal)
         .then((text) => {
           if (settled) return;
-          if (!isValid(text)) throw new Error('unexpected response body');
+          const body = unwrapRelayBody(wrap, url, text);
+          if (!isValid(body)) throw new Error('unexpected response body');
           settled = true;
           preferredRoute.set(origin, idx);
           finish();
@@ -152,7 +167,7 @@ export async function fetchTextWithCorsFallback(
             ms: performance.now() - callStart,
             routesStarted: started,
           });
-          resolve({ text, proxied: idx !== 0 });
+          resolve({ text: body, proxied: idx !== 0 });
         })
         .catch((e) => {
           if (settled) return;
@@ -227,6 +242,24 @@ function routeLabel(wrap: ((u: string) => string) | null, url: string): string {
   }
 }
 
+/** Unwraps allorigins' JSON envelope while leaving every other route untouched. */
+function unwrapRelayBody(wrap: ((u: string) => string) | null, target: string, body: string): string {
+  if (!wrap) return body;
+  let relayUrl: URL;
+  try {
+    relayUrl = new URL(wrap(target));
+  } catch {
+    return body;
+  }
+  if (relayUrl.hostname !== 'api.allorigins.win' || relayUrl.pathname !== '/get') return body;
+  try {
+    const envelope = JSON.parse(body) as { contents?: unknown };
+    return typeof envelope.contents === 'string' ? envelope.contents : body;
+  } catch {
+    return body;
+  }
+}
+
 /** Snapshot of the most recent route attempts, oldest first. */
 export function recentRouteAttempts(): RouteAttempt[] {
   return routeAttempts.slice();
@@ -250,7 +283,7 @@ function parseStooqCsv(csv: string): { close: number; date: string } {
 }
 
 async function fetchSpotYahoo(symbol: string): Promise<SpotFetchResult> {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1d&interval=1d`;
+  const url = buildYahooChartUrl(symbol, '1d');
   const { text, proxied } = await fetchTextWithCorsFallback(url, 8000, (t) => t.trimStart().startsWith('{'));
   const parsed = JSON.parse(text) as {
     chart?: {

@@ -12,15 +12,42 @@ import { fetchTextWithCorsFallback } from './spotFetch';
 import { dailyReturnMoments, realizedTermStructure } from '../model/realizedSurface';
 import { toStooqSymbol } from './symbols';
 import { fetchDailyChart } from './ohlcFetch';
+import { buildYahooChartUrl, parseYahooChartFields } from './yahooChart';
 
 /** Stooq serves an HTML bot-challenge with HTTP 200 to some IPs. Treat any
  * non-CSV body as a failed attempt, so the proxy fallback kicks in. */
 function looksLikeCsv(text: string): boolean {
   const head = text.trimStart().slice(0, 1);
-  return head !== '<' && text.includes(',');
+  // Rejects a JSON body too, not only HTML. A relay that is rate-limited often
+  // answers 200 with its own JSON error, and `{"error":"...","code":429}` both
+  // avoids a leading '<' and contains a comma, so the older check passed it.
+  return head !== '<' && head !== '{' && head !== '[' && text.includes(',');
 }
 
-export interface HistVolResult {
+/**
+ * Accepts only the ECB's csvdata shape, which every ECB parser here reads by
+ * column name (see `parseEcbLatest` and `fetchRefRate`'s EUR branch).
+ *
+ * WHY A VALIDATOR AT ALL: this predicate runs inside the hedged race in
+ * `fetchTextWithCorsFallback`, so it decides which route WINS. A route left
+ * unvalidated accepts anything with HTTP 200, including a relay's own error
+ * page. That body then wins, aborts the routes still in flight, and the fetch
+ * fails even though a working relay was mid-answer. The parser downstream is
+ * strict enough that no wrong RATE can result, so this is about availability,
+ * not correctness.
+ */
+function isEcbCsv(text: string): boolean {
+  return looksLikeCsv(text) && text.includes('OBS_VALUE') && text.includes('TIME_PERIOD');
+}
+
+/** Accepts only the NY Fed's SOFR payload, which `fetchRefRate` reads as
+ * `refRates[0].percentRate`. Same reasoning as `isEcbCsv`. */
+function isSofrJson(text: string): boolean {
+  const t = text.trimStart();
+  return t.startsWith('{') && t.includes('"refRates"');
+}
+
+interface HistVolResult {
   /** Annualized log-return volatility, decimal. */
   vol: number;
   days: number;
@@ -50,25 +77,12 @@ export interface DatedClose {
  * close, and their matching timestamp, so the two arrays stay aligned.
  */
 export function closesWithDatesFromYahooChart(json: unknown): DatedClose[] {
-  const parsed = json as {
-    chart?: {
-      result?: {
-        timestamp?: number[];
-        indicators?: { quote?: { close?: (number | null)[] }[] };
-      }[];
-      error?: { description?: string } | null;
-    };
-  };
-  const result = parsed?.chart?.result?.[0];
-  if (!result) {
-    throw new Error(parsed?.chart?.error?.description ?? 'Yahoo chart response has no result');
-  }
-  const raw = result.indicators?.quote?.[0]?.close;
-  if (!Array.isArray(raw)) throw new Error('Yahoo chart response has no close series');
-  const timestamps = result.timestamp;
+  const fields = parseYahooChartFields(json);
+  if (!Array.isArray(fields.close)) throw new Error('Yahoo chart response has no close series');
+  const timestamps = fields.timestamp;
   const out: DatedClose[] = [];
-  for (let i = 0; i < raw.length; i++) {
-    const c = raw[i];
+  for (let i = 0; i < fields.close.length; i++) {
+    const c = fields.close[i];
     if (typeof c === 'number' && Number.isFinite(c) && c > 0) {
       // Fall back to the index when no timestamp array is present. Some
       // callers, for example plain vol history, do not need real dates.
@@ -85,7 +99,7 @@ export function closesFromYahooChart(json: unknown): number[] {
 }
 
 async function fetchHistVolYahoo(symbol: string): Promise<HistVolResult> {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1y&interval=1d`;
+  const url = buildYahooChartUrl(symbol, '1y');
   const { text, proxied } = await fetchTextWithCorsFallback(url, 8000, (t) => t.trimStart().startsWith('{'));
   const closes = closesFromYahooChart(JSON.parse(text));
   const { vol, days } = annualizedVolFromCloses(closes);
@@ -129,14 +143,14 @@ export async function fetchHistVol(symbol: string): Promise<HistVolResult> {
   }
 }
 
-export interface RefRateResult {
+interface RefRateResult {
   /** Rate, decimal. */
   rate: number;
   asOf: string;
   source: string;
 }
 
-export interface RateCurveResult {
+interface RateCurveResult {
   /** Zero-coupon rates, ascending by tYears. At least two points. */
   curve: { tYears: number; rate: number }[];
   asOf: string;
@@ -238,7 +252,7 @@ export const REF_RATE_CCYS = ['EUR', 'USD', 'GBP', 'CHF', 'JPY'] as const;
 
 export async function fetchRefRate(currency: string): Promise<RefRateResult> {
   if (currency === 'EUR') {
-    const { text, proxied } = await fetchTextWithCorsFallback(ESTR_URL, 8000);
+    const { text, proxied } = await fetchTextWithCorsFallback(ESTR_URL, 8000, isEcbCsv);
     const lines = text.trim().split('\n');
     if (lines.length < 2) throw new Error('empty ECB response');
     const header = lines[0].split(',');
@@ -249,7 +263,7 @@ export async function fetchRefRate(currency: string): Promise<RefRateResult> {
     return { rate: value / 100, asOf, source: proxied ? 'ECB €STR (proxied)' : 'ECB €STR' };
   }
   if (currency === 'USD') {
-    const { text, proxied } = await fetchTextWithCorsFallback(SOFR_URL, 8000);
+    const { text, proxied } = await fetchTextWithCorsFallback(SOFR_URL, 8000, isSofrJson);
     const data = JSON.parse(text) as {
       refRates?: { effectiveDate: string; percentRate: number }[];
     };
@@ -385,7 +399,7 @@ export async function fetchRateCurve(currency: string): Promise<RateCurveResult>
     const points = await Promise.all(
       src.keys.map(async (key, i) => {
         const url = `https://data-api.ecb.europa.eu/service/data/YC.B.U2.EUR.4F.G_N_A.SV_C_YM.${key}?lastNObservations=1&format=csvdata`;
-        const { text } = await fetchTextWithCorsFallback(url, 8000);
+        const { text } = await fetchTextWithCorsFallback(url, 8000, isEcbCsv);
         const { asOf: a, ratePercent } = parseEcbLatest(text);
         asOf = a;
         return { tYears: src.tenorsYears[i], rate: clamp(ratePercent / 100) };
@@ -413,8 +427,8 @@ export async function fetchRateCurve(currency: string): Promise<RateCurveResult>
  * equities and FX pairs alike; Yahoo serves FX crosses as
  * `{BASE}{QUOTE}=X`.
  */
-export async function fetchDailyCloses(yahooSymbol: string): Promise<DatedClose[]> {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=1y&interval=1d`;
+async function fetchDailyCloses(yahooSymbol: string): Promise<DatedClose[]> {
+  const url = buildYahooChartUrl(yahooSymbol, '1y');
   let text: string;
   try {
     ({ text } = await fetchTextWithCorsFallback(url, 8000, (t) => t.trimStart().startsWith('{')));
@@ -479,7 +493,60 @@ export function realizedCorrelation(a: DatedClose[], b: DatedClose[]): number {
   return Math.min(1, Math.max(-1, corr));
 }
 
-export interface FxRealizedResult {
+interface RealizedCorrelationMatrixResult {
+  /** Pairwise Pearson correlation of daily log-returns, symmetric, unit
+   * diagonal, one row/column per ticker in input order. Not necessarily
+   * PSD at N >= 3 legs — repair it with model/correlation.ts before pricing. */
+  matrix: number[][];
+  /** One message per ticker or pair that failed, e.g. no history, or too
+   * few overlapping trading days. That entry is left at 0 correlation
+   * rather than blocking the whole matrix. */
+  errors: string[];
+}
+
+/**
+ * Realized correlation for every pair of a basket's legs, from about 1 year
+ * of Yahoo daily closes. Reuses `realizedCorrelation`'s date alignment for
+ * each pair, so European and US holiday calendars, which do not share every
+ * trading day, are handled the same way a single-pair fetch already handles
+ * them: a day only one side has is dropped from that pair, not reused to
+ * shift the rest of the series. A ticker that fails to fetch, or a pair with
+ * too little overlap, is reported and left at 0 correlation rather than
+ * aborting every other pair.
+ */
+export async function realizedCorrelationMatrix(tickers: string[]): Promise<RealizedCorrelationMatrixResult> {
+  const n = tickers.length;
+  const matrix: number[][] = Array.from({ length: n }, (_, i) =>
+    Array.from({ length: n }, (_, j) => (i === j ? 1 : 0))
+  );
+  const errors: string[] = [];
+  const closes: (DatedClose[] | undefined)[] = [];
+  for (const t of tickers) {
+    try {
+      closes.push(await fetchDailyCloses(t));
+    } catch (e) {
+      closes.push(undefined);
+      errors.push(e instanceof Error ? e.message : `Daily closes unavailable for "${t}"`);
+    }
+  }
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const a = closes[i];
+      const b = closes[j];
+      if (!a || !b) continue;
+      try {
+        const corr = realizedCorrelation(a, b);
+        matrix[i][j] = corr;
+        matrix[j][i] = corr;
+      } catch (e) {
+        errors.push(`${tickers[i]}/${tickers[j]}: ${e instanceof Error ? e.message : 'failed'}`);
+      }
+    }
+  }
+  return { matrix, errors };
+}
+
+interface FxRealizedResult {
   fxVol: number;
   corrEqFx: number;
   days: number;
@@ -529,7 +596,7 @@ export async function fetchFxRealizedVolAndCorr(
  * with a measured term structure and a measured skew, instead of a single flat
  * number.
  */
-export interface RealizedStatsResult {
+interface RealizedStatsResult {
   terms: { tYears: number; vol: number }[];
   skewDaily: number;
   excessKurtDaily: number;

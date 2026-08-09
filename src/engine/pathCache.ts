@@ -117,6 +117,16 @@ export function computeCacheKey(p: CacheKeyParams): string {
     rate: p.market.rate,
     rateCurve: p.market.rateCurve,
     divYield: p.market.divYield,
+    // Every basket leg's vol and dividend, and the whole correlation matrix.
+    // Two DIFFERENT baskets can share the same scalar spot, vol and divYield
+    // above, so without this the cache would hand one basket's paths to the
+    // other and price it confidently wrong with nothing logged.
+    basket: p.market.basket
+      ? {
+          assets: p.market.basket.assets.map((a) => ({ vol: a.vol, divYield: a.divYield })),
+          correlation: p.market.basket.correlation,
+        }
+      : undefined,
     borrowCost: p.market.costs?.borrowCostBp ?? 0,
     quanto: p.market.quanto
       ? {
@@ -177,15 +187,23 @@ export function computeObservablesKey(pathKey: string, grid: PricingGrid, requir
 interface NormalsCacheEntry {
   key: string;
   slices: (ZSlice | undefined)[];
+  /** Paths each stored slice was DRAWN for. A slice drawn for more paths than
+   * a later call needs is still usable, because the draw is sequential per
+   * path: the first n paths of a longer slice are exactly the slice a run of n
+   * paths would have drawn on its own. See `getOrCreateZSlice`. */
+  drawnPaths: number[];
 }
 
 let normalsEntry: NormalsCacheEntry | null = null;
 
 export interface NormalsKeyParams {
-  numPaths: number;
   seed: number;
   antithetic: boolean;
   nSteps: number;
+  /** Draws per step: one per basket leg, so 1 for a single underlying. A slice
+   * drawn for one leg count has the wrong LENGTH for another and must not be
+   * replayed across them. */
+  drawsPerStep?: number;
 }
 
 /** Cache key for the normals cache. It deliberately excludes market data
@@ -193,7 +211,12 @@ export interface NormalsKeyParams {
  * Normals do not depend on either. They depend only on how many values are
  * drawn, and in what shape (see module doc above). */
 export function computeNormalsKey(p: NormalsKeyParams): string {
-  return stableStringify({ numPaths: p.numPaths, seed: p.seed, antithetic: p.antithetic, nSteps: p.nSteps });
+  return stableStringify({
+    seed: p.seed,
+    antithetic: p.antithetic,
+    nSteps: p.nSteps,
+    drawsPerStep: p.drawsPerStep ?? 1,
+  });
 }
 
 /** Draws a fresh `ZSlice` via Box-Muller, in exactly the order
@@ -203,22 +226,33 @@ export function computeNormalsKey(p: NormalsKeyParams): string {
  * matches `evaluatePathSource`'s consumption counts exactly —
  * `nPairs = Math.max(1, Math.ceil(numPaths / 2))` for pairs, `numPaths` for
  * singles. So the result is bit-identical to the live draw it replaces. */
-function generateZSlice(sliceSeed: number, nSteps: number, antithetic: boolean, slicePaths: number): ZSlice {
+function generateZSlice(
+  sliceSeed: number,
+  nSteps: number,
+  antithetic: boolean,
+  slicePaths: number,
+  drawsPerStep = 1,
+): ZSlice {
   const draw = normals(sliceSeed);
+  // A basket consumes `drawsPerStep` normals per step, one per leg, and
+  // `PathBatchGenerator.liveZ` fills its buffer in exactly this order: step by
+  // step, legs innermost. At one leg this is `nSteps` draws, the original
+  // length and the original order, so a single underlying replays unchanged.
+  const perPath = nSteps * drawsPerStep;
   if (antithetic) {
     const nPairs = Math.max(1, Math.ceil(slicePaths / 2));
     const pairs: Float64Array[] = new Array(nPairs);
     for (let p = 0; p < nPairs; p++) {
-      const z = new Float64Array(nSteps);
-      for (let i = 0; i < nSteps; i++) z[i] = draw();
+      const z = new Float64Array(perPath);
+      for (let i = 0; i < perPath; i++) z[i] = draw();
       pairs[p] = z;
     }
     return { antithetic: true, pairs };
   }
   const singles: Float64Array[] = new Array(slicePaths);
   for (let p = 0; p < slicePaths; p++) {
-    const z = new Float64Array(nSteps);
-    for (let i = 0; i < nSteps; i++) z[i] = draw();
+    const z = new Float64Array(perPath);
+    for (let i = 0; i < perPath; i++) z[i] = draw();
     singles[p] = z;
   }
   return { antithetic: false, singles };
@@ -235,15 +269,70 @@ function getOrCreateZSlice(
   slicePaths: number,
   antithetic: boolean,
   nSteps: number,
+  drawsPerStep = 1,
 ): ZSlice {
   if (!normalsEntry || normalsEntry.key !== key) {
-    normalsEntry = { key, slices: [] };
+    normalsEntry = { key, slices: [], drawnPaths: [] };
   }
   const existing = normalsEntry.slices[sliceIndex];
-  if (existing) return existing;
-  const z = generateZSlice(sliceSeed, nSteps, antithetic, slicePaths);
+  // A slice drawn for AT LEAST as many paths as this call needs is reusable.
+  // `generateZSlice` consumes the seeded stream one path at a time, in order,
+  // so the first n entries of a longer slice are byte-identical to the slice a
+  // standalone n-path run would draw. The generator reads only as many as it
+  // is asked for, so the extra tail is simply never touched.
+  //
+  // This is what lets a preview pass and a full-precision pass share draws.
+  // They split into slices of the same size (SLICE_PATHS), so slice 0 of a
+  // 20k preview and slice 0 of a 100k settle are the same numbers. Keying on
+  // the path count made them different entries in a single-entry cache, so
+  // each evicted the other and every live edit redrew normals it already had.
+  if (existing && normalsEntry.drawnPaths[sliceIndex] >= slicePaths) return existing;
+  const z = generateZSlice(sliceSeed, nSteps, antithetic, slicePaths, drawsPerStep);
   normalsEntry.slices[sliceIndex] = z;
+  normalsEntry.drawnPaths[sliceIndex] = slicePaths;
   return z;
+}
+
+/**
+ * Turns paths into observables AS THEY ARE GENERATED, keeping only the
+ * observables and never a copy of the spots.
+ *
+ * `PathSource` is generic, so this yields `PathObservables` directly and the
+ * evaluator downstream is the plain `outcome` function. That removes the
+ * second pass the old code made: it used to evaluate `outcome(observables(p))`
+ * during the run and then compute the observables all over again from stored
+ * path copies.
+ */
+class ObservablesGeneratingSource implements PathSource<PathObservables> {
+  private readonly pairs: { plus: PathObservables; minus: PathObservables }[] = [];
+  private readonly singles: PathObservables[] = [];
+
+  constructor(
+    private readonly gen: PathBatchGenerator,
+    private readonly observables: ObservablesEvaluator,
+  ) {}
+
+  nextPair(): { plus: PathObservables; minus: PathObservables } {
+    // `gen` reuses one buffer per side, so the observables must be taken
+    // before the next call overwrites it. They are, right here.
+    const { plus, minus } = this.gen.nextPair();
+    const p = this.observables(plus);
+    const m = this.observables(minus);
+    this.pairs.push({ plus: p, minus: m });
+    return { plus: p, minus: m };
+  }
+
+  nextSingle(): PathObservables {
+    const o = this.observables(this.gen.nextSingle());
+    this.singles.push(o);
+    return o;
+  }
+
+  toStoredSlice(antithetic: boolean): StoredObservablesSlice {
+    return antithetic
+      ? { antithetic: true, pairs: this.pairs }
+      : { antithetic: false, singles: this.singles };
+  }
 }
 
 /** Replays a previously-stored slice in the exact order it was recorded. */
@@ -316,7 +405,7 @@ export function evaluateCachedSlice(
     entry = { key, slices: [] };
   }
 
-  const agg = new Aggregator();
+  const agg = new Aggregator(referenceLevelPct !== undefined);
   const existing = entry.slices[sliceIndex];
   if (existing) {
     evaluatePathSource(new ReplayPathSource(existing), slicePaths, antithetic, evaluator, agg);
@@ -331,7 +420,15 @@ export function evaluateCachedSlice(
   // handy. Omitting it just means every call draws fresh normals, the
   // pre-normals-cache behavior.
   const zSlice = normalsKey
-    ? getOrCreateZSlice(normalsKey, sliceIndex, sliceSeed, slicePaths, antithetic, nSteps)
+    ? getOrCreateZSlice(
+        normalsKey,
+        sliceIndex,
+        sliceSeed,
+        slicePaths,
+        antithetic,
+        nSteps,
+        market.basket && market.basket.assets.length >= 2 ? market.basket.assets.length : 1,
+      )
     : undefined;
   const gen = new PathBatchGenerator(sliceSeed, nSteps, s0, market, stepDt, zSlice);
   const recorder = new RecordingPathSource(gen);
@@ -415,7 +512,7 @@ export function evaluateCachedSliceSplit(
     entry.obsSlices = [];
   }
 
-  const agg = new Aggregator();
+  const agg = new Aggregator(referenceLevelPct !== undefined);
 
   const existingObs = entry.obsSlices![sliceIndex];
   if (existingObs) {
@@ -437,15 +534,41 @@ export function evaluateCachedSliceSplit(
   // miss path with the monolithic evaluator. It reuses the normals cache the
   // same way evaluateCachedSlice does — see its comment.
   const zSlice = normalsKey
-    ? getOrCreateZSlice(normalsKey, sliceIndex, sliceSeed, slicePaths, antithetic, nSteps)
+    ? getOrCreateZSlice(
+        normalsKey,
+        sliceIndex,
+        sliceSeed,
+        slicePaths,
+        antithetic,
+        nSteps,
+        market.basket && market.basket.assets.length >= 2 ? market.basket.assets.length : 1,
+      )
     : undefined;
   const gen = new PathBatchGenerator(sliceSeed, nSteps, s0, market, stepDt, zSlice);
-  const recorder = new RecordingPathSource(gen);
-  const evaluator: PayoffEvaluator = (spots: Float64Array) => outcome(observables(spots));
-  evaluatePathSource(recorder, slicePaths, antithetic, evaluator, agg);
-  const storedSlice = recorder.toStoredSlice(antithetic);
-  entry.slices[sliceIndex] = storedSlice;
-  entry.obsSlices![sliceIndex] = computeObservablesSlice(storedSlice, observables);
+  // Phase A runs ONCE, as the paths are generated, and only its handful of
+  // floats is kept. The raw spots are never retained on this branch.
+  //
+  // WHY. The previous version copied every path into the raw cache, then
+  // recomputed the observables a second time from those copies. Both were
+  // waste. Measured at 100k paths over a 252-step grid: generating and
+  // stepping with a reused buffer takes about 1.1 seconds, and retaining a
+  // copy of every path takes 4.7. The copies also hold about 200MB at one
+  // year and 980MB at five. Nothing read them back during a solve, because
+  // the observables slice below answers every iteration.
+  //
+  // WHAT THIS COSTS. A change to the observation schedule or the monitoring
+  // mode invalidates the observables but not the raw paths, and that case
+  // used to recompute from the copies. It now regenerates instead, which is
+  // cheap because the normals cache still holds the draws: only the stepping
+  // loop reruns, not Box-Muller. A barrier-LEVEL solve, the common case, is
+  // unaffected: it hits the observables slice exactly as before.
+  //
+  // BIT-IDENTITY. `outcome(observables(spots))` becomes `outcome(o)` with
+  // `o = observables(spots)` on the same path, in the same order, folded into
+  // the same aggregator. Identical inputs give identical doubles.
+  const src = new ObservablesGeneratingSource(gen, observables);
+  evaluatePathSource<PathObservables>(src, slicePaths, antithetic, outcome, agg);
+  entry.obsSlices![sliceIndex] = src.toStoredSlice(antithetic);
   return agg.finalize(false, referenceLevelPct);
 }
 

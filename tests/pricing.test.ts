@@ -17,7 +17,6 @@ const hooks: PricingHooks = {
 const capGuar: ParticipationSpec = {
   kind: 'participation',
   underlyings: [{ name: 'TEST' }],
-  currency: 'EUR',
   notional: 1_000_000,
   tenorYears: 1,
   reofferPct: 100,
@@ -31,7 +30,6 @@ const capGuar: ParticipationSpec = {
 const brc: CouponProductSpec = {
   kind: 'coupon',
   underlyings: [{ name: 'TEST' }],
-  currency: 'EUR',
   notional: 1_000_000,
   tenorYears: 1,
   reofferPct: 98.5,

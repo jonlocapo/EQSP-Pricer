@@ -43,7 +43,7 @@ export interface OptionChain {
   source: string;
 }
 
-export interface ImpliedFromChain {
+interface ImpliedFromChain {
   divYield: number;
   atmVol: number;
   spot: number;

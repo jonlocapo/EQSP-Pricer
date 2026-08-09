@@ -1,5 +1,21 @@
 import { create } from 'zustand';
 import { DEFAULT_MARKET, SUPPORTED_CURRENCIES, type MarketData, type QuantoParams } from '../model/market';
+import { resizeCorrelation, removeFromCorrelation } from '../model/basket';
+
+/** One additional worst-of leg beyond the primary underlying (index 0),
+ * which stays the existing ticker/underlyingName/market.vol/divYield. Kept
+ * deliberately spot-free: every payoff here reads relative performance
+ * S(t)/S(0), so a leg's starting level cancels and is never read. */
+export interface BasketLegState {
+  ticker: string;
+  name: string;
+  vol: number;
+  divYield: number;
+  currency?: string;
+}
+
+/** Realistic worst-of range: 2 to 4 total legs, so at most 3 extra ones. */
+export const MAX_EXTRA_LEGS = 3;
 
 export interface FetchStatus {
   state: 'idle' | 'loading' | 'ok' | 'error';
@@ -27,6 +43,16 @@ interface MarketState {
    * populate `market.quanto` — see its warning line.
    */
   underlyingCurrency?: string;
+  /** Legs 2..4 of a worst-of basket. Empty means a single underlying. */
+  extraLegs: BasketLegState[];
+  /** Correlation matrix exactly as typed, dimension (1 + extraLegs.length),
+   * leg 0 first. May not be PSD; repaired on its way into MarketData (see
+   * model/basket.ts's buildBasket). */
+  basketCorrelation: number[][];
+  addLeg: () => void;
+  removeLeg: (i: number) => void;
+  setLeg: (i: number, patch: Partial<BasketLegState>) => void;
+  setBasketCorrelation: (matrix: number[][]) => void;
   setMarket: (patch: Partial<MarketData>) => void;
   /**
    * Sets or clears the quanto params without flagging `manualOverride`.
@@ -34,6 +60,10 @@ interface MarketState {
    * mechanics.
    */
   setQuanto: (quanto: QuantoParams | undefined) => void;
+  /** Sets or clears MarketData.basket without flagging `manualOverride`,
+   * for the same reason as setQuanto: this tracks the leg editor
+   * recomputing derived data, not a manual spot edit. */
+  setBasket: (basket: MarketData['basket']) => void;
   setUnderlyingName: (name: string) => void;
   /** Set from a search pick: symbol, display name, and inferred asset type. */
   /** `currency` is the underlying's listing currency, when the ticker
@@ -61,9 +91,33 @@ export const useMarketStore = create<MarketState>((set) => ({
   fetchStatus: { state: 'idle' },
   manualOverride: false,
   underlyingCurrency: undefined,
+  extraLegs: [],
+  basketCorrelation: [[1]],
+  addLeg: () =>
+    set((s) => {
+      if (s.extraLegs.length >= MAX_EXTRA_LEGS) return s;
+      const extraLegs = [
+        ...s.extraLegs,
+        { ticker: '', name: '', vol: s.market.vol, divYield: s.market.divYield },
+      ];
+      return { extraLegs, basketCorrelation: resizeCorrelation(s.basketCorrelation, 1 + extraLegs.length) };
+    }),
+  removeLeg: (i) =>
+    set((s) => {
+      const extraLegs = s.extraLegs.filter((_, idx) => idx !== i);
+      // +1: index 0 in basketCorrelation is the primary leg, so extra leg i
+      // sits at correlation row/column i + 1.
+      return { extraLegs, basketCorrelation: removeFromCorrelation(s.basketCorrelation, i + 1) };
+    }),
+  setLeg: (i, patch) =>
+    set((s) => ({
+      extraLegs: s.extraLegs.map((leg, idx) => (idx === i ? { ...leg, ...patch } : leg)),
+    })),
+  setBasketCorrelation: (basketCorrelation) => set({ basketCorrelation }),
   setMarket: (patch) =>
     set((s) => ({ market: { ...s.market, ...patch }, manualOverride: true })),
   setQuanto: (quanto) => set((s) => ({ market: { ...s.market, quanto } })),
+  setBasket: (basket) => set((s) => ({ market: { ...s.market, basket } })),
   setUnderlyingName: (name) => set({ underlyingName: name }),
   setUnderlying: (ticker, underlyingName, assetType, currency) =>
     set((s) => ({
@@ -97,5 +151,17 @@ export const useMarketStore = create<MarketState>((set) => ({
       underlyingCurrency,
     })),
   restoreMarket: (market, underlyingName) =>
-    set({ market, underlyingName, manualOverride: false, fetchStatus: { state: 'idle' }, underlyingCurrency: undefined }),
+    set({
+      market,
+      underlyingName,
+      manualOverride: false,
+      fetchStatus: { state: 'idle' },
+      underlyingCurrency: undefined,
+      // A history entry's own market.basket, if any, is restored above with
+      // `market` itself. The leg-editor state is UI-only scaffolding, not
+      // part of the priced request, so it resets rather than mixing a new
+      // trade's legs with whatever was being edited before the restore.
+      extraLegs: [],
+      basketCorrelation: [[1]],
+    }),
 }));

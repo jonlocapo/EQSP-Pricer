@@ -28,7 +28,6 @@ const baseMarket: MarketData = { spot: 100, vol: 0.25, rate: 0.03, divYield: 0.0
 const spec: CouponProductSpec = {
   kind: 'coupon',
   underlyings: [{ name: 'T' }],
-  currency: 'EUR',
   notional: 1_000_000,
   tenorYears: 1,
   reofferPct: 98.5,

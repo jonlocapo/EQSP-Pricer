@@ -4,8 +4,14 @@
  * Everything in these specs affects pricing. There are deliberately no
  * cosmetic fields.
  *
- * Single underlying in v1. `underlyings` is an array, so worst-of baskets
- * can be added later without reshaping the contract.
+ * `underlyings` carries one entry for a single-name product and two or more
+ * for a worst-of basket. The coupon and participation families accept both.
+ * `AccumulatorSpec` narrows it to exactly one, permanently, for the reason
+ * given at that interface.
+ *
+ * A basket's per-leg volatilities, dividends and correlations live in
+ * `MarketData.basket`, not here, because they are market data rather than
+ * contract terms. The two lists are in the SAME ORDER.
  */
 
 import type { LabSpec } from './lab';
@@ -26,7 +32,6 @@ export interface Underlying {
 
 export interface CommonTerms {
   underlyings: Underlying[];
-  currency: string;
   notional: number;
   tenorYears: number;
   /** Target PV as % of notional for solve-for (reoffer). */
@@ -153,13 +158,25 @@ export type KoSettlement = 'ko0' | 'ko1' | 'periodEnd';
  * and the KO triggers below spot. These are mirror-image economics. See
  * accumulator.ts payoff for the shared formula.
  */
-export type AccumulatorDirection = 'accumulate' | 'decumulate';
+type AccumulatorDirection = 'accumulate' | 'decumulate';
 
+/**
+ * An accumulator keeps exactly one underlying, permanently. Two reasons:
+ *
+ * 1. An accumulator reads the strike on EVERY step of the path, so it
+ *    cannot be reduced to summary observables the way a coupon or
+ *    participation product can. It is the only product that must retain
+ *    the whole path, so a worst-of collapse (see BasketParams in
+ *    model/market.ts) would throw away the per-step detail the payoff
+ *    actually reads.
+ * 2. A worst-of accumulator is not a structure that trades. Nobody
+ *    quotes a worst-of AQ/DQ, so this is a real product boundary, not a
+ *    temporary v1 gap.
+ */
 export interface AccumulatorSpec {
   kind: 'accumulator';
   direction: AccumulatorDirection;
-  underlyings: Underlying[];
-  currency: string;
+  underlyings: [Underlying];
   strikePct: number;
   /** Upfront value target, % of estimated notional (0 = zero-cost). */
   upfrontPct: number;
