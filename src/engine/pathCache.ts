@@ -405,7 +405,7 @@ export function evaluateCachedSlice(
     entry = { key, slices: [] };
   }
 
-  const agg = new Aggregator();
+  const agg = new Aggregator(referenceLevelPct !== undefined);
   const existing = entry.slices[sliceIndex];
   if (existing) {
     evaluatePathSource(new ReplayPathSource(existing), slicePaths, antithetic, evaluator, agg);
@@ -512,7 +512,7 @@ export function evaluateCachedSliceSplit(
     entry.obsSlices = [];
   }
 
-  const agg = new Aggregator();
+  const agg = new Aggregator(referenceLevelPct !== undefined);
 
   const existingObs = entry.obsSlices![sliceIndex];
   if (existingObs) {

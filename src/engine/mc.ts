@@ -52,7 +52,26 @@ export class Aggregator {
   sampleSum = 0;
   sampleSumSq = 0;
   nSamples = 0;
+  /**
+   * Every sample, kept ONLY when the distribution diagnostics will ask for
+   * them. The mean and the standard error come from the running sums above,
+   * so they never need this list.
+   *
+   * WHY IT IS CONDITIONAL: the histogram, the loss probability and the
+   * expected shortfall are the only readers, and they run only when
+   * `finalize` gets a `referenceLevelPct`. Collecting unconditionally pushed
+   * 50k numbers per pass and grew the backing array by repeated doubling. A
+   * solve does that four times over and throws all four away.
+   */
   samples: number[] = [];
+  private readonly keepSamples: boolean;
+
+  /** `keepSamples` must be true whenever `finalize` will be given a
+   * `referenceLevelPct`. The caller always knows that before it builds the
+   * aggregator, because it is the same value it will pass on. */
+  constructor(keepSamples = true) {
+    this.keepSamples = keepSamples;
+  }
 
   totalPaths = 0;
   callCounts: number[] = [];
@@ -67,7 +86,7 @@ export class Aggregator {
     this.sampleSum += pvPct;
     this.sampleSumSq += pvPct * pvPct;
     this.nSamples += 1;
-    this.samples.push(pvPct);
+    if (this.keepSamples) this.samples.push(pvPct);
   }
 
   /** Records diagnostics for one individual simulated path. */
@@ -210,7 +229,7 @@ export function runMc(opts: McOptions): McRunResult {
     referenceLevelPct,
   } = opts;
 
-  const agg = new Aggregator();
+  const agg = new Aggregator(referenceLevelPct !== undefined);
   const gen = new PathBatchGenerator(seed, nSteps, s0, market, dtYears);
   const cancelled = evaluatePathSource(gen, numPaths, antithetic, evaluator, agg, batchSize, onBatch);
 
