@@ -6,13 +6,12 @@ import { Card } from '../components/Card';
 import { Segmented } from '../components/Segmented';
 import { NumericField } from '../components/NumericField';
 import { SelectField } from '../components/SelectField';
-import { ActionRow } from '../components/ActionRow';
-import { PricingGrid } from '../components/PricingGrid';
+import { PricingFooter } from '../components/PricingFooter';
 import { validateAccumulator } from '../services/validation';
 import { runPricing } from '../services/runPricing';
 import { useLiveReprice } from '../hooks/useLiveReprice';
+import { makeFieldSolved, priceLabelFor } from './pageHelpers';
 import type { KoSettlement } from '../model/product';
-import type { SolveTarget } from '../model/request';
 
 type TenorUnit = 'weeks' | 'months';
 
@@ -33,7 +32,6 @@ export function AccumulatorPage() {
   const running = useResultsStore((s) => s.running);
 
   const [greeks, setGreeks] = useState(false);
-  const [gridOpen, setGridOpen] = useState(false);
   const [tenorUnit, setTenorUnit] = useState<TenorUnit>('months');
   const [tenorValue, setTenorValue] = useState<number>(6);
 
@@ -42,7 +40,7 @@ export function AccumulatorPage() {
   // daily number of shares, which has no meaning for an index underlying.
   const indexBlocked = assetType === 'index';
   const priceDisabled = !validation.valid || indexBlocked;
-  const priceLabel = solve.kind === 'none' ? 'Price' : 'Solve';
+  const priceLabel = priceLabelFor(solve);
 
   useLiveReprice({
     page: 'accumulator',
@@ -53,9 +51,7 @@ export function AccumulatorPage() {
     disabled: priceDisabled,
   });
 
-  function fieldSolved(kind: SolveTarget['kind']): boolean {
-    return solve.kind === kind;
-  }
+  const fieldSolved = makeFieldSolved(solve);
 
   // Accumulator has no 'none' solve state. Exactly one of strike/upfront is
   // always the active target. Clicking the inactive chip switches to it.
@@ -260,25 +256,21 @@ export function AccumulatorPage() {
         </div>
       </Card>
 
-      <div style={{ gridColumn: '1 / -1' }}>
-        <ActionRow
-          label={priceLabel}
-          disabled={priceDisabled}
-          tooltip={indexBlocked ? 'Accumulators and Decumulators are share-only. Switch Asset type to Share.' : 'Fix validation errors above.'}
-          onRun={handleRun}
-          greeks={greeks}
-          onGreeksChange={setGreeks}
-          running={running}
-          onToggleGrid={() => setGridOpen((v) => !v)}
-          gridOpen={gridOpen}
-        />
-      </div>
-
-      {gridOpen && (
-        <div style={{ gridColumn: '1 / -1' }}>
-          <PricingGrid page="accumulator" spec={spec} market={market} underlyingName={underlyingName} />
-        </div>
-      )}
+      <PricingFooter
+        page="accumulator"
+        spec={spec}
+        market={market}
+        underlyingName={underlyingName}
+        priceLabel={priceLabel}
+        priceDisabled={priceDisabled}
+        tooltip={
+          indexBlocked ? 'Accumulators and Decumulators are share-only. Switch Asset type to Share.' : 'Fix validation errors above.'
+        }
+        onRun={handleRun}
+        greeks={greeks}
+        onGreeksChange={setGreeks}
+        running={running}
+      />
     </div>
   );
 }
