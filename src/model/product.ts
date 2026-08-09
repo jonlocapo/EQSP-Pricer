@@ -158,7 +158,7 @@ export type KoSettlement = 'ko0' | 'ko1' | 'periodEnd';
  * and the KO triggers below spot. These are mirror-image economics. See
  * accumulator.ts payoff for the shared formula.
  */
-export type AccumulatorDirection = 'accumulate' | 'decumulate';
+type AccumulatorDirection = 'accumulate' | 'decumulate';
 
 /**
  * An accumulator keeps exactly one underlying, permanently. Two reasons:

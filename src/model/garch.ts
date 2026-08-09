@@ -65,7 +65,7 @@ import { nelderMead } from './optimize';
 const DAYS_PER_YEAR = 252;
 
 /** RiskMetrics' standard EWMA decay for daily equity returns. */
-export const EWMA_LAMBDA = 0.94;
+const EWMA_LAMBDA = 0.94;
 
 /**
  * Daily variance persistence used ONLY when the GARCH fit does not converge and
@@ -78,7 +78,7 @@ export const EWMA_LAMBDA = 0.94;
  */
 export const FALLBACK_PERSISTENCE = 0.97;
 
-export interface GjrParams {
+interface GjrParams {
   omega: number;
   alpha: number;
   /** Asymmetry: negative shocks add this extra ARCH weight. 0 = symmetric. */
@@ -86,7 +86,7 @@ export interface GjrParams {
   beta: number;
 }
 
-export interface GjrFit extends GjrParams {
+interface GjrFit extends GjrParams {
   /** Conditional variance path: sigma2[t] is the variance forecast that was
    * in force ENTERING day t, i.e. before day t's return updates it. */
   sigma2: number[];
@@ -257,12 +257,12 @@ export function ewmaVariance(returns: number[], lambda: number = EWMA_LAMBDA): n
   return variance;
 }
 
-export interface GarchTermPoint {
+interface GarchTermPoint {
   tYears: number;
   vol: number;
 }
 
-export interface GarchTermStructureResult {
+interface GarchTermStructureResult {
   /** Ascending by tYears, one point per entry in `horizonsDays`. */
   terms: GarchTermPoint[];
   /** False whenever the GJR fit was rejected and the terms come from the

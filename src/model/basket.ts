@@ -11,13 +11,13 @@ import { repairCorrelation } from './correlation';
 /** One leg's inputs, in `spec.underlyings` order. Leg 0 is always the
  * existing single-underlying panel: its name, vol and dividend yield stay
  * the ones the app already tracks, so a one-leg trade is untouched. */
-export interface BasketLegInput {
+interface BasketLegInput {
   name: string;
   vol: number;
   divYield: number;
 }
 
-export interface BuiltBasket {
+interface BuiltBasket {
   /** `spec.underlyings`, in the same order as `legs`. */
   underlyings: Underlying[];
   /** `MarketData.basket`. Undefined for fewer than two legs, so the engine

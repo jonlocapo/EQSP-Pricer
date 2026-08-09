@@ -17,7 +17,7 @@
  * minimization".
  */
 
-export interface NelderMeadResult {
+interface NelderMeadResult {
   x: number[];
   fx: number;
   iterations: number;
@@ -28,7 +28,7 @@ export interface NelderMeadResult {
   converged: boolean;
 }
 
-export interface NelderMeadOptions {
+interface NelderMeadOptions {
   maxIter?: number;
   /** Convergence threshold on the simplex's spatial spread. */
   tolX?: number;

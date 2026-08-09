@@ -26,14 +26,14 @@ import { impliedVolFromPrice } from '../engine/impliedVol';
 /** Shape-only: deliberately NOT importing OptionQuote from services/optionChain,
  * so this module stays a pure model-layer function of plain data. Any real
  * OptionQuote satisfies this structurally. */
-export interface QuoteLike {
+interface QuoteLike {
   bid?: number;
   ask?: number;
   last?: number;
   iv?: number;
 }
 
-export interface QuoteVol {
+interface QuoteVol {
   vol: number;
   source: 'computed' | 'provider';
   /** Vega-scaled half-width of the vol interval this quote supports,

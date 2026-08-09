@@ -1,15 +1,16 @@
 import { create } from 'zustand';
-import type {
-  AccumulatorSpec,
-  CouponProductSpec,
-  ParticipationSpec,
+import {
+  PERIODS_PER_YEAR,
+  type AccumulatorSpec,
+  type CouponProductSpec,
+  type ParticipationSpec,
 } from '../model/product';
 import type { SolveTarget } from '../model/request';
 
 export type PageId = 'coupon' | 'participation' | 'accumulator';
 
 function callObservationCount(spec: CouponProductSpec): number {
-  const perYear = { monthly: 12, quarterly: 4, semiannual: 2, annual: 1 }[spec.callFrequency];
+  const perYear = PERIODS_PER_YEAR[spec.callFrequency];
   return Math.max(1, Math.round(spec.tenorYears * perYear));
 }
 
