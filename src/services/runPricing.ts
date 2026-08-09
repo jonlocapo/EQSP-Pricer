@@ -158,7 +158,7 @@ function writeBackSolvedValue(
   }
 }
 
-export interface RunPricingParams {
+interface RunPricingParams {
   page: PageId;
   product: ProductSpec;
   market: MarketData;

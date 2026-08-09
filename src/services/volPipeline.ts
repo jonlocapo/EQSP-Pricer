@@ -56,7 +56,7 @@ export type VolSourceKind =
   | 'vol-index-flat'
   | 'entered';
 
-export interface VolPipelineResult {
+interface VolPipelineResult {
   surface: VolSurface;
   /** Decimal, at the requested tenor. */
   atmVol: number;
@@ -71,7 +71,7 @@ export interface VolPipelineResult {
   note?: string;
 }
 
-export interface VolPipelineArgs {
+interface VolPipelineArgs {
   /** Yahoo-style underlying symbol. */
   symbol: string;
   spot: number;

@@ -12,6 +12,7 @@ import { fetchTextWithCorsFallback } from './spotFetch';
 import { dailyReturnMoments, realizedTermStructure } from '../model/realizedSurface';
 import { toStooqSymbol } from './symbols';
 import { fetchDailyChart } from './ohlcFetch';
+import { buildYahooChartUrl, parseYahooChartFields } from './yahooChart';
 
 /** Stooq serves an HTML bot-challenge with HTTP 200 to some IPs. Treat any
  * non-CSV body as a failed attempt, so the proxy fallback kicks in. */
@@ -46,7 +47,7 @@ function isSofrJson(text: string): boolean {
   return t.startsWith('{') && t.includes('"refRates"');
 }
 
-export interface HistVolResult {
+interface HistVolResult {
   /** Annualized log-return volatility, decimal. */
   vol: number;
   days: number;
@@ -76,25 +77,12 @@ export interface DatedClose {
  * close, and their matching timestamp, so the two arrays stay aligned.
  */
 export function closesWithDatesFromYahooChart(json: unknown): DatedClose[] {
-  const parsed = json as {
-    chart?: {
-      result?: {
-        timestamp?: number[];
-        indicators?: { quote?: { close?: (number | null)[] }[] };
-      }[];
-      error?: { description?: string } | null;
-    };
-  };
-  const result = parsed?.chart?.result?.[0];
-  if (!result) {
-    throw new Error(parsed?.chart?.error?.description ?? 'Yahoo chart response has no result');
-  }
-  const raw = result.indicators?.quote?.[0]?.close;
-  if (!Array.isArray(raw)) throw new Error('Yahoo chart response has no close series');
-  const timestamps = result.timestamp;
+  const fields = parseYahooChartFields(json);
+  if (!Array.isArray(fields.close)) throw new Error('Yahoo chart response has no close series');
+  const timestamps = fields.timestamp;
   const out: DatedClose[] = [];
-  for (let i = 0; i < raw.length; i++) {
-    const c = raw[i];
+  for (let i = 0; i < fields.close.length; i++) {
+    const c = fields.close[i];
     if (typeof c === 'number' && Number.isFinite(c) && c > 0) {
       // Fall back to the index when no timestamp array is present. Some
       // callers, for example plain vol history, do not need real dates.
@@ -111,7 +99,7 @@ export function closesFromYahooChart(json: unknown): number[] {
 }
 
 async function fetchHistVolYahoo(symbol: string): Promise<HistVolResult> {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1y&interval=1d`;
+  const url = buildYahooChartUrl(symbol, '1y');
   const { text, proxied } = await fetchTextWithCorsFallback(url, 8000, (t) => t.trimStart().startsWith('{'));
   const closes = closesFromYahooChart(JSON.parse(text));
   const { vol, days } = annualizedVolFromCloses(closes);
@@ -155,14 +143,14 @@ export async function fetchHistVol(symbol: string): Promise<HistVolResult> {
   }
 }
 
-export interface RefRateResult {
+interface RefRateResult {
   /** Rate, decimal. */
   rate: number;
   asOf: string;
   source: string;
 }
 
-export interface RateCurveResult {
+interface RateCurveResult {
   /** Zero-coupon rates, ascending by tYears. At least two points. */
   curve: { tYears: number; rate: number }[];
   asOf: string;
@@ -439,8 +427,8 @@ export async function fetchRateCurve(currency: string): Promise<RateCurveResult>
  * equities and FX pairs alike; Yahoo serves FX crosses as
  * `{BASE}{QUOTE}=X`.
  */
-export async function fetchDailyCloses(yahooSymbol: string): Promise<DatedClose[]> {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=1y&interval=1d`;
+async function fetchDailyCloses(yahooSymbol: string): Promise<DatedClose[]> {
+  const url = buildYahooChartUrl(yahooSymbol, '1y');
   let text: string;
   try {
     ({ text } = await fetchTextWithCorsFallback(url, 8000, (t) => t.trimStart().startsWith('{')));
@@ -505,7 +493,7 @@ export function realizedCorrelation(a: DatedClose[], b: DatedClose[]): number {
   return Math.min(1, Math.max(-1, corr));
 }
 
-export interface RealizedCorrelationMatrixResult {
+interface RealizedCorrelationMatrixResult {
   /** Pairwise Pearson correlation of daily log-returns, symmetric, unit
    * diagonal, one row/column per ticker in input order. Not necessarily
    * PSD at N >= 3 legs — repair it with model/correlation.ts before pricing. */
@@ -558,7 +546,7 @@ export async function realizedCorrelationMatrix(tickers: string[]): Promise<Real
   return { matrix, errors };
 }
 
-export interface FxRealizedResult {
+interface FxRealizedResult {
   fxVol: number;
   corrEqFx: number;
   days: number;
@@ -608,7 +596,7 @@ export async function fetchFxRealizedVolAndCorr(
  * with a measured term structure and a measured skew, instead of a single flat
  * number.
  */
-export interface RealizedStatsResult {
+interface RealizedStatsResult {
   terms: { tYears: number; vol: number }[];
   skewDaily: number;
   excessKurtDaily: number;

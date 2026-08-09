@@ -1,9 +1,9 @@
 import type { AccumulatorSpec, CouponProductSpec, ParticipationSpec, Underlying } from '../model/product';
 import type { MarketData } from '../model/market';
 
-export type FieldErrors = Record<string, string>;
+type FieldErrors = Record<string, string>;
 
-export interface ValidationResult {
+interface ValidationResult {
   errors: FieldErrors;
   rowErrors?: string[];
   valid: boolean;

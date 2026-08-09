@@ -1,6 +1,7 @@
 import { normalizeQuoteCurrency, toStooqSymbol } from './symbols';
+import { buildYahooChartUrl } from './yahooChart';
 
-export interface SpotFetchResult {
+interface SpotFetchResult {
   spot: number;
   asOf: string;
   source: string;
@@ -282,7 +283,7 @@ function parseStooqCsv(csv: string): { close: number; date: string } {
 }
 
 async function fetchSpotYahoo(symbol: string): Promise<SpotFetchResult> {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1d&interval=1d`;
+  const url = buildYahooChartUrl(symbol, '1d');
   const { text, proxied } = await fetchTextWithCorsFallback(url, 8000, (t) => t.trimStart().startsWith('{'));
   const parsed = JSON.parse(text) as {
     chart?: {

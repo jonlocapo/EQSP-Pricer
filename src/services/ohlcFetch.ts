@@ -13,6 +13,7 @@
  */
 import { fetchTextWithCorsFallback } from './spotFetch';
 import type { Bar } from '../model/volEstimators';
+import { buildYahooChartUrl, parseYahooChartFields } from './yahooChart';
 
 /** About 2 years of daily bars: a GJR-GARCH(1,1) fit needs enough return
  * observations to separate the ARCH and GARCH effects from noise (see
@@ -33,39 +34,17 @@ function isFiniteAndPositive(v: unknown): v is number {
  * (see `trackingIndexDivYield`).
  */
 export function barsFromYahooChart(json: unknown): Bar[] {
-  const parsed = json as {
-    chart?: {
-      result?: {
-        indicators?: {
-          quote?: {
-            open?: (number | null)[];
-            high?: (number | null)[];
-            low?: (number | null)[];
-            close?: (number | null)[];
-          }[];
-          adjclose?: { adjclose?: (number | null)[] }[];
-        };
-      }[];
-      error?: { description?: string } | null;
-    };
-  };
-  const result = parsed?.chart?.result?.[0];
-  if (!result) {
-    throw new Error(parsed?.chart?.error?.description ?? 'Yahoo chart response has no result');
-  }
-  const q = result.indicators?.quote?.[0];
-  if (!q || !Array.isArray(q.close)) throw new Error('Yahoo chart response has no OHLC series');
-
-  const adj = result.indicators?.adjclose?.[0]?.adjclose;
+  const fields = parseYahooChartFields(json);
+  if (!Array.isArray(fields.close)) throw new Error('Yahoo chart response has no OHLC series');
 
   const out: Bar[] = [];
-  for (let i = 0; i < q.close.length; i++) {
-    const o = q.open?.[i];
-    const h = q.high?.[i];
-    const l = q.low?.[i];
-    const c = q.close?.[i];
+  for (let i = 0; i < fields.close.length; i++) {
+    const o = fields.open?.[i];
+    const h = fields.high?.[i];
+    const l = fields.low?.[i];
+    const c = fields.close?.[i];
     if (isFiniteAndPositive(o) && isFiniteAndPositive(h) && isFiniteAndPositive(l) && isFiniteAndPositive(c)) {
-      const a = adj?.[i];
+      const a = fields.adjClose?.[i];
       out.push({ open: o, high: h, low: l, close: c, adjClose: isFiniteAndPositive(a) ? a : undefined });
     }
   }
@@ -76,11 +55,11 @@ export function barsFromYahooChart(json: unknown): Bar[] {
  * Fetches daily OHLC bars for a Yahoo-style symbol (BA, ^SPX, BMW.DE), via
  * the same chart endpoint and CORS-fallback transport as spot and hist-vol.
  */
-export async function fetchDailyBars(yahooSymbol: string): Promise<Bar[]> {
+async function fetchDailyBars(yahooSymbol: string): Promise<Bar[]> {
   return (await fetchDailyChart(yahooSymbol)).bars;
 }
 
-export interface DailyChart {
+interface DailyChart {
   bars: Bar[];
   /** The raw parsed payload, so a second consumer does not have to refetch it.
    * The chart response carries the ADJUSTED close alongside open/high/low/close,
@@ -96,7 +75,7 @@ export interface DailyChart {
  * history for this symbol. Prefer this over calling the endpoint again.
  */
 export async function fetchDailyChart(yahooSymbol: string): Promise<DailyChart> {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=${RANGE}&interval=1d&events=div`;
+  const url = buildYahooChartUrl(yahooSymbol, RANGE, { events: 'div' });
   let text: string;
   try {
     ({ text } = await fetchTextWithCorsFallback(url, 8000, (t) => t.trimStart().startsWith('{')));
@@ -115,7 +94,7 @@ export async function fetchDailyChart(yahooSymbol: string): Promise<DailyChart> 
  * adjusted close does — FEZ reinvests the EURO STOXX 50 dividends it
  * collects. See `trackingIndexDivYield`.
  */
-export const TRACKING_ETFS: Record<string, string> = {
+const TRACKING_ETFS: Record<string, string> = {
   '^STOXX50E': 'FEZ', // SPDR EURO STOXX 50
   '^GSPC': 'SPY', // SPDR S&P 500
   '^IXIC': 'QQQ', // Invesco NASDAQ 100
