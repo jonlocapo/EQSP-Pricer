@@ -1,21 +1,56 @@
 import { create } from 'zustand';
 import { DEFAULT_MARKET, SUPPORTED_CURRENCIES, type MarketData, type QuantoParams } from '../model/market';
-import { resizeCorrelation, removeFromCorrelation } from '../model/basket';
+import { removeFromCorrelation } from '../model/basket';
 
 /** One additional worst-of leg beyond the primary underlying (index 0),
- * which stays the existing ticker/underlyingName/market.vol/divYield. Kept
- * deliberately spot-free: every payoff here reads relative performance
- * S(t)/S(0), so a leg's starting level cancels and is never read. */
+ * which stays the existing ticker/underlyingName/market.vol/divYield.
+ *
+ * `spot` is DISPLAY ONLY. Every payoff here reads relative performance
+ * S(t)/S(0), so a leg's starting level cancels and a pricing request never
+ * reads it — see `BasketAsset` in model/market.ts, which carries only vol
+ * and divYield per leg, deliberately with no spot field. Do not thread this
+ * value into `buildBasket` or `MarketData.basket`; it exists only so the
+ * panel can show the user what each leg is trading at. */
 export interface BasketLegState {
   ticker: string;
   name: string;
   vol: number;
   divYield: number;
   currency?: string;
+  spot?: number;
 }
 
 /** Realistic worst-of range: 2 to 4 total legs, so at most 3 extra ones. */
 export const MAX_EXTRA_LEGS = 3;
+
+/**
+ * Correlation assumed for a leg pair that has not been measured from
+ * history yet (a freshly added leg, or a pair `realizedCorrelationMatrix`
+ * could not fetch). Zero correlation between two arbitrary large-cap
+ * equities is not a neutral placeholder, it is a wrong one that understates
+ * a worst-of's real risk, so the default leans toward the level such names
+ * typically show, and the panel labels it as a default rather than a
+ * measurement.
+ */
+export const DEFAULT_LEG_CORRELATION = 0.5;
+
+export type CorrelationSource = 'default' | 'history' | 'manual';
+
+/** Same shape as model/basket.ts's `resizeCorrelation`, except a newly
+ * created pair starts at DEFAULT_LEG_CORRELATION rather than zero — see
+ * that constant's doc. Kept here, not in model/basket.ts, because it is
+ * UI-default policy, not pricing maths. */
+function resizeCorrelationDefaulted(matrix: number[][], n: number): number[][] {
+  const out: number[][] = [];
+  for (let i = 0; i < n; i++) {
+    const row: number[] = [];
+    for (let j = 0; j < n; j++) {
+      row.push(i === j ? 1 : (matrix[i]?.[j] ?? DEFAULT_LEG_CORRELATION));
+    }
+    out.push(row);
+  }
+  return out;
+}
 
 export interface FetchStatus {
   state: 'idle' | 'loading' | 'ok' | 'error';
@@ -49,10 +84,14 @@ interface MarketState {
    * leg 0 first. May not be PSD; repaired on its way into MarketData (see
    * model/basket.ts's buildBasket). */
   basketCorrelation: number[][];
+  /** Where `basketCorrelation` currently comes from: a fresh/never-measured
+   * default, a realized-history fetch, or a manual edit. Drives the
+   * collapsed correlation editor's one-line summary. */
+  basketCorrelationSource: CorrelationSource;
   addLeg: () => void;
   removeLeg: (i: number) => void;
   setLeg: (i: number, patch: Partial<BasketLegState>) => void;
-  setBasketCorrelation: (matrix: number[][]) => void;
+  setBasketCorrelation: (matrix: number[][], source: CorrelationSource) => void;
   setMarket: (patch: Partial<MarketData>) => void;
   /**
    * Sets or clears the quanto params without flagging `manualOverride`.
@@ -93,6 +132,7 @@ export const useMarketStore = create<MarketState>((set) => ({
   underlyingCurrency: undefined,
   extraLegs: [],
   basketCorrelation: [[1]],
+  basketCorrelationSource: 'default',
   addLeg: () =>
     set((s) => {
       if (s.extraLegs.length >= MAX_EXTRA_LEGS) return s;
@@ -100,7 +140,14 @@ export const useMarketStore = create<MarketState>((set) => ({
         ...s.extraLegs,
         { ticker: '', name: '', vol: s.market.vol, divYield: s.market.divYield },
       ];
-      return { extraLegs, basketCorrelation: resizeCorrelation(s.basketCorrelation, 1 + extraLegs.length) };
+      return {
+        extraLegs,
+        // A brand-new pair is unmeasured, so it defaults to
+        // DEFAULT_LEG_CORRELATION rather than zero, and the matrix as a
+        // whole reports as a default until a history fetch runs.
+        basketCorrelation: resizeCorrelationDefaulted(s.basketCorrelation, 1 + extraLegs.length),
+        basketCorrelationSource: 'default',
+      };
     }),
   removeLeg: (i) =>
     set((s) => {
@@ -113,7 +160,8 @@ export const useMarketStore = create<MarketState>((set) => ({
     set((s) => ({
       extraLegs: s.extraLegs.map((leg, idx) => (idx === i ? { ...leg, ...patch } : leg)),
     })),
-  setBasketCorrelation: (basketCorrelation) => set({ basketCorrelation }),
+  setBasketCorrelation: (basketCorrelation, basketCorrelationSource) =>
+    set({ basketCorrelation, basketCorrelationSource }),
   setMarket: (patch) =>
     set((s) => ({ market: { ...s.market, ...patch }, manualOverride: true })),
   setQuanto: (quanto) => set((s) => ({ market: { ...s.market, quanto } })),
@@ -163,5 +211,6 @@ export const useMarketStore = create<MarketState>((set) => ({
       // trade's legs with whatever was being edited before the restore.
       extraLegs: [],
       basketCorrelation: [[1]],
+      basketCorrelationSource: 'default',
     }),
 }));

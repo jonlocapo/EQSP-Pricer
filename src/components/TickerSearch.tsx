@@ -5,13 +5,17 @@ interface Props {
   ticker: string;
   displayName: string;
   onPick: (m: SymbolMatch) => void;
+  /** Field label. Defaults to "Underlying". The basket panel overrides it,
+   * because two fields both labelled "Underlying" in one column gives the
+   * user no way to tell the note's own name from the add-a-leg search. */
+  label?: string;
 }
 
 /**
  * Yahoo-Finance-style ticker search: type a name or symbol, pick from the
  * dropdown. Search failures are shown inline — never silent.
  */
-export function TickerSearch({ ticker, displayName, onPick }: Props) {
+export function TickerSearch({ ticker, displayName, onPick, label = 'Underlying' }: Props) {
   const [query, setQuery] = useState('');
   const [editing, setEditing] = useState(false);
   const [matches, setMatches] = useState<SymbolMatch[]>([]);
@@ -84,7 +88,7 @@ export function TickerSearch({ ticker, displayName, onPick }: Props) {
   return (
     <div className="field ticker-search" ref={rootRef}>
       <div className="field-label">
-        <span>Underlying</span>
+        <span>{label}</span>
         {ticker && <span className="ticker-badge">{ticker}</span>}
       </div>
       <input
