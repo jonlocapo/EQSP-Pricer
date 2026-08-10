@@ -400,12 +400,18 @@ export function evaluateCachedSlice(
   evaluator: PayoffEvaluator,
   referenceLevelPct?: number,
   normalsKey?: string,
+  /** Collect the per-path samples the distribution diagnostics read. A pooled
+   * run needs this even when it has no `referenceLevelPct` of its own, because
+   * the COORDINATOR concatenates every slice's samples and builds the
+   * histogram from the whole set (see worker/pricing.ts). Defaults to the
+   * single-process rule so nothing that does not opt in changes. */
+  keepSamples: boolean = referenceLevelPct !== undefined,
 ): McRunResult {
   if (!entry || entry.key !== key) {
     entry = { key, slices: [] };
   }
 
-  const agg = new Aggregator(referenceLevelPct !== undefined);
+  const agg = new Aggregator(keepSamples);
   const existing = entry.slices[sliceIndex];
   if (existing) {
     evaluatePathSource(new ReplayPathSource(existing), slicePaths, antithetic, evaluator, agg);
@@ -503,6 +509,12 @@ export function evaluateCachedSliceSplit(
   outcome: OutcomeEvaluator,
   referenceLevelPct?: number,
   normalsKey?: string,
+  /** Collect the per-path samples the distribution diagnostics read. A pooled
+   * run needs this even when it has no `referenceLevelPct` of its own, because
+   * the COORDINATOR concatenates every slice's samples and builds the
+   * histogram from the whole set (see worker/pricing.ts). Defaults to the
+   * single-process rule so nothing that does not opt in changes. */
+  keepSamples: boolean = referenceLevelPct !== undefined,
 ): McRunResult {
   if (!entry || entry.key !== key) {
     entry = { key, slices: [] };
@@ -512,7 +524,7 @@ export function evaluateCachedSliceSplit(
     entry.obsSlices = [];
   }
 
-  const agg = new Aggregator(referenceLevelPct !== undefined);
+  const agg = new Aggregator(keepSamples);
 
   const existingObs = entry.obsSlices![sliceIndex];
   if (existingObs) {

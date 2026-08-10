@@ -1,5 +1,17 @@
-import type { AccumulatorSpec, CouponProductSpec, ParticipationSpec, Underlying } from '../model/product';
+import type { AccumulatorSpec, CouponProductSpec, ParticipationSpec } from '../model/product';
 import type { MarketData } from '../model/market';
+
+/** One basket leg's identity, as far as `validateBasket` needs it. `name` is
+ * the same value `spec.underlyings` carries; `ticker` and `currency` are
+ * extra, UI-only fields the pricing spec itself does not hold (see
+ * `pageHelpers.ts`'s `BasketLegRef`, which supplies this shape from the
+ * store). Both extra fields are optional so a plain `{ name }` literal, as
+ * every existing call site and test passes, still satisfies this type. */
+interface BasketLegRef {
+  name: string;
+  ticker?: string;
+  currency?: string;
+}
 
 type FieldErrors = Record<string, string>;
 
@@ -109,7 +121,7 @@ export function validateParticipation(spec: ParticipationSpec, market: MarketDat
  * checking the repaired matrix could never catch a bad typed value.
  */
 export function validateBasket(
-  underlyings: Underlying[],
+  underlyings: BasketLegRef[],
   rawCorrelation: number[][] | undefined,
   market: MarketData
 ): ValidationResult {
@@ -130,6 +142,18 @@ export function validateBasket(
         errors[`underlying${i}`] = 'Duplicate underlying: a worst-of basket needs distinct legs.';
       }
       seen.add(key);
+
+      // A currency mismatch is a SILENT MISPRICE, not a cosmetic issue: the
+      // engine has no per-leg FX handling for a basket (see the quanto
+      // check below), so a leg in the wrong currency prices as though it
+      // traded in the note currency. Catch it here, per leg, not only via
+      // the primary-leg-derived `market.quanto` check, so a mismatched
+      // extra leg cannot pass validation silently.
+      if (u.currency && u.currency !== market.currency) {
+        const label = u.ticker?.trim() || name;
+        errors[`currency${i}`] =
+          `Leg ${i + 1} (${label}) is ${u.currency} but the note is ${market.currency}. A worst-of must be single-currency.`;
+      }
     });
 
     if (rawCorrelation) {

@@ -31,7 +31,7 @@ export function CouponPage() {
   const basketCorrelation = useMarketStore((s) => s.basketCorrelation);
   const running = useResultsStore((s) => s.running);
 
-  const { underlyingName, underlyings, pricingSpec } = usePricingSpec(spec);
+  const { underlyingName, legsForValidation, pricingSpec } = usePricingSpec(spec);
 
   const [greeks, setGreeks] = useState(false);
   const [leverageAuto, setLeverageAuto] = useState(true);
@@ -87,7 +87,7 @@ export function CouponPage() {
   }, [couponFreqAuto, spec.callFrequency, spec.callType, spec.couponFrequency]);
 
   const validation = validateCoupon(spec, market);
-  const basketValidation = validateBasket(underlyings, basketCorrelation, market);
+  const basketValidation = validateBasket(legsForValidation, basketCorrelation, market);
 
   // Per-field solve availability, mirroring the old solveOptions.ts helper.
   // Under issuerCallable (LSMC pricing; v1 supports Price only), nothing

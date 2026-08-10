@@ -18,6 +18,10 @@ import type { McRunResult } from '../engine/mc';
 export type PoolMessage =
   | {
       type: 'evalSlice';
+      /** Whether the coordinator will build the distribution diagnostics from
+       * the pooled samples. Optional so an older message still behaves as it
+       * did, by keeping them. */
+      keepSamples?: boolean;
       reqId: string;
       jobId: number;
       spec: ProductSpec;

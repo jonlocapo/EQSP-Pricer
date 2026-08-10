@@ -28,7 +28,7 @@ export function ParticipationPage() {
   // See pageHelpers.usePricingSpec: the live leg list, assembled fresh each
   // render, rather than a stored spec field the basket panel would have to
   // keep in sync.
-  const { underlyingName, underlyings, pricingSpec } = usePricingSpec(spec);
+  const { underlyingName, legsForValidation, pricingSpec } = usePricingSpec(spec);
 
   const [greeks, setGreeks] = useState(false);
   const [leverageAuto, setLeverageAuto] = useState(true);
@@ -76,7 +76,7 @@ export function ParticipationPage() {
   }, [leverageAuto, spec.downside.strikePct]);
 
   const validation = validateParticipation(spec, market);
-  const basketValidation = validateBasket(underlyings, basketCorrelation, market);
+  const basketValidation = validateBasket(legsForValidation, basketCorrelation, market);
 
   const isCallSpread = spec.upside.variant.variant === 'callSpread';
   const isKoRebate = spec.upside.variant.variant === 'koRebate';

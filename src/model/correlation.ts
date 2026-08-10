@@ -254,3 +254,58 @@ export function choleskyLower(matrix: number[][]): number[][] {
   }
   return L;
 }
+
+/**
+ * Typical gap between the correlation a dealer PRICES a worst-of at and the
+ * correlation the market has recently REALIZED.
+ *
+ * Implied correlation trades above realized for the same reason implied
+ * volatility does: the dealer is short dispersion and charges for it. Published
+ * estimates of the spread sit in the region of 0.10 to 0.25 for index
+ * constituents, so the middle of that range is the honest default.
+ */
+export const CORRELATION_RISK_PREMIUM = 0.15;
+
+/** No pair is pushed past this. A correlation of exactly 1 collapses a leg
+ * into a deterministic multiple of another, which is legitimate but is never
+ * what a premium adjustment intends. */
+const MAX_PREMIUM_CORRELATION = 0.95;
+
+/**
+ * Lifts a REALIZED correlation matrix toward the level a worst-of actually
+ * prices at.
+ *
+ * WHY THIS EXISTS. The volatility that reaches the engine is already scaled by
+ * a volatility risk premium, measured as the VIX over realized ratio. The
+ * correlation was not scaled at all, so the two inputs to a worst-of were
+ * treated inconsistently: one carried a premium and the other did not.
+ *
+ * That inconsistency is not neutral, and it does not cancel. A worst-of is
+ * long dispersion for the issuer, so understating correlation understates the
+ * worst leg and inflates the coupon the note has to pay. Measured on a
+ * three-name basket, moving the correlation from a realized 0.37 to 0.55 took
+ * the required autocall coupon from 95.6% a year to about 77%. Correlation is
+ * the single most important input to this product, and leaving it raw was the
+ * larger of the two errors.
+ *
+ * The result is repaired, because adding a constant to every off-diagonal
+ * entry can push a matrix out of the positive semi-definite cone.
+ */
+export function applyCorrelationRiskPremium(
+  matrix: number[][],
+  premium: number = CORRELATION_RISK_PREMIUM,
+): number[][] {
+  const n = matrix.length;
+  const out: number[][] = [];
+  for (let i = 0; i < n; i++) {
+    out.push(new Array(n));
+    for (let j = 0; j < n; j++) {
+      if (i === j) {
+        out[i][j] = 1;
+      } else {
+        out[i][j] = Math.min(MAX_PREMIUM_CORRELATION, matrix[i][j] + premium);
+      }
+    }
+  }
+  return repairCorrelation(out);
+}

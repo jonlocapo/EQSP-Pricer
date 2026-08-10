@@ -60,6 +60,7 @@ class PoolSliceRunner implements SliceRunner {
     seed: number,
     antithetic: boolean,
     sliceIndices: number[],
+    keepSamples: boolean,
     onSliceDone: (slicePaths: number) => void,
   ): Promise<McRunResult[]> {
     const jobs = sliceIndices.map((sliceIndex) => {
@@ -71,7 +72,7 @@ class PoolSliceRunner implements SliceRunner {
         // jobs are kicked off in the same synchronous pass — see Promise.all
         // over `jobs`.
         return Promise.resolve().then(() => {
-          const result = evaluatePriceSlice(spec, market, numPaths, seed, antithetic, sliceIndex);
+          const result = evaluatePriceSlice(spec, market, numPaths, seed, antithetic, sliceIndex, keepSamples);
           onSliceDone(slicePaths);
           return result;
         });
@@ -82,7 +83,7 @@ class PoolSliceRunner implements SliceRunner {
         // Evaluate locally, rather than hang forever waiting on a port that
         // does not exist.
         return Promise.resolve().then(() => {
-          const result = evaluatePriceSlice(spec, market, numPaths, seed, antithetic, sliceIndex);
+          const result = evaluatePriceSlice(spec, market, numPaths, seed, antithetic, sliceIndex, keepSamples);
           onSliceDone(slicePaths);
           return result;
         });
@@ -95,6 +96,7 @@ class PoolSliceRunner implements SliceRunner {
         });
         const msg: PoolMessage = {
           type: 'evalSlice',
+          keepSamples,
           reqId: this.reqId,
           jobId: sliceIndex,
           spec,
@@ -134,7 +136,7 @@ function handleSiblingPortMessage(port: MessagePort, data: PoolMessage): void {
       port.postMessage(resp);
       return;
     }
-    const result = evaluatePriceSlice(data.spec, data.market, data.numPaths, data.seed, data.antithetic, data.sliceIndex);
+    const result = evaluatePriceSlice(data.spec, data.market, data.numPaths, data.seed, data.antithetic, data.sliceIndex, data.keepSamples ?? true);
     const resp: PoolMessage = { type: 'evalSliceResult', reqId: data.reqId, jobId: data.jobId, result };
     port.postMessage(resp);
   } else if (data.type === 'cancelReq') {

@@ -52,6 +52,10 @@ export interface SliceRunner {
     seed: number,
     antithetic: boolean,
     sliceIndices: number[],
+    /** True on the one displayed pass that builds the distribution
+     * diagnostics. The coordinator pools every slice's samples to compute the
+     * histogram, so the slices have to be told to keep them. */
+    keepSamples: boolean,
     /** Invoked once per slice, as soon as that slice's result is available,
      * in any order. `slicePaths` is the number of paths that slice covered.
      * Used to aggregate a monotonically advancing progress bar across
@@ -245,6 +249,7 @@ async function priceOnce(
         seed,
         antithetic,
         indices,
+        wantDistribution,
         (slicePaths) => {
           pathsDone += slicePaths;
           hooks.onProgress(progressBase + pathsDone, progressTotal ?? numPaths, phase, solveIteration);
@@ -276,6 +281,7 @@ async function priceOnce(
             split.outcome,
             undefined,
             normalsKey,
+            wantDistribution,
           )
         : evaluateCachedSlice(
             cacheKey,
@@ -290,6 +296,7 @@ async function priceOnce(
             evaluator!,
             undefined,
             normalsKey,
+            wantDistribution,
           );
       slices[s] = res;
       if (res.cancelled) {
@@ -378,6 +385,10 @@ export function evaluatePriceSlice(
   seed: number,
   antithetic: boolean,
   sliceIndex: number,
+  /** Whether the coordinator will build the distribution diagnostics from the
+   * pooled samples. Only the final displayed pass needs them, so a solve
+   * iteration leaves this false and skips collecting them entirely. */
+  keepSamples = false,
 ): McRunResult {
   const grid = buildGrid(spec);
   const ctx: EvaluatorContext = {
@@ -426,6 +437,7 @@ export function evaluatePriceSlice(
         split.outcome,
         undefined,
         normalsKey,
+        keepSamples,
       )
     : evaluateCachedSlice(
         cacheKey,
@@ -440,6 +452,7 @@ export function evaluatePriceSlice(
         evaluator!,
         undefined,
         normalsKey,
+        keepSamples,
       );
 }
 
@@ -537,8 +550,27 @@ export function solveBounds(
   const reoffer = (spec.kind === 'accumulator' ? spec.upfrontPct : spec.reofferPct) - feePct;
   switch (target.kind) {
     case 'couponPa':
-    case 'acCouponPa':
       return { lo: 0, hi: 25, hardLo: 0, hardHi: 100, targetPct: reoffer };
+    /**
+     * The autocall coupon needs a FAR wider ceiling than the periodic one,
+     * and 100% p.a. was much too low.
+     *
+     * A periodic coupon pays every period, so its rate is close to what the
+     * note actually hands over. An autocall coupon pays ONLY when the note
+     * calls, and a snowball pays only the fraction accrued by that date. On a
+     * worst-of, calling needs EVERY leg above the barrier at once, so it is
+     * rare: a measured three-name basket with a 100% barrier called on just
+     * 34% of paths, and mostly at the first observation where a snowball has
+     * accrued a quarter of its rate. The rate must therefore be several times
+     * the economics it delivers, which is arithmetic, not an error.
+     *
+     * At the old ceiling that basket solved to within 0.007 of the bound, and
+     * a slightly leaner periodic coupon tipped it into "no solution" for a
+     * structure that is perfectly priceable. The rate is an accrual, not a
+     * probability, so nothing about it is bounded by 100.
+     */
+    case 'acCouponPa':
+      return { lo: 0, hi: 25, hardLo: 0, hardHi: 1000, targetPct: reoffer };
     case 'couponBarrier':
       return { lo: 1, hi: 150, hardLo: 0.5, hardHi: 300, targetPct: reoffer };
     case 'callBarrier':
@@ -839,10 +871,28 @@ export async function executePriceRequest(req: PriceRequest, hooks: PricingHooks
     // When the path runs on a per-step vol schedule (volPerStep), the bump
     // shifts the WHOLE schedule by the same amount — a parallel vol shock —
     // or the diffusion would not move at all and vega would report ~0.
-    const bumpVol = (m: MarketData, dVol: number): MarketData =>
-      m.volPerStep
-        ? { ...m, vol: m.vol + dVol, volPerStep: m.volPerStep.map((v) => v + dVol) }
-        : { ...m, vol: m.vol + dVol };
+    /**
+     * Bumps EVERY volatility the engine actually reads, not just the scalar.
+     *
+     * `market.vol` alone is not the input any more. A per-step schedule
+     * overrides it, and a basket ignores it entirely in favour of each leg's
+     * own volatility. Bumping only the scalar left both of those untouched, so
+     * the diffusion did not move and vega came back as exactly zero. Measured:
+     * a single name reported -0.317 and the same note as a two-leg worst-of
+     * reported 0.000000.
+     *
+     * Every leg is bumped by the same absolute amount, so this is a PARALLEL
+     * vega across the basket, which is the number a desk quotes. Per-leg vega
+     * would need one repricing per leg and is a separate feature.
+     */
+    const bumpVol = (m: MarketData, dVol: number): MarketData => ({
+      ...m,
+      vol: m.vol + dVol,
+      ...(m.volPerStep ? { volPerStep: m.volPerStep.map((v) => v + dVol) } : {}),
+      ...(m.basket
+        ? { basket: { ...m.basket, assets: m.basket.assets.map((a) => ({ ...a, vol: a.vol + dVol })) } }
+        : {}),
+    });
     const vu = await bump(bumpVol(market, 0.01), 0);
     const vd = await bump(bumpVol(market, -0.01), 1);
     if ([vu, vd].some((r) => r.cancelled) || hooks.isCancelled()) return null;

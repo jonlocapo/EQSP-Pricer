@@ -20,6 +20,7 @@ import { fetchSpot } from '../src/services/spotFetch';
 import { realizedCorrelationMatrix } from '../src/services/marketFetch';
 import { fetchExtraLegsLive } from '../src/components/basketFetch';
 import { useMarketStore, DEFAULT_LEG_CORRELATION } from '../src/state/marketStore';
+import { CORRELATION_RISK_PREMIUM } from '../src/model/correlation';
 
 const mockedVolPipeline = vi.mocked(fetchVolPipeline);
 const mockedSpot = vi.mocked(fetchSpot);
@@ -135,9 +136,12 @@ describe('fetchExtraLegsLive', () => {
     await fetchExtraLegsLive(1, 0.02, () => true);
 
     const { basketCorrelation, basketCorrelationSource } = useMarketStore.getState();
-    expect(basketCorrelation[0][1]).toBeCloseTo(0.6, 9);
-    expect(basketCorrelation[0][2]).toBe(DEFAULT_LEG_CORRELATION);
-    expect(basketCorrelation[1][2]).toBe(DEFAULT_LEG_CORRELATION);
+    // The store holds the PRICED correlation, so every off-diagonal entry
+    // carries the correlation risk premium on top of the realized or
+    // defaulted level. See applyCorrelationRiskPremium.
+    expect(basketCorrelation[0][1]).toBeCloseTo(0.6 + CORRELATION_RISK_PREMIUM, 9);
+    expect(basketCorrelation[0][2]).toBeCloseTo(DEFAULT_LEG_CORRELATION + CORRELATION_RISK_PREMIUM, 9);
+    expect(basketCorrelation[1][2]).toBeCloseTo(DEFAULT_LEG_CORRELATION + CORRELATION_RISK_PREMIUM, 9);
     expect(basketCorrelationSource).toBe('history'); // at least one pair was genuinely measured
   });
 });

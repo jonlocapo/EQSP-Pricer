@@ -18,6 +18,15 @@ export interface BasketLegState {
   divYield: number;
   currency?: string;
   spot?: number;
+  /**
+   * True once a live fetch has written this leg's volatility and dividend.
+   *
+   * A new leg starts from the primary leg's values so the basket stays
+   * priceable, but those are INHERITED, not measured. Without this flag the
+   * panel showed leg three carrying leg one's volatility and it looked
+   * exactly like a measurement. The panel must say which is which.
+   */
+  fetched?: boolean;
 }
 
 /** Realistic worst-of range: 2 to 4 total legs, so at most 3 extra ones. */
@@ -138,7 +147,10 @@ export const useMarketStore = create<MarketState>((set) => ({
       if (s.extraLegs.length >= MAX_EXTRA_LEGS) return s;
       const extraLegs = [
         ...s.extraLegs,
-        { ticker: '', name: '', vol: s.market.vol, divYield: s.market.divYield },
+        // Inherits the primary leg's vol and dividend so the basket can be
+        // priced before a fetch runs. `fetched` stays false until a live
+        // fetch replaces them, so the panel can show them as inherited.
+        { ticker: '', name: '', vol: s.market.vol, divYield: s.market.divYield, fetched: false },
       ];
       return {
         extraLegs,

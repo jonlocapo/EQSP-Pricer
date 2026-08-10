@@ -94,6 +94,36 @@ describe('validateBasket', () => {
     });
     expect(withCosts.valid).toBe(true);
   });
+
+  it('flags a leg whose currency differs from the note currency, even when market.quanto is unset', () => {
+    // The note is EUR (see `market` above). A leg reporting USD is a silent
+    // misprice risk: the engine has no per-leg FX handling for a basket, so
+    // an unflagged mismatched leg would price as though it traded in EUR.
+    // This must be caught here, per leg, not only via the primary-leg-
+    // derived market.quanto check (which a mismatched EXTRA leg never sets).
+    const mismatch = validateBasket(
+      [
+        { name: 'Rheinmetall AG', ticker: 'RHM.DE', currency: 'EUR' },
+        { name: 'Lockheed Martin', ticker: 'LMT', currency: 'USD' },
+      ],
+      [[1, 0.2], [0.2, 1]],
+      market,
+    );
+    expect(mismatch.valid).toBe(false);
+    expect(mismatch.errors.currency1).toMatch(/LMT.*USD.*EUR/);
+
+    // Same-currency legs pass, and an unfetched leg (no currency yet) is
+    // not a mismatch — it simply has nothing to compare yet.
+    const ok = validateBasket(
+      [
+        { name: 'Rheinmetall AG', ticker: 'RHM.DE', currency: 'EUR' },
+        { name: 'Leonardo DRS, Inc.', ticker: 'DRS' },
+      ],
+      [[1, 0.2], [0.2, 1]],
+      market,
+    );
+    expect(ok.valid).toBe(true);
+  });
 });
 
 describe('realizedCorrelation on misaligned calendars', () => {
