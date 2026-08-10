@@ -88,34 +88,32 @@ export function couponAmountPct(spec: CouponProductSpec): number {
   return spec.couponPaPct / PERIODS_PER_YEAR[spec.couponFrequency];
 }
 
-function kiEventFor(spec: CouponProductSpec, spots: Float64Array): boolean | undefined {
-  const nSteps = spots.length - 1;
-  const perfT = spots[nSteps] / spots[0];
+/**
+ * The knock-in test, written ONCE.
+ *
+ * It needs only two numbers from a path: the terminal performance, and the
+ * lowest performance reached. Both callers supply them: the observables
+ * evaluator reads them off `PathObservables`, and the spots-based cashflow
+ * extractor measures them from the path. Neither owns a second copy of these
+ * branches, which is what used to let them drift.
+ *
+ * `minPerf` is only read for American monitoring, so a caller that knows the
+ * monitoring is European may pass NaN for it.
+ */
+function kiEventFrom(spec: CouponProductSpec, perfT: number, minPerf: number): boolean | undefined {
   switch (spec.barrierType) {
     case 'none':
       return undefined;
     case 'european':
       return perfT < spec.kiBarrierPct / 100;
-    case 'american': {
-      let minPerf = Infinity;
-      for (let i = 1; i <= nSteps; i++) {
-        const p = spots[i] / spots[0];
-        if (p < minPerf) minPerf = p;
-      }
+    case 'american':
       return minPerf < spec.kiBarrierPct / 100;
-    }
   }
 }
 
-function isKnockedIn(spec: CouponProductSpec, spots: Float64Array): boolean {
-  if (spec.barrierType === 'none') return true;
-  return kiEventFor(spec, spots) === true;
-}
-
-function maturityRedemptionPct(spec: CouponProductSpec, spots: Float64Array): number {
-  const nSteps = spots.length - 1;
-  const perfT = spots[nSteps] / spots[0];
-  const ki = isKnockedIn(spec, spots);
+/** Redemption at maturity, written ONCE. Same two inputs as `kiEventFrom`. */
+function maturityRedemptionFrom(spec: CouponProductSpec, perfT: number, minPerf: number): number {
+  const ki = spec.barrierType === 'none' ? true : kiEventFrom(spec, perfT, minPerf) === true;
   if (!ki) return 100;
   // Industry-standard geared put: leverage multiplies the raw shortfall,
   // not the shortfall normalized by strike. So, for example, strike 80 with
@@ -124,61 +122,46 @@ function maturityRedemptionPct(spec: CouponProductSpec, spots: Float64Array): nu
   return Math.max(0, 100 - (spec.downsideLeveragePct / 100) * shortfall);
 }
 
+/**
+ * The two path functionals the tests above need, measured straight from
+ * spots. Only the LSMC cashflow extractor uses this: it walks raw paths and
+ * has no `PathObservables` to read. The running minimum is computed only when
+ * the monitoring actually reads it.
+ */
+function terminalAndMinPerf(spec: CouponProductSpec, spots: Float64Array): { perfT: number; minPerf: number } {
+  const nSteps = spots.length - 1;
+  const S0 = spots[0];
+  const perfT = spots[nSteps] / S0;
+  if (spec.barrierType !== 'american') return { perfT, minPerf: NaN };
+  let minPerf = Infinity;
+  for (let i = 1; i <= nSteps; i++) {
+    const p = spots[i] / S0;
+    if (p < minPerf) minPerf = p;
+  }
+  return { perfT, minPerf };
+}
+
+function maturityRedemptionPct(spec: CouponProductSpec, spots: Float64Array): number {
+  const { perfT, minPerf } = terminalAndMinPerf(spec, spots);
+  return maturityRedemptionFrom(spec, perfT, minPerf);
+}
+
+/**
+ * The monolithic per-path evaluator, DEFINED as phase B after phase A.
+ *
+ * It used to be a second, hand-written copy of the same payoff loop, and
+ * `tests/observables.test.ts` existed to catch the two copies drifting apart.
+ * Composing them instead makes that equivalence structural: there is now one
+ * implementation of the coupon payoff, so there is nothing left to drift. The
+ * test stays as a regression guard, but it can no longer fail for the reason
+ * it was written.
+ *
+ * This is exactly what `pathCache.ts` already did on its miss path.
+ */
 export function makeCouponEvaluator(spec: CouponProductSpec, ctx: EvaluatorContext): PayoffEvaluator {
-  const { grid } = ctx;
-  const events = mergeEvents(grid);
-  const coupon = couponAmountPct(spec);
-
-  return (spots: Float64Array): PathOutcome => {
-    const S0 = spots[0];
-    let pvPct = 0;
-    let missed = 0;
-
-    for (const ev of events) {
-      const perf = spots[ev.gridIndex] / S0;
-
-      if (ev.couponPeriod !== undefined) {
-        if (spec.couponType === 'fixed') {
-          pvPct += ctx.df(timeOf(ev.gridIndex, grid)) * coupon;
-        } else {
-          const barrier = spec.couponBarrierPct / 100;
-          if (perf >= barrier) {
-            if (spec.couponType === 'memory') {
-              pvPct += ctx.df(timeOf(ev.gridIndex, grid)) * coupon * (1 + missed);
-              missed = 0;
-            } else {
-              pvPct += ctx.df(timeOf(ev.gridIndex, grid)) * coupon;
-            }
-          } else if (spec.couponType === 'memory') {
-            missed++;
-          }
-        }
-      }
-
-      if (ev.callPeriod !== undefined && isCallable(spec, ev.callPeriod)) {
-        const barrier = callBarrierDecimal(spec, ev.callPeriod);
-        if (perf >= barrier) {
-          pvPct += ctx.df(timeOf(ev.gridIndex, grid)) * redemptionCostPctAt(spec, ev.callPeriod);
-          return {
-            pvPct,
-            calledAtPeriod: ev.callPeriod,
-            kiEvent: undefined,
-            lifeYears: timeOf(ev.gridIndex, grid),
-          };
-        }
-      }
-    }
-
-    const nSteps = grid.nSteps;
-    const redemption = maturityRedemptionPct(spec, spots);
-    pvPct += ctx.df(timeOf(nSteps, grid)) * redemption;
-
-    return {
-      pvPct,
-      kiEvent: kiEventFor(spec, spots),
-      lifeYears: spec.tenorYears,
-    };
-  };
+  const observables = makeCouponObservables(ctx, couponObservablesRequirements(spec));
+  const outcome = makeCouponOutcome(spec, ctx);
+  return (spots: Float64Array): PathOutcome => outcome(observables(spots));
 }
 
 // ---------------------------------------------------------------------------
