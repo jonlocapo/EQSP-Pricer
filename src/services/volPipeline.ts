@@ -67,8 +67,15 @@ interface VolPipelineResult {
   kind: VolSourceKind;
   /** Short human string for the UI, e.g. "marketdata.app (delayed)". */
   label: string;
-  /** Caveat for the UI, e.g. "Realized moments scaled by a 1.24x VSTOXX/realized premium". */
+  /** VOLATILITY caveat for the UI, e.g. "Realized moments scaled by a 1.24x
+   * VSTOXX/realized premium". Never mentions the dividend yield — see
+   * `divNote`, which carries that separately so the two can render as two
+   * short, independently-placed tooltips instead of one long blob. */
   note?: string;
+  /** DIVIDEND YIELD provenance for the UI, e.g. "div 2.10% realized over
+   * 2.0y (BAYN.DE adjusted close)". Belongs on the dividend field, not the
+   * volatility one, because it describes a different number. */
+  divNote?: string;
 }
 
 interface VolPipelineArgs {
@@ -265,7 +272,7 @@ async function chainRungs(args: VolPipelineArgs): Promise<VolPipelineResult | un
       divYield: r.divYield,
       kind: 'chain-free',
       label: r.source,
-      note: r.approximate ? 'Dividend yield is approximate (American-style parity)' : undefined,
+      divNote: r.approximate ? 'Dividend yield is approximate (American-style parity)' : undefined,
     };
   } catch {
     // Fall through to the realized-based rungs.
@@ -365,10 +372,6 @@ async function realizedRungs(
       source,
     );
 
-  /** Appends the dividend provenance to a rung's note, so a MEASURED yield is
-   * never applied silently. */
-  const withDivNote = (note: string) => (divYieldNote ? `${note} · ${divYieldNote}` : note);
-
   if (realized) {
     // Rung 3: a listed vol index for THIS underlying.
     if (ownIndexSymbol) {
@@ -384,7 +387,8 @@ async function realizedRungs(
           divYield: measuredDivYield,
           kind: 'vol-index',
           label: `${idx.symbol}-scaled realized (${modelLabel})`,
-          note: withDivNote(`Realized moments (${modelLabel}) scaled by a ${ratio.toFixed(2)}x ${idx.symbol}/realized premium`),
+          note: `Realized moments (${modelLabel}) scaled by a ${ratio.toFixed(2)}x ${idx.symbol}/realized premium`,
+          divNote: divYieldNote,
         };
       } catch {
         // Fall through to the market-wide ratio.
@@ -407,9 +411,8 @@ async function realizedRungs(
         // Rung 3 either found no index for this name or could not fetch the
         // one it found. Both land here, so the note names the substitute
         // rather than claiming a reason it cannot know.
-        note: withDivNote(
-          `Realized moments (${modelLabel}) scaled by the broad-market ${marketRatio.toFixed(2)}x VIX/realized premium, because no vol index reading was available for "${symbol}"`,
-        ),
+        note: `Realized moments (${modelLabel}) scaled by the broad-market ${marketRatio.toFixed(2)}x VIX/realized premium, because no vol index reading was available for "${symbol}"`,
+        divNote: divYieldNote,
       };
     } catch {
       // Fall through to plain realized, the last rung that uses history.
@@ -423,7 +426,8 @@ async function realizedRungs(
       divYield: measuredDivYield,
       kind: 'realized',
       label: `${realized.source} (${modelLabel})`,
-      note: withDivNote('Realized vol carries no volatility risk premium, so it typically sits below traded implied levels'),
+      note: 'Realized vol carries no volatility risk premium, so it typically sits below traded implied levels',
+      divNote: divYieldNote,
     };
   }
 
@@ -440,7 +444,8 @@ async function realizedRungs(
         divYield: measuredDivYield,
         kind: 'vol-index-flat',
         label: `${idx.symbol} implied`,
-        note: withDivNote(`No price history available, so the smile is flat at the ${idx.symbol} level`),
+        note: `No price history available, so the smile is flat at the ${idx.symbol} level`,
+        divNote: divYieldNote,
       };
     } catch {
       // Fall through to the entered vol.

@@ -33,3 +33,51 @@ export function nextStepValue(value: number, step: number, direction: 1 | -1): n
       : Math.floor(units);
   return Number((nextUnits * step).toFixed(decimalsOf(step)));
 }
+
+/** Magnitude suffixes NumericField accepts, lower-cased. `bn` and `b` both
+ * mean billion, matching how notionals get typed and quoted informally. */
+const SUFFIX_MULTIPLIERS: Record<string, number> = {
+  '': 1,
+  k: 1e3,
+  m: 1e6,
+  b: 1e9,
+  bn: 1e9,
+};
+
+/**
+ * Parses a typed number that may carry a k/m/b/bn magnitude suffix and
+ * thousands separators, e.g. "20k" -> 20000, "2.5m" -> 2_500_000,
+ * "1,000,000" -> 1_000_000, "1 000 000" -> 1_000_000. Case-insensitive, and
+ * tolerant of whitespace around the suffix ("20 k").
+ *
+ * Returns `undefined` for anything that does not parse cleanly, never
+ * `NaN`, so a caller can leave the field's current value untouched on a bad
+ * entry, exactly like a plain unparseable number does today.
+ *
+ * Call this only on COMMIT (blur or Enter), never on every keystroke:
+ * parsing mid-typing would fight the user while they are still typing "2",
+ * then "20", then "20k".
+ */
+export function parseNumericInput(raw: string): number | undefined {
+  const trimmed = raw.trim();
+  if (trimmed === '') return undefined;
+
+  // Mantissa (digits, an optional decimal point, and group separators),
+  // then an optional space, then an optional letter suffix.
+  const m = /^(-?[\d,\s]+(?:\.\d+)?)\s*([a-zA-Z]*)$/.exec(trimmed);
+  if (!m) return undefined;
+
+  // A comma is a group separator only when followed by exactly three
+  // digits, e.g. the two commas in "1,000,000". A comma used as a DECIMAL
+  // separator is ambiguous, so it is never stripped here: "1,5" keeps its
+  // comma, fails Number() below, and the caller leaves the field alone.
+  const mantissa = m[1].replace(/\s+/g, '').replace(/,(?=\d{3}(?:\D|$))/g, '');
+  const value = Number(mantissa);
+  if (!Number.isFinite(value)) return undefined;
+
+  const multiplier = SUFFIX_MULTIPLIERS[m[2].toLowerCase()];
+  if (multiplier === undefined) return undefined;
+
+  const result = value * multiplier;
+  return Number.isFinite(result) ? result : undefined;
+}

@@ -12,19 +12,9 @@ import { BasketPanel } from './BasketPanel';
 import { buildBasket } from '../model/basket';
 import { NO_COSTS, SUPPORTED_CURRENCIES as CURRENCIES, type CostParams } from '../model/market';
 import { skewPoints } from '../model/volSurface';
-
-interface FetchLine {
-  kind: 'ok' | 'err' | 'info';
-  msg: string;
-  /** Compact form used when rolling successful fetches into one summary line. */
-  short?: string;
-}
-
-/** Render an elapsed time for a fetch log line: milliseconds under a second,
- * one decimal of seconds above it, e.g. "412ms" or "3.2s". */
-function fmtMs(ms: number): string {
-  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
-}
+import { fmtMs, type FetchLine } from './fetchFormat';
+import { fetchExtraLegsLive } from './basketFetch';
+import type { SymbolMatch } from '../services/symbolSearch';
 
 /** Await a promise without changing its outcome, but also capture how long it
  * took. Never rejects: a failing leg reports `ok: false` instead, so callers
@@ -52,11 +42,28 @@ function summarizeRoutes(attempts: RouteAttempt[]): string {
 }
 
 /** Reported alongside the fetch lines, so the vol field can show which rung
- * of the ladder produced the current number without re-deriving it. */
+ * of the ladder produced the current number without re-deriving it.
+ *
+ * `label` is the SHORT form for the panel ("VIX-scaled realized"); `full`
+ * carries the whole descriptive string ("VIX-scaled realized (Yang-Zhang +
+ * EWMA (flat))"), and `note` any additional caveat. Both `full` and `note`
+ * are hover-only — see the "Source:" line below — so the panel never shows
+ * the long provenance blob the model string carries. */
 export interface VolSourceInfo {
   kind: VolSourceKind;
   label: string;
+  full: string;
   note?: string;
+}
+
+/** Splits a descriptive label at its first parenthetical, e.g.
+ * "VIX-scaled realized (Yang-Zhang + EWMA (flat))" -> "VIX-scaled
+ * realized". The parenthetical often nests further parens of its own (as
+ * above), so a regex anchored on the closing paren cannot find the right
+ * one; cutting at the first opening paren does not have that problem. */
+function shortLabel(label: string): string {
+  const i = label.indexOf(' (');
+  return i === -1 ? label : label.slice(0, i);
 }
 
 /**
@@ -79,7 +86,7 @@ async function fetchLiveData(
    * gated on it so a slow leg of an abandoned fetch cannot overwrite the
    * current underlying's data. */
   isCurrent: () => boolean = () => true,
-): Promise<{ lines: FetchLine[]; volSource?: VolSourceInfo }> {
+): Promise<{ lines: FetchLine[]; volSource?: VolSourceInfo; divNote?: string }> {
   const lines: FetchLine[] = [];
   const store = useMarketStore.getState();
 
@@ -188,6 +195,7 @@ async function fetchLiveData(
   if (!isCurrent()) { finalizeSummary(); return { lines }; }
 
   let volSource: VolSourceInfo | undefined;
+  let divNote: string | undefined;
   const volStart = performance.now();
   try {
     const vp = await fetchVolPipeline({
@@ -216,29 +224,43 @@ async function fetchLiveData(
         volSurface: vp.surface,
       },
     }));
-    volSource = { kind: vp.kind, label: vp.label, note: vp.note };
+    // The realized-derived caveat matters: it tells the user this number is
+    // not a quoted implied vol. Keep it, but as a HOVER tooltip on the
+    // source line below rather than a permanent sentence in the panel — see
+    // `volSource`'s render below.
+    const realizedCaveat =
+      vp.kind === 'realized' || vp.kind === 'realized-scaled' || vp.kind === 'vol-index'
+        ? 'No option chain. Vol and skew are realized-derived, not directly quoted implied vol.'
+        : undefined;
+    volSource = {
+      kind: vp.kind,
+      label: shortLabel(vp.label),
+      full: vp.label,
+      note: [vp.note, realizedCaveat].filter(Boolean).join(' ') || undefined,
+    };
+    divNote = vp.divNote;
     lines.push({
       kind: 'ok',
       msg:
         `Vol ${(vp.atmVol * 100).toFixed(2)}% · ${vp.label}` +
         (vp.divYield !== undefined ? `, div ${(vp.divYield * 100).toFixed(2)}%` : '') +
         skewMsg +
-        (vp.note ? ` · ${vp.note}` : '') +
         ` · ${fmtMs(volMs)}`,
       short: `vol ${(vp.atmVol * 100).toFixed(2)}%`,
     });
-    if (vp.kind === 'realized' || vp.kind === 'realized-scaled' || vp.kind === 'vol-index') {
-      lines.push({
-        kind: 'info',
-        msg: 'No option chain. Vol and skew are realized-derived, not directly quoted implied vol.',
-      });
-    }
   } catch (e) {
     const volMs = performance.now() - volStart;
     const msg = e instanceof Error ? e.message : 'all sources failed';
     lines.push({ kind: 'err', msg: `Vol: ${msg} after ${fmtMs(volMs)}` });
-    lines.push({ kind: 'info', msg: 'Div yield left as entered' });
   }
+
+  // Extra basket legs (worst-of legs 2 and up) get the SAME volatility
+  // ladder as the primary leg, concurrently with each other so three legs
+  // cost about one ladder run, not three run in series. Started here, right
+  // after the primary leg's own vol/div land, and awaited near the end of
+  // this function so it runs alongside the primary leg's remaining work
+  // (rate curve, quanto) instead of serialising after it.
+  const extraLegsP = fetchExtraLegsLive(tenorYears, rate, isCurrent);
 
   // Cross-currency note: the quanto drift needs the UNDERLYING currency's
   // rate, not the note rate. Fetch it when there is a mismatch and an open
@@ -260,7 +282,7 @@ async function fetchLiveData(
       try {
         const ur = await fetchRefRate(underlyingCcy);
         const urMs = performance.now() - urStart;
-        if (!isCurrent()) { finalizeSummary(); return { lines, volSource }; }
+        if (!isCurrent()) { finalizeSummary(); return { lines, volSource, divNote }; }
         const latest = useMarketStore.getState().market.quanto;
         useMarketStore.getState().setQuanto({
           rateUnderlying: ur.rate,
@@ -285,7 +307,7 @@ async function fetchLiveData(
     try {
       const fx = await fetchFxRealizedVolAndCorr(underlyingCcy, finalCcy, ticker);
       const fxMs = performance.now() - fxStart;
-      if (!isCurrent()) { finalizeSummary(); return { lines, volSource }; }
+      if (!isCurrent()) { finalizeSummary(); return { lines, volSource, divNote }; }
       const latest = useMarketStore.getState().market.quanto;
       useMarketStore.getState().setQuanto({
         rateUnderlying: latest?.rateUnderlying ?? cur?.rateUnderlying ?? 0,
@@ -307,8 +329,12 @@ async function fetchLiveData(
     }
   }
 
+  // Merged last, so the leg lines land after the primary leg's own lines
+  // regardless of how long the ladder took on each side.
+  lines.push(...(await extraLegsP));
+
   finalizeSummary();
-  return { lines, volSource };
+  return { lines, volSource, divNote };
 }
 
 export function MarketPanel() {
@@ -331,6 +357,12 @@ export function MarketPanel() {
   const [fetching, setFetching] = useState(false);
   const [fetchLines, setFetchLines] = useState<FetchLine[]>([]);
   const [volSource, setVolSource] = useState<VolSourceInfo | undefined>(undefined);
+  const [divNote, setDivNote] = useState<string | undefined>(undefined);
+  // Collapsed by default: funding spread, borrow and fee are all zero on
+  // most trades, and a pure risk-neutral price does not need this section
+  // open to be understood. The one-line summary below still shows whether
+  // costs are active without expanding it.
+  const [costsOpen, setCostsOpen] = useState(false);
   // A previous version of this panel stored a user-entered Alpha Vantage
   // API key here. The vol pipeline no longer has any rung that needs a
   // key, so clear a lingering value out of the user's browser storage —
@@ -354,6 +386,7 @@ export function MarketPanel() {
     setFetching(true);
     setFetchLines([]);
     setVolSource(undefined);
+    setDivNote(undefined);
     const trade = useTradeStore.getState();
     const page = trade.activePage;
     const spec =
@@ -362,7 +395,7 @@ export function MarketPanel() {
         : page === 'participation'
           ? trade.participationSpec
           : trade.accumulatorSpec;
-    const { lines, volSource: vs } = await fetchLiveData(
+    const { lines, volSource: vs, divNote: dn } = await fetchLiveData(
       sym,
       // Read the currency from the STORE, not the render closure. The picker
       // sets the note currency synchronously in setUnderlying before calling
@@ -380,6 +413,7 @@ export function MarketPanel() {
     if (fetchGeneration.current !== generation) return; // superseded
     setFetchLines(lines);
     setVolSource(vs);
+    setDivNote(dn);
     setFetching(false);
   }
 
@@ -440,6 +474,22 @@ export function MarketPanel() {
     }
   }
 
+  // A worst-of has no primary underlying: every leg is economically equal,
+  // and the price depends on the worst of them. With a single leg the panel
+  // must look exactly as a plain single-name trade always has, so this only
+  // switches the primary leg's ticker/vol/dividend into the uniform basket
+  // list once a second leg exists.
+  const nLegs = 1 + extraLegs.length;
+
+  /** Picking a new primary-leg ticker, whether from the standalone search
+   * (single-leg layout) or from column 1 of the basket grid (two or more
+   * legs). Both paths must behave identically: set the leg, then fetch
+   * live data for it. */
+  function handlePrimaryPick(m: SymbolMatch) {
+    setUnderlying(m.symbol, m.name, m.quoteType === 'INDEX' ? 'index' : 'share', m.currency);
+    void handleFetchLive(m.symbol);
+  }
+
   const quantoMismatch = !!underlyingCurrency && underlyingCurrency !== market.currency;
 
   // Costs default to zero, a pure risk-neutral fair value. The badge makes
@@ -477,6 +527,12 @@ export function MarketPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activePage, underlyingName, market.vol, market.divYield, extraLegs, basketCorrelation, market.basket]);
 
+  // Accumulator keeps exactly one underlying, permanently (see
+  // model/product.ts's AccumulatorSpec comment), so the basket UI never
+  // shows there even if the user added legs while on another tab.
+  const basketUiEnabled = activePage !== 'accumulator';
+  const singleLegLayout = !basketUiEnabled || nLegs === 1;
+
   return (
     <div>
       <h3 className="sidebar-title">Market Data</h3>
@@ -487,14 +543,15 @@ export function MarketPanel() {
           options={CURRENCIES.map((c) => ({ value: c, label: c }))}
           onChange={(v) => void handleCurrencyChange(v)}
         />
-        <TickerSearch
-          ticker={ticker}
-          displayName={underlyingName}
-          onPick={(m) => {
-            setUnderlying(m.symbol, m.name, m.quoteType === 'INDEX' ? 'index' : 'share', m.currency);
-            void handleFetchLive(m.symbol);
-          }}
-        />
+
+        {/* With one leg, this IS the underlying picker, exactly as a plain
+         * single-name trade has always looked. With two or more legs, the
+         * ticker search for every leg — including this one — moves into the
+         * basket grid below, one column per leg, so leg 1 does not look any
+         * more important than leg 3. */}
+        {singleLegLayout && (
+          <TickerSearch ticker={ticker} displayName={underlyingName} onPick={handlePrimaryPick} />
+        )}
 
         <div className="field">
           <div className="field-label">
@@ -515,7 +572,7 @@ export function MarketPanel() {
           type="button"
           disabled={fetching}
           onClick={() => void handleFetchLive()}
-          title="Fetches delayed spot, reference rate (EUR/USD), and options-implied vol + dividend yield (falling back to 1Y realized vol) in one go. Manual edits always override."
+          title="Fetches delayed spot, reference rate, and options-implied vol + dividend yield (falling back to 1Y realized vol) for every leg in one go. Manual edits always override."
         >
           {fetching ? 'Fetching…' : 'Fetch live data'}
         </button>
@@ -545,60 +602,99 @@ export function MarketPanel() {
           </div>
         )}
 
-        <NumericField
-          label="Spot"
-          value={market.spot}
-          step={0.01}
-          onChange={(v) => setMarket({ spot: v })}
-          badge={manualOverride ? 'MANUAL' : undefined}
-          badgeClassName="manual-badge"
-        />
-
-        <NumericField
-          label="Volatility"
-          value={Number((market.vol * 100).toFixed(4))}
-          step={0.5}
-          suffix="%"
-          onChange={(v) => setMarket({ vol: v / 100 })}
-        />
-        {volSource && (
-          <div className="status-line" title={volSource.note ?? volSource.label}>
-            Source: {volSource.label}
-            {volSource.note ? `. ${volSource.note}` : ''}
-          </div>
-        )}
-        <NumericField
-          label="Rate"
-          value={Number((market.rate * 100).toFixed(4))}
-          step={0.1}
-          suffix="%"
-          onChange={(v) => setMarket({ rate: v / 100 })}
-        />
-        <NumericField
-          label="Dividend yield"
-          value={Number((market.divYield * 100).toFixed(4))}
-          step={0.1}
-          suffix="%"
-          onChange={(v) => setMarket({ divYield: v / 100 })}
-        />
-
-        {/* Worst-of legs. Not offered on the accumulator page: an
-         * accumulator keeps exactly one underlying, permanently (see
-         * model/product.ts's AccumulatorSpec comment). */}
-        {activePage !== 'accumulator' && <BasketPanel />}
-
-        {quantoMismatch && market.quanto && (
-          <div className="field-group">
-            <div className="field-label">
-              <span>Quanto</span>
-            </div>
+        {singleLegLayout && (
+          <>
             <NumericField
-              label="Underlying rate"
-              value={Number((market.quanto.rateUnderlying * 100).toFixed(4))}
+              label="Spot"
+              value={market.spot}
+              step={0.01}
+              onChange={(v) => setMarket({ spot: v })}
+              badge={manualOverride ? 'MANUAL' : undefined}
+              badgeClassName="manual-badge"
+            />
+
+            <NumericField
+              label="Volatility"
+              value={Number((market.vol * 100).toFixed(4))}
+              step={0.5}
+              suffix="%"
+              onChange={(v) => setMarket({ vol: v / 100 })}
+            />
+            {volSource && (
+              <div className="status-line" title={[volSource.full, volSource.note].filter(Boolean).join('. ')}>
+                Source: {volSource.label}
+              </div>
+            )}
+
+            {/* A worst-of basket cannot be multi-currency in this engine
+             * (the quanto drift needs one equity-FX correlation PER LEG,
+             * and QuantoParams carries only one — see validateBasket), so
+             * the only case with a second genuine rate is a QUANTO
+             * SINGLE-NAME note: the note currency's rate and the
+             * underlying currency's rate, shown side by side. This branch
+             * cannot fire once a second leg exists, so it is safe here in
+             * the single-leg layout only. */}
+            {market.quanto ? (
+              <div className="metric-grid cols-2">
+                <NumericField
+                  label={`Rate ${market.currency}`}
+                  value={Number((market.rate * 100).toFixed(4))}
+                  step={0.1}
+                  suffix="%"
+                  onChange={(v) => setMarket({ rate: v / 100 })}
+                />
+                <NumericField
+                  label={`Rate ${underlyingCurrency ?? 'underlying'}`}
+                  value={Number((market.quanto.rateUnderlying * 100).toFixed(4))}
+                  step={0.1}
+                  suffix="%"
+                  onChange={(v) => setQuanto({ ...market.quanto!, rateUnderlying: v / 100 })}
+                />
+              </div>
+            ) : (
+              <NumericField
+                label="Rate"
+                value={Number((market.rate * 100).toFixed(4))}
+                step={0.1}
+                suffix="%"
+                onChange={(v) => setMarket({ rate: v / 100 })}
+              />
+            )}
+
+            <NumericField
+              label="Dividend yield"
+              value={Number((market.divYield * 100).toFixed(4))}
               step={0.1}
               suffix="%"
-              onChange={(v) => setQuanto({ ...market.quanto!, rateUnderlying: v / 100 })}
+              title={divNote}
+              onChange={(v) => setMarket({ divYield: v / 100 })}
             />
+          </>
+        )}
+
+        {/* Two or more legs: this basket can never be quanto (see the note
+         * above), so the rate is always the plain single field, moved here
+         * because it is a note-level input, not a per-leg one. */}
+        {!singleLegLayout && (
+          <NumericField
+            label="Rate"
+            value={Number((market.rate * 100).toFixed(4))}
+            step={0.1}
+            suffix="%"
+            onChange={(v) => setMarket({ rate: v / 100 })}
+          />
+        )}
+
+        {basketUiEnabled && <BasketPanel onPickPrimary={handlePrimaryPick} />}
+
+        {/* Quanto FX inputs. Rendered only when the note actually IS quanto
+         * (market.quanto set): no empty heading and no reserved space on
+         * the common single-currency trade. */}
+        {market.quanto && (
+          <div className="field-group">
+            <div className="field-label">
+              <span>Quanto FX</span>
+            </div>
             <div className="field-row">
               <NumericField
                 label="FX vol"
@@ -621,38 +717,57 @@ export function MarketPanel() {
 
         {/* Issuer and desk costs. A pure risk-neutral price ignores these. That is
          * why a fair value looks more aggressive than a bank's quote. Their
-         * signs deliberately differ — see CostParams in model/market.ts. */}
+         * signs deliberately differ — see CostParams in model/market.ts.
+         * Collapsed by default, like the correlation editor: the one-line
+         * summary below always shows whether costs are active, so a
+         * collapsed non-zero cost is never a silent trap. */}
         <div className="field-group">
           <div className="field-label">
             <span>Costs</span>
-            {costsActive && <span className="solved-badge">ON</span>}
+            <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              {costsActive && <span className="solved-badge">ON</span>}
+              <button type="button" className="btn btn-sm" onClick={() => setCostsOpen((o) => !o)}>
+                {costsOpen ? 'Hide' : 'Edit'}
+              </button>
+            </span>
           </div>
-          <div className="field-row">
-            <NumericField
-              label="Funding spread"
-              value={costs.fundingSpreadBp}
-              step={5}
-              suffix="bp"
-              title="Issuer funding spread over the risk-free rate. A note is a funded liability, so a wider spread cheapens the bond component and lets the issuer pay MORE."
-              onChange={(v) => setCosts({ fundingSpreadBp: v })}
-            />
-            <NumericField
-              label="Borrow cost"
-              value={costs.borrowCostBp}
-              step={5}
-              suffix="bp"
-              title="Stock borrow / repo carried by the hedge. Lowers the forward, making the short puts dearer, so it REDUCES the coupon."
-              onChange={(v) => setCosts({ borrowCostBp: v })}
-            />
-          </div>
-          <NumericField
-            label="Fee / margin"
-            value={costs.feePct}
-            step={0.1}
-            suffix="%"
-            title="Distribution fee retained upfront. The main reason a bank's quote is less aggressive than fair value."
-            onChange={(v) => setCosts({ feePct: v })}
-          />
+          {!costsOpen && (
+            <div className="status-line">
+              {costsActive
+                ? `Funding +${costs.fundingSpreadBp}bp · Borrow ${costs.borrowCostBp}bp · Fee ${costs.feePct}%`
+                : 'No costs. Pricing is the pure risk-neutral fair value.'}
+            </div>
+          )}
+          {costsOpen && (
+            <>
+              <div className="field-row">
+                <NumericField
+                  label="Funding spread"
+                  value={costs.fundingSpreadBp}
+                  step={5}
+                  suffix="bp"
+                  title="Issuer funding spread over the risk-free rate. A note is a funded liability, so a wider spread cheapens the bond component and lets the issuer pay MORE."
+                  onChange={(v) => setCosts({ fundingSpreadBp: v })}
+                />
+                <NumericField
+                  label="Borrow cost"
+                  value={costs.borrowCostBp}
+                  step={5}
+                  suffix="bp"
+                  title="Stock borrow / repo carried by the hedge. Lowers the forward, making the short puts dearer, so it REDUCES the coupon."
+                  onChange={(v) => setCosts({ borrowCostBp: v })}
+                />
+              </div>
+              <NumericField
+                label="Fee / margin"
+                value={costs.feePct}
+                step={0.1}
+                suffix="%"
+                title="Distribution fee retained upfront. The main reason a bank's quote is less aggressive than fair value."
+                onChange={(v) => setCosts({ feePct: v })}
+              />
+            </>
+          )}
         </div>
       </div>
     </div>

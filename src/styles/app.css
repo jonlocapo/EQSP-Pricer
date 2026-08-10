@@ -3,7 +3,16 @@
 .app-shell {
   display: flex;
   flex-direction: column;
-  min-height: 100%;
+  /* A DEFINITE height, not min-height: html/body/#root are already 100%
+   * (see theme.css), which resolves to the viewport height. Giving this
+   * flex column that same definite height is what lets `.app-body`'s
+   * `flex: 1` below actually BOUND its height instead of merely flooring
+   * it. Once bounded, `.sidebar` and `.main-area`'s own `overflow-y: auto`
+   * (see below) can do its job: a long panel scrolls INSIDE itself, and the
+   * page around it never grows past one screen. Without this, min-height
+   * only ever set a floor, so a tall panel grew the whole page instead of
+   * scrolling internally, and the document itself picked up the scrollbar. */
+  height: 100%;
 }
 
 .app-header {
@@ -547,6 +556,70 @@ select.input:focus {
   letter-spacing: 0.04em;
   color: var(--text);
   margin: 0 0 12px;
+}
+
+/* ---------- Metric-major grid (basket legs, quanto rate pair) ----------
+ *
+ * One row per METRIC, one column per LEG (or per currency, for the quanto
+ * rate pair), so the numbers a worst-of actually depends on sit next to
+ * each other for comparison. `minmax(0, 1fr)`, not a bare `1fr`: a grid
+ * track's automatic minimum is its content's min-content size unless told
+ * otherwise, and a NumericField's stepper column plus suffix easily exceeds
+ * a narrow sidebar column, so a bare `1fr` would blow the grid, and the
+ * sidebar, out past its own width. The 0 floor lets each track actually
+ * shrink to the space this narrow column has. Four legs use `cols-2`
+ * deliberately: two columns, four cells, wraps to two rows on its own. */
+.metric-grid {
+  display: grid;
+  gap: 8px 6px;
+}
+
+.metric-grid.cols-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.metric-grid.cols-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+/* A grid item's default min-width is "auto" (its content's natural width),
+ * not the track's assigned width, so a ticker badge or a long field label
+ * would refuse to shrink and spill into the next column. Cut that off at
+ * every direct child, and ellipsize the two text pieces (the field label
+ * and the ticker badge) that are long enough to need it in a track this
+ * narrow. */
+.metric-grid > * {
+  min-width: 0;
+}
+
+.metric-grid .field-label span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metric-grid .ticker-badge {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 62px;
+}
+
+/* One pair per row, self-labelling ("Leg 1 x Leg 2"), instead of an N-by-N
+ * table: at most 4 legs means at most 6 pairs, so this never needs to
+ * scroll and carries no dead diagonal of "1.00" cells. */
+.corr-row {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.corr-pair-label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.corr-input {
+  width: 64px;
+  flex: 0 0 auto;
 }
 
 .status-line {
@@ -1534,6 +1607,15 @@ select.input:focus {
  * fixes above so nothing inside either column overflows.
  */
 @media (max-width: 640px) {
+  /* The sidebar stacks to full width on a phone (see the mobile layout
+   * rules further down), but a 3-column metric grid is still too tight for
+   * a numeric input with a suffix and stepper arrows at that width.
+   * Collapse to one column rather than let it overflow sideways. */
+  .metric-grid.cols-2,
+  .metric-grid.cols-3 {
+    grid-template-columns: 1fr;
+  }
+
   .app-header {
     flex-wrap: wrap;
     gap: 8px 12px;

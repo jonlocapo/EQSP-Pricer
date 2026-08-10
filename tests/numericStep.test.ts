@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decimalsOf, nextStepValue } from '../src/components/numericStep';
+import { decimalsOf, nextStepValue, parseNumericInput } from '../src/components/numericStep';
 
 /**
  * The stepper must SNAP to the next multiple of the increment, not add the
@@ -68,5 +68,32 @@ describe('nextStepValue', () => {
     expect(nextStepValue(1_234_567, 100_000, 1)).toBe(1_300_000);
     expect(nextStepValue(1_234_567, 100_000, -1)).toBe(1_200_000);
     expect(nextStepValue(1_000_000, 100_000, 1)).toBe(1_100_000);
+  });
+});
+
+describe('parseNumericInput', () => {
+  it('expands k/m/b/bn suffixes, case-insensitively, with a decimal mantissa', () => {
+    expect(parseNumericInput('20k')).toBe(20_000);
+    expect(parseNumericInput('20K')).toBe(20_000);
+    expect(parseNumericInput('2m')).toBe(2_000_000);
+    expect(parseNumericInput('2M')).toBe(2_000_000);
+    expect(parseNumericInput('1.5k')).toBe(1_500);
+    expect(parseNumericInput('2.5m')).toBe(2_500_000);
+    expect(parseNumericInput('1b')).toBe(1_000_000_000);
+    expect(parseNumericInput('1bn')).toBe(1_000_000_000);
+    expect(parseNumericInput('20 k')).toBe(20_000);
+    expect(parseNumericInput('5')).toBe(5);
+  });
+
+  it('strips thousands separators and rejects anything that does not parse cleanly', () => {
+    expect(parseNumericInput('1,000,000')).toBe(1_000_000);
+    expect(parseNumericInput('1 000 000')).toBe(1_000_000);
+    // An ambiguous single comma (could be a decimal separator) is left
+    // alone rather than guessed at, so it fails to parse.
+    expect(parseNumericInput('1,5')).toBeUndefined();
+    expect(parseNumericInput('abc')).toBeUndefined();
+    expect(parseNumericInput('5x')).toBeUndefined();
+    expect(parseNumericInput('')).toBeUndefined();
+    expect(parseNumericInput('   ')).toBeUndefined();
   });
 });

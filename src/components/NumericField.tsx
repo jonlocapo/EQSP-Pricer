@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { noteEditSource } from '../state/editSource';
-import { nextStepValue } from './numericStep';
+import { nextStepValue, parseNumericInput } from './numericStep';
 
 interface NumericFieldProps {
   label: string;
@@ -93,10 +93,26 @@ export function NumericField({
   function handleType(raw: string): void {
     setDraft(raw);
     // An empty, or otherwise unparseable, field is a normal intermediate
-    // state while retyping. Keep it on screen, but do not publish it.
+    // state while retyping. Keep it on screen, but do not publish it. This
+    // stays a PLAIN number check, not the shorthand parser: trying "20k"
+    // shorthand mid-keystroke would fight the user as they type "2", then
+    // "20", then "20k" — see commitDraft, which runs the shorthand parser
+    // once, on blur or Enter, instead.
     if (raw.trim() === '') return;
     const parsed = Number(raw);
     if (Number.isFinite(parsed)) commit(parsed, 'type');
+  }
+
+  /** Runs once the user finishes editing (blur or Enter). Re-parses the
+   * whole draft with the shorthand parser, so "20k" and "1,000,000" commit
+   * correctly even though the per-keystroke plain-number check above never
+   * accepted them. A draft that still does not parse leaves the field at
+   * its last committed value, exactly like today's unparseable-input case. */
+  function commitDraft(): void {
+    if (draft === null) return;
+    const parsed = parseNumericInput(draft);
+    if (parsed !== undefined) commit(parsed, 'type');
+    setDraft(null);
   }
 
   /** Steps to the next multiple of `step`, not just `value ± step`. See
@@ -124,6 +140,9 @@ export function NumericField({
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
       stepBy(-1);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      commitDraft();
     }
   }
 
@@ -161,19 +180,21 @@ export function NumericField({
       <div className={`numeric-field ${solved ? 'solved' : ''}`}>
         <input
           className={`input ${error ? 'invalid' : ''}`}
-          type="number"
+          // Plain text, not type="number": a native number input rejects
+          // letter keystrokes outright, which would make the "20k" / "2m"
+          // shorthand impossible to even type. inputMode still gets mobile
+          // browsers to show a numeric keyboard.
+          type="text"
+          inputMode="decimal"
           // Reserve room for the stepper column PLUS this field's own suffix.
           // A single fixed padding cannot serve both "%" and "EUR"; a long
           // suffix collided with a long value (1000000EUR).
           style={{ paddingRight: suffix ? Math.max(46, Math.ceil(30 + suffix.length * 9)) : 26 }}
           value={shown}
-          step={step}
-          min={min}
-          max={max}
           disabled={readOnly}
           onChange={(e) => handleType(e.target.value)}
           onKeyDown={onKeyDown}
-          onBlur={() => setDraft(null)}
+          onBlur={commitDraft}
         />
         {suffix && <span className="suffix">{suffix}</span>}
         {/* Own stepper buttons, rather than the browser's native spin buttons.
