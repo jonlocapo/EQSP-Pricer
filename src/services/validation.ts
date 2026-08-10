@@ -182,6 +182,16 @@ export function validateAccumulator(spec: AccumulatorSpec, market: MarketData): 
   const errors: FieldErrors = { ...commonErrors(1, spec.tenorYears), ...marketErrors(market) };
   delete errors.notional;
   if (!(spec.dailyShares > 0)) errors.dailyShares = 'Must be positive.';
+  // An accumulator is single-underlying, permanently (see AccumulatorSpec).
+  // The only thing keeping a basket off it was a React effect in the market
+  // panel that rebuilds `market.basket` from one leg when the accumulator tab
+  // is active. A UI effect is not a model invariant: if a basket ever reaches
+  // here, through a history restore or a render ordering change, the daily
+  // accumulation walk runs on collapsed worst-of paths and reports a confident
+  // number. Refuse it the way validateBasket refuses basket plus quanto.
+  if (market.basket && market.basket.assets.length >= 2) {
+    errors.underlyings = 'An accumulator takes one underlying. Remove the extra basket legs.';
+  }
   // The trigger may sit exactly ON the strike. That is a real structure, the
   // knock-out coinciding with the level being dealt at, so the comparison is
   // inclusive. The same reasoning applies to an airbag, whose knock-in barrier

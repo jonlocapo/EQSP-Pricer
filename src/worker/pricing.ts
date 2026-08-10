@@ -694,6 +694,30 @@ function notionalOf(spec: ProductSpec, market: MarketData): number {
  * before.
  */
 /**
+ * The single flat rate that reproduces the note's actual discounting to
+ * maturity: -ln(df(T)) / T.
+ *
+ * WHY NOT `discountRate(market)`. That returns `market.rate + spread`, and
+ * `market.rate` is the OVERNIGHT reference fixing. When a zero curve is
+ * present the note discounts on the curve, not on the overnight rate, so the
+ * reported figure described a rate that did not price the note. On a 5-year
+ * note with a normal curve the gap is easily 50 to 100 basis points. The
+ * pricing basis exists so the number is auditable, so it must report what
+ * happened.
+ *
+ * With no curve this returns exactly `market.rate + spread`, so nothing
+ * changes for the flat-rate case.
+ */
+function effectiveDiscountRate(spec: ProductSpec, market: MarketData): number {
+  const t = spec.tenorYears;
+  if (!(t > 0)) return discountRate(market);
+  const df = makeDf(market.rate, market.rateCurve, market.costs?.fundingSpreadBp ?? 0);
+  const dfT = df(t);
+  if (!(dfT > 0)) return discountRate(market);
+  return -Math.log(dfT) / t;
+}
+
+/**
  * Per-step term structure of ONE surface, read at one strike.
  *
  * Returns one piecewise-constant volatility per grid step, chosen to PRESERVE
@@ -825,7 +849,7 @@ function effectiveMarketFor(
   market: MarketData,
 ): { market: MarketData; basis: PricingBasis } {
   const feePct = market.costs?.feePct ?? 0;
-  const dr = discountRate(market);
+  const dr = effectiveDiscountRate(spec, market);
   // A dead-flat surface (no strike skew — see VolSurface.isFlat) returns the
   // same vol at every strike, so reading market.vol directly is numerically
   // IDENTICAL to reading the surface at the risk strike (see
