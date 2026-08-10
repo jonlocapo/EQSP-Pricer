@@ -516,16 +516,32 @@ export function MarketPanel() {
   // (see model/product.ts), so a basket must never reach an accumulator
   // request even if the user added legs while on another tab.
   useEffect(() => {
-    const legs =
-      activePage === 'accumulator'
-        ? [{ name: underlyingName, vol: market.vol, divYield: market.divYield }]
-        : [{ name: underlyingName, vol: market.vol, divYield: market.divYield }, ...extraLegs];
+    // Leg 0 is the primary underlying, so its surface is the one the market
+    // panel already tracks. Each extra leg carries its own, measured by its
+    // own fetch. Both reach `effectiveMarketFor`, which reads them at the
+    // product's risk strike.
+    const primary = {
+      name: underlyingName,
+      vol: market.vol,
+      divYield: market.divYield,
+      volSurface: market.volSurface,
+    };
+    const legs = activePage === 'accumulator' ? [primary] : [primary, ...extraLegs];
     const { basket } = buildBasket(legs, basketCorrelation);
     if (JSON.stringify(basket ?? null) !== JSON.stringify(market.basket ?? null)) {
       setBasket(basket);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activePage, underlyingName, market.vol, market.divYield, extraLegs, basketCorrelation, market.basket]);
+  }, [
+    activePage,
+    underlyingName,
+    market.vol,
+    market.divYield,
+    market.volSurface,
+    extraLegs,
+    basketCorrelation,
+    market.basket,
+  ]);
 
   // Accumulator keeps exactly one underlying, permanently (see
   // model/product.ts's AccumulatorSpec comment), so the basket UI never

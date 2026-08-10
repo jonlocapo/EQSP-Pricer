@@ -130,7 +130,7 @@ function handleSiblingPortMessage(port: MessagePort, data: PoolMessage): void {
         stderrPct: 0,
         cancelled: true,
         diagnostics: { callProb: [], kiProb: 0, upsideKoProb: 0, koProb: 0, expectedLifeYears: 0 },
-        samples: [],
+        samples: new Float64Array(0),
       };
       const resp: PoolMessage = { type: 'evalSliceResult', reqId: data.reqId, jobId: data.jobId, result: stub };
       port.postMessage(resp);

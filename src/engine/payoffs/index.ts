@@ -1,8 +1,10 @@
 import type { ProductSpec } from '../../model/product';
 import type { EvaluatorContext, ObservablesRequirements, PayoffEvaluator, SplitEvaluator } from './types';
+import type { PricingGrid } from './types';
 import {
   couponObservablesRequirements,
   makeCouponEvaluator,
+  mergeEvents,
   makeCouponObservables,
   makeCouponOutcome,
 } from './couponProducts';
@@ -13,7 +15,7 @@ import {
   participationObservablesRequirements,
 } from './participation';
 import { makeAccumulatorEvaluator } from './accumulator';
-import { buildLabContract, labObservablesRequirements } from '../combinators/lab';
+import { buildLabContract, labEventGridIndices, labObservablesRequirements } from '../combinators/lab';
 import { compileContract } from '../combinators/compile';
 
 /** No monolithic PayoffEvaluator exists for the Lab family — it always goes
@@ -86,5 +88,49 @@ export function observablesRequirementsOf(spec: ProductSpec): ObservablesRequire
       return { needsMin: false, needsMax: false };
     case 'lab':
       return labObservablesRequirements(spec);
+  }
+}
+
+/**
+ * The grid indices Phase A will write into `PathObservables.eventPerf`, for
+ * this spec.
+ *
+ * WHY THE OBSERVABLES CACHE NEEDS THIS. `eventPerf` means something different
+ * in each family. The coupon family fills it at every merged coupon or call
+ * observation. The participation family leaves it empty, because no
+ * participation payoff reads an intermediate level. A Lab contract fills it at
+ * the CONTRACT's own event dates, which drop the autocall observations before
+ * `fromPeriod` and so do not match the grid's `callObs`.
+ *
+ * The observables cache is one module-level slot per worker that survives
+ * across requests and across product pages. Keying only on the grid's
+ * observation sets let two different producers share one entry:
+ *
+ *  - A 1-year participation and a 1-year annual-coupon note both reduce to a
+ *    single observation at maturity, so their keys matched. The coupon note
+ *    then replayed the participation's slices, read past the end of an empty
+ *    `eventPerf`, and every coupon and autocall test came back false. The note
+ *    paid no coupons and never called, with nothing logged.
+ *  - Editing a Lab autocall's `fromPeriod` changed the contract's event list
+ *    but not the grid's `callObs`, so the key did not move. The cached slice
+ *    still held the old event count, and the call tests read the wrong
+ *    quarters' performances.
+ *
+ * Returning the real index list closes both. Two producers that write
+ * different events now get different keys, and a `fromPeriod` edit moves the
+ * key because it moves the list.
+ */
+export function observablesEventIndicesOf(spec: ProductSpec, grid: PricingGrid): number[] {
+  switch (spec.kind) {
+    case 'coupon':
+      return mergeEvents(grid).map((e) => e.gridIndex);
+    case 'lab':
+      return labEventGridIndices(spec, grid);
+    case 'participation':
+    case 'accumulator':
+      // Neither family reads an intermediate level, so Phase A writes no
+      // events. An empty list is the honest descriptor, and it is what keeps
+      // a participation key distinct from a coupon key.
+      return [];
   }
 }

@@ -64,10 +64,42 @@ export interface RatePoint {
  * quoted levels for display on its own.
  */
 export interface BasketAsset {
-  /** Flat implied volatility for this leg, decimal. */
+  /** Implied volatility this leg simulates at, decimal. Flat over the life.
+   * `effectiveMarketFor` overwrites it with the leg's own volatility at the
+   * product's risk strike when `volSurface` is present. */
   vol: number;
   /** Continuously-compounded dividend yield for this leg, decimal. */
   divYield: number;
+  /**
+   * This leg's OWN volatility surface, when a fetch measured one.
+   *
+   * A worst-of knocks in on the worst leg, so every leg is short a
+   * down-and-in put, and every leg must price at the volatility of the
+   * knock-in strike rather than the at-the-money volatility. One shared
+   * surface cannot do that: leg two's skew is not leg one's.
+   *
+   * `effectiveMarketFor` reads each surface at the risk strike and collapses
+   * it into `vol` above. The engine never sees this field, so the path cache
+   * key stays small and still keys on the volatility that actually priced
+   * the note.
+   */
+  volSurface?: VolSurface;
+  /**
+   * This leg's term structure: one volatility per grid step, at the risk
+   * strike. Set by `effectiveMarketFor` when the leg's surface has a term
+   * structure, absent when it does not.
+   *
+   * A basket leg needs its own schedule for the same reason a single name
+   * does. A 5-year autocall that can call in year one must simulate year one
+   * on year-one volatility, not on the 5-year number. Two legs of a basket
+   * rarely share a term structure, so one shared schedule would be the wrong
+   * curve for at least one of them.
+   *
+   * Length equals the grid step count. `MarketData.volPerStep` stays absent
+   * for a basket: that field describes a single asset, and the basket path
+   * builder rejects it.
+   */
+  volPerStep?: number[];
 }
 
 /**

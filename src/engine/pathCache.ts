@@ -23,6 +23,7 @@
  * byte-identical to a fresh `runMc` run of the same spec.
  */
 import type { MarketData } from '../model/market';
+import type { ProductSpec } from '../model/product';
 import { PathBatchGenerator } from './gbm';
 import type { ZSlice } from './gbm';
 import { normals } from './rng';
@@ -117,13 +118,20 @@ export function computeCacheKey(p: CacheKeyParams): string {
     rate: p.market.rate,
     rateCurve: p.market.rateCurve,
     divYield: p.market.divYield,
-    // Every basket leg's vol and dividend, and the whole correlation matrix.
-    // Two DIFFERENT baskets can share the same scalar spot, vol and divYield
-    // above, so without this the cache would hand one basket's paths to the
-    // other and price it confidently wrong with nothing logged.
+    // Every basket leg's vol, vol schedule and dividend, and the whole
+    // correlation matrix. Two DIFFERENT baskets can share the same scalar
+    // spot, vol and divYield above, so without this the cache would hand one
+    // basket's paths to the other and price it confidently wrong with nothing
+    // logged. The per-leg schedule belongs here for the same reason: it
+    // changes every diffCoeff, so two baskets that agree on the flat `vol`
+    // and differ only in term structure are not the same paths.
     basket: p.market.basket
       ? {
-          assets: p.market.basket.assets.map((a) => ({ vol: a.vol, divYield: a.divYield })),
+          assets: p.market.basket.assets.map((a) => ({
+            vol: a.vol,
+            divYield: a.divYield,
+            volPerStep: a.volPerStep,
+          })),
           correlation: p.market.basket.correlation,
         }
       : undefined,
@@ -152,13 +160,33 @@ export function computeCacheKey(p: CacheKeyParams): string {
  * parameter, such as barrier or coupon LEVELS. During a typical solve, the
  * schedule and monitoring MODE stay fixed and only levels change. So this
  * key stays constant, and observables hit on every iteration after the
- * first. If the schedule or monitoring mode itself changes mid live-solve —
- * for example couponFrequency changes, or barrierType flips from european to
+ * first.
+ *
+ * IDENTIFY THE PRODUCER, not only the schedule. `kind` and `eventIndices` are
+ * in the key because `PathObservables.eventPerf` means a different thing in
+ * each family, and the cache is one slot that survives across requests and
+ * across product pages. Two specs that agree on the grid's observation sets
+ * can still disagree on what Phase A writes. `observablesEventIndicesOf`
+ * documents the two collisions this closes.
+ *
+ * If the schedule or monitoring mode itself changes mid live-solve — for
+ * example couponFrequency changes, or barrierType flips from european to
  * american — this key changes. The raw paths still hit, unaffected, and
  * observables recompute from them.
  */
-export function computeObservablesKey(pathKey: string, grid: PricingGrid, requirements: ObservablesRequirements): string {
+export function computeObservablesKey(
+  pathKey: string,
+  grid: PricingGrid,
+  requirements: ObservablesRequirements,
+  /** The grid indices Phase A will write into `eventPerf`, from
+   * `observablesEventIndicesOf`. */
+  eventIndices: number[],
+  /** The product family whose Phase A produced the slice. */
+  kind: ProductSpec['kind'],
+): string {
   return `${pathKey}|obs:${stableStringify({
+    kind,
+    eventIndices,
     couponObs: grid.couponObs,
     callObs: grid.callObs,
     needsMin: requirements.needsMin,
@@ -411,7 +439,9 @@ export function evaluateCachedSlice(
     entry = { key, slices: [] };
   }
 
-  const agg = new Aggregator(keepSamples);
+  // One sample per path in this slice. Sizing the buffer up front is what
+  // keeps the diagnostics off the reallocation path. See Aggregator.
+  const agg = new Aggregator(keepSamples, slicePaths);
   const existing = entry.slices[sliceIndex];
   if (existing) {
     evaluatePathSource(new ReplayPathSource(existing), slicePaths, antithetic, evaluator, agg);
@@ -524,7 +554,9 @@ export function evaluateCachedSliceSplit(
     entry.obsSlices = [];
   }
 
-  const agg = new Aggregator(keepSamples);
+  // One sample per path in this slice. Sizing the buffer up front is what
+  // keeps the diagnostics off the reallocation path. See Aggregator.
+  const agg = new Aggregator(keepSamples, slicePaths);
 
   const existingObs = entry.obsSlices![sliceIndex];
   if (existingObs) {

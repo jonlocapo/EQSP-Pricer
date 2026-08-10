@@ -271,6 +271,17 @@ export function labObservablesRequirements(spec: LabSpec): ObservablesRequiremen
   };
 }
 
+/**
+ * The grid indices the compiled contract will index `eventPerf` by. This is
+ * `mergeLabEvents`' own list, which is NOT the grid's `callObs`: an autocall
+ * block drops every observation before its `fromPeriod`, and the grid's
+ * observation union does not. The observables cache key reads this so a
+ * `fromPeriod` edit moves the key. See `observablesEventIndicesOf`.
+ */
+export function labEventGridIndices(spec: LabSpec, grid: PricingGrid): number[] {
+  return mergeLabEvents(spec, grid).map((e) => e.gridIndex);
+}
+
 export function buildLabContract(spec: LabSpec, grid: PricingGrid): Contract {
   validateLabSpec(spec);
 

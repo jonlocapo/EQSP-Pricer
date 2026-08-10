@@ -16,9 +16,15 @@ import { buildGrid } from '../engine/schedule';
 import { makeDf } from '../engine/discount';
 import { discountRate } from '../model/market';
 import { volAtPctOfSpot } from '../model/volSurface';
+import type { VolSurface } from '../model/volSurface';
 import { riskStrikeFor } from '../engine/riskStrike';
 import { priceIssuerCallable } from '../engine/lsmc';
-import { makeEvaluator, makeSplitEvaluator, observablesRequirementsOf } from '../engine/payoffs';
+import {
+  makeEvaluator,
+  makeSplitEvaluator,
+  observablesEventIndicesOf,
+  observablesRequirementsOf,
+} from '../engine/payoffs';
 import { makeCouponCashflowExtractor } from '../engine/payoffs/couponProducts';
 import type { EvaluatorContext } from '../engine/payoffs/types';
 import {
@@ -195,7 +201,13 @@ async function priceOnce(
   // monitoring-mode change mid live-solve, for example couponFrequency
   // changing, or barrierType flipping from european to american. Only the
   // cached observables must recompute.
-  const observablesKey = split ? computeObservablesKey(cacheKey, grid, observablesRequirementsOf(spec)) : '';
+  const observablesKey = split ? computeObservablesKey(
+        cacheKey,
+        grid,
+        observablesRequirementsOf(spec),
+        observablesEventIndicesOf(spec, grid),
+        spec.kind,
+      ) : '';
   // Keyed WITHOUT market data (see computeNormalsKey), so a spot, vol, rate,
   // or div edit, or a greeks bump — which changes `cacheKey` above and
   // evicts the raw-path cache — still hits here. Regeneration then skips
@@ -212,7 +224,15 @@ async function priceOnce(
   // participation, or 0 for accumulator. The accumulator's PV is already a
   // P&L-style value in % of estimated notional, not a price paid — see
   // Diagnostics.pLoss doc.
-  const referenceLevelPct = spec.kind === 'accumulator' ? 0 : spec.issuePricePct;
+  //
+  // DISCOUNT THE PRICE PAID. Every sample is a PV: the evaluators multiply
+  // each cashflow by ctx.df before they return it. Comparing a PV against an
+  // undiscounted 100 compares two different units and counts the time value of
+  // money as a loss. A 5-year capital-guaranteed note at 2% redeems at 100 or
+  // better on every path, and used to report a 100% loss probability, because
+  // its PV is near 90 on every path. Both sides now sit in today's money.
+  const referenceLevelPct =
+    spec.kind === 'accumulator' ? 0 : spec.issuePricePct * ctx.df(spec.tenorYears);
 
   let wSum = 0;
   let pvSum = 0;
@@ -222,7 +242,13 @@ async function priceOnce(
   let koSum = 0;
   let lifeSum = 0;
   const callCounts: number[] = [];
-  const allSamples: number[] = [];
+  // Pooled per-path samples across every slice, for the distribution
+  // diagnostics. Sized once at the full path count rather than grown by push:
+  // the slices together deliver exactly `numPaths` values, so there is nothing
+  // to discover at run time. `nAllSamples` is the write cursor, because a
+  // cancelled run delivers fewer.
+  const allSamples = wantDistribution ? new Float64Array(numPaths) : new Float64Array(0);
+  let nAllSamples = 0;
   let cancelled = false;
 
   // `slices[s]` results, gathered either sequentially in-process — the
@@ -326,7 +352,10 @@ async function priceOnce(
       callCounts[i] += w * p;
     });
     if (wantDistribution) {
-      for (const sample of res.samples) allSamples.push(sample);
+      if (nAllSamples + res.samples.length <= allSamples.length) {
+        allSamples.set(res.samples, nAllSamples);
+        nAllSamples += res.samples.length;
+      }
     }
     if (res.cancelled) cancelled = true;
   }
@@ -339,11 +368,12 @@ async function priceOnce(
   let pLoss: number | undefined;
   let expectedShortfall5: number | undefined;
   let expectedShortfall1: number | undefined;
-  if (wantDistribution && allSamples.length > 0) {
-    histogram = computeHistogram(allSamples);
-    pLoss = computePLoss(allSamples, referenceLevelPct);
-    expectedShortfall5 = computeExpectedShortfall(allSamples, 0.05);
-    expectedShortfall1 = computeExpectedShortfall(allSamples, 0.01);
+  if (wantDistribution && nAllSamples > 0) {
+    const pooled = nAllSamples === allSamples.length ? allSamples : allSamples.subarray(0, nAllSamples);
+    histogram = computeHistogram(pooled);
+    pLoss = computePLoss(pooled, referenceLevelPct);
+    expectedShortfall5 = computeExpectedShortfall(pooled, 0.05);
+    expectedShortfall1 = computeExpectedShortfall(pooled, 0.01);
   }
 
   return {
@@ -411,7 +441,13 @@ export function evaluatePriceSlice(
     nSteps: grid.nSteps,
     timesKey: gridTimesDigest(grid),
   });
-  const observablesKey = split ? computeObservablesKey(cacheKey, grid, observablesRequirementsOf(spec)) : '';
+  const observablesKey = split ? computeObservablesKey(
+        cacheKey,
+        grid,
+        observablesRequirementsOf(spec),
+        observablesEventIndicesOf(spec, grid),
+        spec.kind,
+      ) : '';
   const normalsKey = computeNormalsKey({
     seed,
     antithetic,
@@ -657,44 +693,30 @@ function notionalOf(spec: ProductSpec, market: MarketData): number {
  * unchanged and reports flat-vol pricing. So behavior is identical to
  * before.
  */
-function effectiveMarketFor(
+/**
+ * Per-step term structure of ONE surface, read at one strike.
+ *
+ * Returns one piecewise-constant volatility per grid step, chosen to PRESERVE
+ * the surface's forward total variance over each step:
+ * `volPerStep[i]^2 * (t_{i+1} - t_i)` equals `w(t_{i+1}) - w(t_i)`, where
+ * `w(t) = iv^2(t) * t` is the surface's own (piecewise linear,
+ * calendar-repaired) total-variance curve. This is exact for the surface's
+ * interpolation model, not an approximation.
+ *
+ * It collapses to a constant array when the surface has no term structure, and
+ * `hasTermStructure` reports that. A constant array gives diffCoeff and drift
+ * values equal to the flat-volatility engine's, byte for byte (see
+ * PathBatchGenerator's BIT-IDENTITY note), so the caller can drop the schedule
+ * and keep the exact flat code path.
+ *
+ * Without this, a 5-year autocall that may call in year one simulates entirely
+ * on 5-year volatility, because one sigma covered the whole life.
+ */
+function termStructureAt(
+  surface: VolSurface,
+  strikePct: number,
   spec: ProductSpec,
-  market: MarketData,
-): { market: MarketData; basis: PricingBasis } {
-  const feePct = market.costs?.feePct ?? 0;
-  const dr = discountRate(market);
-  // A dead-flat surface (no strike skew — see VolSurface.isFlat) returns the
-  // same vol at every strike, so reading market.vol directly is numerically
-  // IDENTICAL to reading the surface at the risk strike (see
-  // tests/costsAndSkew.test.ts's flat-surface-vs-no-surface parity check).
-  // Treat it exactly like "no surface": same code path, and the reporting
-  // says so honestly instead of claiming a skew that is not there.
-  // A basket prices on FLAT per-leg vols. The surface is built for one
-  // underlying at one risk strike, so it has nothing to say about leg two, and
-  // `volPerStep` derived from it would be a schedule for the wrong asset. The
-  // engine refuses that combination outright, so skip the surface here rather
-  // than build something it will reject.
-  const isBasket = !!market.basket && market.basket.assets.length >= 2;
-  if (isBasket || !market.volSurface || market.volSurface.isFlat) {
-    return {
-      market,
-      basis: { volUsed: market.vol, volSource: 'flat', discountRate: dr, feePct },
-    };
-  }
-  const { strikePct, reason } = riskStrikeFor(spec);
-  const volUsed = volAtPctOfSpot(market.volSurface, strikePct, spec.tenorYears);
-  // Per-step term structure at the risk strike. One piecewise-constant vol
-  // per grid step, chosen to PRESERVE the surface's forward total variance
-  // over each step: volPerStep[i]^2 * (t_{i+1} - t_i) equals w(t_{i+1}) -
-  // w(t_i), where w(t) = iv^2(t) * t is the surface's own (piecewise
-  // linear, calendar-repaired) total-variance curve. This is exact for the
-  // surface's interpolation model, not an approximation, and it collapses
-  // to the single flat `volUsed` when the surface has no term structure —
-  // the diffCoeff/drift arrays then equal the flat-vol engine's, byte for
-  // byte (see PathBatchGenerator's BIT-IDENTITY note). Without this, a
-  // 5-year autocall that may call in year one is simulated entirely on
-  // 5-year vol, because one sigma covered the whole life.
-  const surface = market.volSurface;
+): { volPerStep: number[]; hasTermStructure: boolean } {
   const grid = buildGrid(spec);
   const volPerStep: number[] = new Array(grid.nSteps);
   const totalVarAt = (t: number): number => {
@@ -712,6 +734,117 @@ function effectiveMarketFor(
     else if (Math.abs(v - firstVol) > 1e-12) hasTermStructure = true;
     wPrev = wNext;
   }
+  return { volPerStep, hasTermStructure };
+}
+
+/**
+ * The market a WORST-OF BASKET prices on: every leg at its own volatility,
+ * read at the product's risk strike.
+ *
+ * WHY PER LEG. A worst-of knocks in on whichever leg falls furthest, so the
+ * issuer is short a down-and-in put on every leg. Each of those puts strikes
+ * at the knock-in level, not at the money. Pricing all of them at the
+ * at-the-money volatility understates every one of them, because equity skew
+ * lifts the downside strike. A 60% barrier on a three-name basket is the
+ * clearest case: the note is priced rich and the coupon it must pay comes out
+ * too low.
+ *
+ * WHY EACH LEG NEEDS ITS OWN SURFACE. Skew is not shared. One leg can be a
+ * defensive large cap and another a single-stock semiconductor name, and their
+ * downside volatilities differ by many points. Reading one surface for all
+ * legs would price leg two on leg one's smile, which is a different error, not
+ * a smaller one.
+ *
+ * WHAT THIS DOES NOT DO. Each leg still simulates on ONE flat volatility over
+ * the life. The per-step term-structure schedule (`volPerStep`) describes a
+ * single asset, and the basket path builder consumes one volatility per leg,
+ * so a per-leg term structure needs an engine change. Skew is the larger of
+ * the two effects at a deep barrier, so it goes first.
+ *
+ * A leg with no surface, or with a dead-flat one, keeps the volatility it
+ * already carries. So a hand-typed basket prices exactly as it did before.
+ */
+function basketMarketFor(
+  spec: ProductSpec,
+  market: MarketData,
+  dr: number,
+  feePct: number,
+): { market: MarketData; basis: PricingBasis } {
+  const basket = market.basket!;
+  const { strikePct, reason } = riskStrikeFor(spec);
+  let anySurface = false;
+  let anyTermStructure = false;
+  const assets = basket.assets.map((a) => {
+    // Drop `volSurface` from what goes downstream. The engine reads `vol`
+    // only, and the path cache key reads `vol` only, so carrying the surface
+    // further would add weight without adding meaning.
+    const { volSurface, ...rest } = a;
+    if (!volSurface || volSurface.isFlat) return rest;
+    anySurface = true;
+    const vol = volAtPctOfSpot(volSurface, strikePct, spec.tenorYears);
+    // Attach the schedule only when it genuinely varies. A constant schedule
+    // gives byte-identical drift and diffCoeff to the flat branch, so leaving
+    // it off keeps the cheaper path and a smaller cache key.
+    const { volPerStep, hasTermStructure } = termStructureAt(volSurface, strikePct, spec);
+    if (hasTermStructure) anyTermStructure = true;
+    return hasTermStructure ? { ...rest, vol, volPerStep } : { ...rest, vol };
+  });
+  // A basket has no single volatility, so report the average of the legs.
+  // Reporting leg one's volatility as "the" volatility of a four-name basket
+  // describes a note nobody priced, and the panel did exactly that before.
+  const volUsed = assets.reduce((s, a) => s + a.vol, 0) / assets.length;
+  if (!anySurface) {
+    // No leg measured a usable surface, so the volatilities are the typed ones
+    // and the pricing is unchanged. Only the reported average is new.
+    //
+    // Still hand back the STRIPPED assets. A leg can carry a dead-flat surface
+    // that changes no number, and leaving it attached ships the whole object
+    // to every pool worker on every slice and through every JSON.stringify the
+    // UI does per render. Same prices, less weight.
+    return {
+      market: { ...market, basket: { ...basket, assets } },
+      basis: { volUsed, volSource: 'flat', discountRate: dr, feePct },
+    };
+  }
+  return {
+    market: { ...market, vol: volUsed, basket: { ...basket, assets } },
+    basis: {
+      volUsed,
+      volSource: 'surface',
+      riskStrikePct: strikePct,
+      riskStrikeReason: reason,
+      ...(anyTermStructure ? { volStepwise: true } : {}),
+      discountRate: dr,
+      feePct,
+    },
+  };
+}
+
+function effectiveMarketFor(
+  spec: ProductSpec,
+  market: MarketData,
+): { market: MarketData; basis: PricingBasis } {
+  const feePct = market.costs?.feePct ?? 0;
+  const dr = discountRate(market);
+  // A dead-flat surface (no strike skew — see VolSurface.isFlat) returns the
+  // same vol at every strike, so reading market.vol directly is numerically
+  // IDENTICAL to reading the surface at the risk strike (see
+  // tests/costsAndSkew.test.ts's flat-surface-vs-no-surface parity check).
+  // Treat it exactly like "no surface": same code path, and the reporting
+  // says so honestly instead of claiming a skew that is not there.
+  const isBasket = !!market.basket && market.basket.assets.length >= 2;
+  if (isBasket) {
+    return basketMarketFor(spec, market, dr, feePct);
+  }
+  if (!market.volSurface || market.volSurface.isFlat) {
+    return {
+      market,
+      basis: { volUsed: market.vol, volSource: 'flat', discountRate: dr, feePct },
+    };
+  }
+  const { strikePct, reason } = riskStrikeFor(spec);
+  const volUsed = volAtPctOfSpot(market.volSurface, strikePct, spec.tenorYears);
+  const { volPerStep, hasTermStructure } = termStructureAt(market.volSurface, strikePct, spec);
   // A constant per-step array IS the flat-vol engine (bit-identical paths).
   // Only attach the schedule when it genuinely varies, so a
   // term-structure-free surface keeps the exact pre-change code path.

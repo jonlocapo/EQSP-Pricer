@@ -92,7 +92,16 @@ async function fetchOneExtraLeg(
     if (!isCurrent()) return [];
 
     const divYield = vp.divYield ?? leg.divYield;
-    const patch: Partial<BasketLegState> = { vol: vp.atmVol, divYield, fetched: true };
+    // KEEP THE LEG'S SURFACE, not only its at-the-money point. A worst-of
+    // knocks in on the worst leg, so each leg is short a down-and-in put and
+    // must price at the volatility of the knock-in strike. Storing `atmVol`
+    // alone threw the skew away and priced a 60% barrier at the money.
+    const patch: Partial<BasketLegState> = {
+      vol: vp.atmVol,
+      divYield,
+      fetched: true,
+      volSurface: vp.surface,
+    };
     if (spotResult.ok) {
       patch.spot = spotResult.value.spot;
       // CAPTURE THE LEG'S CURRENCY. Without it nothing downstream can tell a
