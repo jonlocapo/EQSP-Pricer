@@ -13,6 +13,7 @@
 import { useMarketStore, DEFAULT_LEG_CORRELATION, type BasketLegState, type CorrelationSource } from '../state/marketStore';
 import { fetchVolPipeline } from '../services/volPipeline';
 import { realizedCorrelationMatrix } from '../services/marketFetch';
+import { applyCorrelationRiskPremium, CORRELATION_RISK_PREMIUM } from '../model/correlation';
 import { fetchSpot } from '../services/spotFetch';
 import { fmtMs, type FetchLine } from './fetchFormat';
 
@@ -91,8 +92,23 @@ async function fetchOneExtraLeg(
     if (!isCurrent()) return [];
 
     const divYield = vp.divYield ?? leg.divYield;
-    const patch: Partial<BasketLegState> = { vol: vp.atmVol, divYield };
-    if (spotResult.ok) patch.spot = spotResult.value.spot;
+    // KEEP THE LEG'S SURFACE, not only its at-the-money point. A worst-of
+    // knocks in on the worst leg, so each leg is short a down-and-in put and
+    // must price at the volatility of the knock-in strike. Storing `atmVol`
+    // alone threw the skew away and priced a 60% barrier at the money.
+    const patch: Partial<BasketLegState> = {
+      vol: vp.atmVol,
+      divYield,
+      fetched: true,
+      volSurface: vp.surface,
+    };
+    if (spotResult.ok) {
+      patch.spot = spotResult.value.spot;
+      // CAPTURE THE LEG'S CURRENCY. Without it nothing downstream can tell a
+      // EUR leg from a USD one, and a mixed-currency basket prices as though
+      // every leg were in the note currency. `validateBasket` reads this.
+      patch.currency = spotResult.value.currency;
+    }
     useMarketStore.getState().setLeg(index, patch);
 
     const lines: FetchLine[] = [
@@ -131,6 +147,13 @@ async function fetchOneExtraLeg(
  * `DEFAULT_LEG_CORRELATION` here and the matrix as a whole is labelled
  * `'history'` only when at least one pair was genuinely measured,
  * `'default'` when every pair had to fall back.
+ *
+ * The matrix that reaches the store is the PRICED correlation, not the
+ * realized one. `applyCorrelationRiskPremium` lifts it — read that function
+ * for why. The volatility that reaches the engine already carries a
+ * volatility risk premium, so a raw realized correlation next to a premium
+ * volatility treats the two inputs of a worst-of inconsistently. The panel
+ * shows the lifted number, which is the number the note prices at.
  */
 export async function populateBasketCorrelation(isCurrent: () => boolean): Promise<FetchLine[]> {
   const store = useMarketStore.getState();
@@ -151,14 +174,16 @@ export async function populateBasketCorrelation(isCurrent: () => boolean): Promi
       }),
     );
     const source: CorrelationSource = anyMeasured ? 'history' : 'default';
-    useMarketStore.getState().setBasketCorrelation(defaulted, source);
+    const priced = applyCorrelationRiskPremium(defaulted);
+    useMarketStore.getState().setBasketCorrelation(priced, source);
+    const premiumPts = Math.round(CORRELATION_RISK_PREMIUM * 100);
     return [
       {
         kind: errors.length > 0 ? 'info' : 'ok',
         msg:
           errors.length > 0
-            ? `Correlation: some pairs unmeasured, defaulted (${errors.join('; ')}).`
-            : 'Correlation matrix populated from 1y realized correlation.',
+            ? `Correlation: some pairs unmeasured, defaulted (${errors.join('; ')}). Lifted ${premiumPts} points for the correlation risk premium.`
+            : `Correlation matrix populated from 1y realized correlation, lifted ${premiumPts} points for the correlation risk premium.`,
       },
     ];
   } catch (e) {

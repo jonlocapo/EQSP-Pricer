@@ -99,7 +99,15 @@ export async function fetchRealizedVolStats(yahooSymbol: string): Promise<Realiz
     vol: usableTerms[usableTerms.length - 1].vol,
     days: logReturns.length,
     source: 'yahoo OHLC realized',
-    modelLabel: converged ? 'Yang-Zhang + GJR-GARCH(1,1)' : 'Yang-Zhang + EWMA (flat)',
+    // NOT "flat". The unconverged branch reverts the short-term EWMA level
+    // toward the Yang-Zhang anchor passed above as `targetVar`, so a shocked
+    // short vol decays over the term rather than being held out to a year.
+    // The old label still said "flat" from before that fix, which reads as
+    // "this number is the Nestle bug" and sent a real investigation down the
+    // wrong path.
+    modelLabel: converged
+      ? 'Yang-Zhang + GJR-GARCH(1,1)'
+      : 'Yang-Zhang + EWMA reverting to the Yang-Zhang anchor',
     payload,
   };
 }

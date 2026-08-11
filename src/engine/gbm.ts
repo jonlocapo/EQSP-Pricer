@@ -413,6 +413,14 @@ function buildBasketCoefficients(
   if (basket.correlation.length !== nAssets) {
     throw new Error(`correlation matrix is ${basket.correlation.length}x? for ${nAssets} legs`);
   }
+  // A short schedule would silently read `undefined` and produce NaN paths.
+  // Fail loudly instead: a leg's schedule must cover every grid step.
+  for (let j = 0; j < nAssets; j++) {
+    const perStep = basket.assets[j].volPerStep;
+    if (perStep && perStep.length !== nSteps) {
+      throw new Error(`leg ${j} has a ${perStep.length}-step vol schedule for ${nSteps} steps`);
+    }
+  }
 
   const borrow = (market.costs?.borrowCostBp ?? 0) / 10_000;
   const rateCurve = market.rateCurve;
@@ -434,7 +442,10 @@ function buildBasketCoefficients(
     const base = i * nAssets;
     for (let j = 0; j < nAssets; j++) {
       const leg = basket.assets[j];
-      const v = leg.vol;
+      // Each leg reads its OWN step volatility when it carries a term
+      // structure. The arrays are already indexed by step and by leg, so a
+      // per-leg schedule costs one lookup and no extra memory.
+      const v = leg.volPerStep ? leg.volPerStep[i] : leg.vol;
       drift[base + j] = (rate - leg.divYield - borrow - 0.5 * v * v) * dt;
       diffCoeff[base + j] = v * sqrtDt;
     }

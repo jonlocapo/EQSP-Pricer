@@ -1,3 +1,7 @@
+/** Per-path PV samples. A Float64Array in production, a plain array in
+ * tests that pass literals. */
+export type SampleList = number[] | Float64Array;
+
 /**
  * Pure distribution-statistics helpers over a flat array of per-sample PV%
  * outcomes: one float per path, or per antithetic pair, whatever unit
@@ -15,7 +19,7 @@ export interface Histogram {
 const DEFAULT_BINS = 24;
 
 /** Evenly-spaced histogram spanning [min(samples), max(samples)]. */
-export function computeHistogram(samples: number[], nBins = DEFAULT_BINS): Histogram {
+export function computeHistogram(samples: SampleList, nBins = DEFAULT_BINS): Histogram {
   if (samples.length === 0) return { binEdges: [], counts: [] };
   let min = samples[0];
   let max = samples[0];
@@ -43,7 +47,7 @@ export function computeHistogram(samples: number[], nBins = DEFAULT_BINS): Histo
 }
 
 /** P(sample < referenceLevelPct), as a fraction in [0, 1]. */
-export function computePLoss(samples: number[], referenceLevelPct: number): number {
+export function computePLoss(samples: SampleList, referenceLevelPct: number): number {
   if (samples.length === 0) return 0;
   let n = 0;
   for (const s of samples) if (s < referenceLevelPct) n += 1;
@@ -55,9 +59,13 @@ export function computePLoss(samples: number[], referenceLevelPct: number): numb
  * for Expected Shortfall at the 5% level. At least one sample is always
  * included, so ES is well-defined even for tiny sample sets.
  */
-export function computeExpectedShortfall(samples: number[], alpha: number): number {
+export function computeExpectedShortfall(samples: SampleList, alpha: number): number {
   if (samples.length === 0) return 0;
-  const sorted = [...samples].sort((a, b) => a - b);
+  // Copy into a Float64Array and use its native numeric sort. A plain
+  // array's sort needs a JS comparator called O(n log n) times, which on
+  // 100k samples is the single most expensive line in the diagnostics.
+  const sorted = Float64Array.from(samples);
+  sorted.sort();
   const n = Math.max(1, Math.round(sorted.length * alpha));
   let sum = 0;
   for (let i = 0; i < n; i++) sum += sorted[i];

@@ -240,7 +240,15 @@
   padding: 5px 9px;
   border-radius: 5px;
   font-size: 11.5px;
-  white-space: nowrap;
+  /* WRAP, and cap the width. `white-space: nowrap` made a long tooltip one
+   * very wide line, and because the box is centred on its trigger it then ran
+   * off whichever edge was nearer and got clipped. A sentence-length tooltip
+   * is common here, so wrapping is the normal case, not the exception. */
+  white-space: normal;
+  width: max-content;
+  max-width: min(280px, 60vw);
+  text-align: left;
+  line-height: 1.35;
   z-index: 50;
   box-shadow: var(--shadow-md);
   pointer-events: none;
@@ -641,6 +649,130 @@ select.input:focus {
 
 .status-line.warn {
   color: var(--warn);
+}
+
+/* ---------- Basket summary (sidebar) ---------- */
+
+/* The sidebar's entire footprint for a worst-of basket: one ellipsized line
+ * of leg names plus an Edit button (see BasketPanel.tsx). Ellipsis here is
+ * fine — unlike the old 3-column grid, nothing here needs to be read
+ * without truncation, because the full names are one click away in
+ * BasketModal. */
+.basket-summary-names {
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- Basket modal ---------- */
+
+.basket-modal {
+  width: min(1080px, 94vw);
+}
+
+.basket-modal-body {
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* One tile per leg, wrapping on its own: 2 legs sit side by side, 3 sit
+ * side by side, 4 wrap to a 2x2 grid. `minmax(220px, 1fr)` is wide enough
+ * for a full company name, a ticker/currency row and a stepper column
+ * without truncating any of them, which is the entire point of moving this
+ * editor out of the 260px sidebar. */
+.basket-tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.basket-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  background: var(--bg-sunken);
+  min-width: 0;
+}
+
+/* A currency mismatch is a silent-misprice risk (see validateBasket), so
+ * the offending tile gets a loud border, not a quiet note easy to miss
+ * among four tiles. */
+.basket-tile-error {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 1px var(--danger);
+}
+
+.basket-tile-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.basket-tile-index {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+}
+
+.basket-tile-ccy {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-faint);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.basket-not-fetched {
+  font-size: 13px;
+  color: var(--text-faint);
+  font-style: italic;
+  padding: 6px 0;
+}
+
+/* Dims an inherited vol/dividend field so it never reads as a measurement
+ * (see BasketLegState.fetched's doc). Applied to the field's wrapper, not
+ * NumericField itself, since NumericField takes no className prop. */
+.basket-field-inherited input,
+.basket-field-inherited .suffix {
+  color: var(--text-faint);
+}
+
+.inherited-badge {
+  font-size: 10px;
+  color: var(--text-faint);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.basket-tile-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: auto;
+}
+
+.basket-add-row {
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.basket-corr-section {
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
 }
 
 /* ---------- Results bar ---------- */
@@ -1162,6 +1294,55 @@ select.input:focus {
 
 .ticker-search {
   position: relative;
+}
+
+/* The label row for the ticker search. `.field-label` pushes its last child
+ * to the right with space-between, which left a gap between "Underlying" and
+ * a lone chip. Here the chips follow the label directly and take the rest of
+ * the row. */
+.ticker-label {
+  justify-content: flex-start;
+  align-items: flex-start;
+}
+
+/* Chips wrap as WHOLE chips. A chip is a ticker, so breaking one across two
+ * lines makes it unreadable; running out of room moves the whole chip down
+ * instead. `min-width: 0` lets the row shrink inside the sidebar so the wrap
+ * actually happens rather than the row overflowing. */
+.ticker-chips {
+  display: flex;
+  flex-wrap: wrap;
+  /* Chips trail to the RIGHT of the row, so they finish flush with the search
+   * box and the `+` beside it rather than floating mid-row. With a full basket
+   * they fill the row either way; a wrapped chip lands under the ones before
+   * it, which is the shape the layout was drawn to. */
+  justify-content: flex-end;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Search box and the add-a-leg button on one line. The box takes whatever the
+ * button does not. */
+.ticker-input-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.ticker-input-row .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.ticker-add {
+  flex: 0 0 auto;
+  min-width: 38px;
+  font-size: 15px;
+  line-height: 1;
+  font-weight: 700;
+  padding-inline: 10px;
 }
 
 .ticker-badge {
@@ -1769,7 +1950,8 @@ select.input:focus {
   }
 
   .modal,
-  .lab-modal {
+  .lab-modal,
+  .basket-modal {
     width: 100vw;
     max-width: 100vw;
     height: 100dvh;
@@ -1780,6 +1962,10 @@ select.input:focus {
   }
 
   .lab-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .basket-tile-grid {
     grid-template-columns: 1fr;
   }
 

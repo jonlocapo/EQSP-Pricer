@@ -50,17 +50,38 @@ export function makeToggleSolve(solve: SolveTarget, setSolve: (s: SolveTarget) =
  * field is never edited directly, only assembled here (see model/basket.ts).
  * Shared by the Coupon and Participation pages, the two products with a
  * basket leg list; the Accumulator page is single-underlying only. */
+/** One leg's identity for the currency-mismatch check in `validateBasket`:
+ * name (for the duplicate/empty checks it already ran), plus ticker and
+ * currency, neither of which `spec.underlyings` carries (see
+ * `model/product.ts`'s `Underlying`, which is name-only, off limits to
+ * change here). Kept separate from `underlyings` so the pricing request
+ * itself never grows an unused field. */
+export interface BasketLegRef {
+  name: string;
+  ticker: string;
+  currency?: string;
+}
+
 export function usePricingSpec<T extends object>(
   spec: T,
 ): {
   underlyingName: string;
   extraLegs: BasketLegState[];
   underlyings: { name: string }[];
+  /** Same legs, primary first, carrying ticker and currency for
+   * `validateBasket`'s currency-mismatch check. */
+  legsForValidation: BasketLegRef[];
   pricingSpec: T & { underlyings: { name: string }[] };
 } {
   const underlyingName = useMarketStore((s) => s.underlyingName);
+  const ticker = useMarketStore((s) => s.ticker);
+  const underlyingCurrency = useMarketStore((s) => s.underlyingCurrency);
   const extraLegs = useMarketStore((s) => s.extraLegs);
   const underlyings = [{ name: underlyingName }, ...extraLegs.map((l) => ({ name: l.name }))];
+  const legsForValidation: BasketLegRef[] = [
+    { name: underlyingName, ticker, currency: underlyingCurrency },
+    ...extraLegs.map((l) => ({ name: l.name, ticker: l.ticker, currency: l.currency })),
+  ];
   const pricingSpec = { ...spec, underlyings };
-  return { underlyingName, extraLegs, underlyings, pricingSpec };
+  return { underlyingName, extraLegs, underlyings, legsForValidation, pricingSpec };
 }

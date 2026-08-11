@@ -216,6 +216,12 @@ function envFingerprint(market: MarketData, product: ProductSpec): string {
     // A basket edit changes every path, so it must start a fresh pricing
     // environment rather than reuse the last one.
     basket: market.basket ?? null,
+    // Borrow moves every path, so it belongs here for the same reason it
+    // belongs in the real cache key. Without it, editing borrow reported the
+    // run as cached and told the user the paths were reused when they were
+    // regenerated. The surface moves the volatility that generates them.
+    costs: market.costs ?? null,
+    volSurface: market.volSurface ?? null,
     tenorYears: product.tenorYears,
   });
 }

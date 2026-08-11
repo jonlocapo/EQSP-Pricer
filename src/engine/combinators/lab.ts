@@ -1,4 +1,4 @@
-import { PERIODS_PER_YEAR } from '../../model/product';
+import { isFrequencyAllowed, PERIODS_PER_YEAR } from '../../model/product';
 import type {
   AutocallBlock,
   BonusBlock,
@@ -214,6 +214,15 @@ export function validateLabSpec(spec: LabSpec): void {
   if (spec.blocks.length === 0) throw new Error('Lab: add at least one block.');
 
   for (const block of spec.blocks) {
+    // Every periodic block's period must divide the tenor exactly. An
+    // overshooting observation puts a date after maturity, which the grid
+    // then drops, losing that period's cashflow without a word. See
+    // `isFrequencyAllowed`.
+    if ('frequency' in block && !isFrequencyAllowed(spec.tenorYears, block.frequency)) {
+      throw new Error(
+        `Lab: a ${block.frequency} ${block.t} block does not divide a ${spec.tenorYears}y tenor.`,
+      );
+    }
     switch (block.t) {
       case 'coupon':
         if (block.ratePaPct < 0) throw new Error('Lab: coupon rate cannot be negative.');
@@ -269,6 +278,17 @@ export function labObservablesRequirements(spec: LabSpec): ObservablesRequiremen
     needsMin: spec.blocks.some((b) => b.t === 'shortPut' && b.barrierType === 'american'),
     needsMax: false,
   };
+}
+
+/**
+ * The grid indices the compiled contract will index `eventPerf` by. This is
+ * `mergeLabEvents`' own list, which is NOT the grid's `callObs`: an autocall
+ * block drops every observation before its `fromPeriod`, and the grid's
+ * observation union does not. The observables cache key reads this so a
+ * `fromPeriod` edit moves the key. See `observablesEventIndicesOf`.
+ */
+export function labEventGridIndices(spec: LabSpec, grid: PricingGrid): number[] {
+  return mergeLabEvents(spec, grid).map((e) => e.gridIndex);
 }
 
 export function buildLabContract(spec: LabSpec, grid: PricingGrid): Contract {

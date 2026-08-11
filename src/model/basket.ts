@@ -6,6 +6,7 @@
  */
 import type { Underlying } from './product';
 import type { BasketAsset, BasketParams } from './market';
+import type { VolSurface } from './volSurface';
 import { repairCorrelation } from './correlation';
 
 /** One leg's inputs, in `spec.underlyings` order. Leg 0 is always the
@@ -15,6 +16,10 @@ interface BasketLegInput {
   name: string;
   vol: number;
   divYield: number;
+  /** This leg's own surface, when a fetch measured one. Carried through so
+   * every leg can price at the risk strike instead of at the money. See
+   * `BasketAsset.volSurface`. */
+  volSurface?: VolSurface;
 }
 
 interface BuiltBasket {
@@ -57,7 +62,11 @@ export function buildBasket(legs: BasketLegInput[], rawCorrelation: number[][]):
     return { underlyings, basket: undefined, correlationAdjusted: false };
   }
   const repaired = repairCorrelation(rawCorrelation);
-  const assets: BasketAsset[] = legs.map((l) => ({ vol: l.vol, divYield: l.divYield }));
+  const assets: BasketAsset[] = legs.map((l) => ({
+    vol: l.vol,
+    divYield: l.divYield,
+    ...(l.volSurface ? { volSurface: l.volSurface } : {}),
+  }));
   return {
     underlyings,
     basket: { assets, correlation: repaired },

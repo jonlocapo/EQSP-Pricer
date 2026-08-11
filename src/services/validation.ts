@@ -1,5 +1,18 @@
-import type { AccumulatorSpec, CouponProductSpec, ParticipationSpec, Underlying } from '../model/product';
+import type { AccumulatorSpec, CouponProductSpec, ParticipationSpec } from '../model/product';
+import { isFrequencyAllowed, tenorMonths } from '../model/product';
 import type { MarketData } from '../model/market';
+
+/** One basket leg's identity, as far as `validateBasket` needs it. `name` is
+ * the same value `spec.underlyings` carries; `ticker` and `currency` are
+ * extra, UI-only fields the pricing spec itself does not hold (see
+ * `pageHelpers.ts`'s `BasketLegRef`, which supplies this shape from the
+ * store). Both extra fields are optional so a plain `{ name }` literal, as
+ * every existing call site and test passes, still satisfies this type. */
+interface BasketLegRef {
+  name: string;
+  ticker?: string;
+  currency?: string;
+}
 
 type FieldErrors = Record<string, string>;
 
@@ -12,7 +25,14 @@ interface ValidationResult {
 function commonErrors(notional: number, tenorYears: number): FieldErrors {
   const errors: FieldErrors = {};
   if (!(notional > 0)) errors.notional = 'Notional must be positive.';
-  if (!(tenorYears > 0) || tenorYears > 10) errors.tenorYears = 'Tenor must be > 0 and ≤ 10y.';
+  if (!(tenorYears > 0) || tenorYears > 10) {
+    errors.tenorYears = 'Tenor must be > 0 and ≤ 10y.';
+  } else if (tenorMonths(tenorYears) === null) {
+    // A note matures on a date, so its tenor is a whole number of months.
+    // Report that here rather than letting it surface as every frequency
+    // being unavailable, which describes the symptom and not the cause.
+    errors.tenorYears = 'Tenor must be a whole number of months.';
+  }
   return errors;
 }
 
@@ -33,6 +53,19 @@ export function validateCoupon(spec: CouponProductSpec, market: MarketData): Val
 
   if (spec.reofferPct < 0) errors.reofferPct = 'Must be ≥ 0.';
   if (spec.issuePricePct < 0) errors.issuePricePct = 'Must be ≥ 0.';
+
+  // The tenor must be an exact multiple of every schedule's period. The
+  // pickers already grey out the periods that do not divide, but a UI control
+  // is not a model invariant: a stored trade or a restored history entry can
+  // carry any combination. An overshooting observation leaves a hole in
+  // couponObs and silently drops a coupon, so refuse it here too. See
+  // `isFrequencyAllowed`.
+  if (!isFrequencyAllowed(spec.tenorYears, spec.couponFrequency)) {
+    errors.couponFrequency = 'The tenor is not a whole number of these periods.';
+  }
+  if (spec.callType !== 'none' && !isFrequencyAllowed(spec.tenorYears, spec.callFrequency)) {
+    errors.callFrequency = 'The tenor is not a whole number of these periods.';
+  }
 
   // At or below, not strictly below: a one-star / airbag note sets the put
   // strike EQUAL to the barrier on purpose, so that the loss is measured from
@@ -109,7 +142,7 @@ export function validateParticipation(spec: ParticipationSpec, market: MarketDat
  * checking the repaired matrix could never catch a bad typed value.
  */
 export function validateBasket(
-  underlyings: Underlying[],
+  underlyings: BasketLegRef[],
   rawCorrelation: number[][] | undefined,
   market: MarketData
 ): ValidationResult {
@@ -130,6 +163,18 @@ export function validateBasket(
         errors[`underlying${i}`] = 'Duplicate underlying: a worst-of basket needs distinct legs.';
       }
       seen.add(key);
+
+      // A currency mismatch is a SILENT MISPRICE, not a cosmetic issue: the
+      // engine has no per-leg FX handling for a basket (see the quanto
+      // check below), so a leg in the wrong currency prices as though it
+      // traded in the note currency. Catch it here, per leg, not only via
+      // the primary-leg-derived `market.quanto` check, so a mismatched
+      // extra leg cannot pass validation silently.
+      if (u.currency && u.currency !== market.currency) {
+        const label = u.ticker?.trim() || name;
+        errors[`currency${i}`] =
+          `Leg ${i + 1} (${label}) is ${u.currency} but the note is ${market.currency}. A worst-of must be single-currency.`;
+      }
     });
 
     if (rawCorrelation) {
@@ -158,6 +203,16 @@ export function validateAccumulator(spec: AccumulatorSpec, market: MarketData): 
   const errors: FieldErrors = { ...commonErrors(1, spec.tenorYears), ...marketErrors(market) };
   delete errors.notional;
   if (!(spec.dailyShares > 0)) errors.dailyShares = 'Must be positive.';
+  // An accumulator is single-underlying, permanently (see AccumulatorSpec).
+  // The only thing keeping a basket off it was a React effect in the market
+  // panel that rebuilds `market.basket` from one leg when the accumulator tab
+  // is active. A UI effect is not a model invariant: if a basket ever reaches
+  // here, through a history restore or a render ordering change, the daily
+  // accumulation walk runs on collapsed worst-of paths and reports a confident
+  // number. Refuse it the way validateBasket refuses basket plus quanto.
+  if (market.basket && market.basket.assets.length >= 2) {
+    errors.underlyings = 'An accumulator takes one underlying. Remove the extra basket legs.';
+  }
   // The trigger may sit exactly ON the strike. That is a real structure, the
   // knock-out coinciding with the level being dealt at, so the comparison is
   // inclusive. The same reasoning applies to an airbag, whose knock-in barrier

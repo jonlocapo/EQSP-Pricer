@@ -26,6 +26,88 @@ export const PERIODS_PER_YEAR: Record<Frequency, number> = {
   annual: 1,
 };
 
+/** Length of one period in whole months. The same four frequencies as
+ * PERIODS_PER_YEAR, expressed the way a schedule is actually written. */
+export const MONTHS_PER_PERIOD: Record<Frequency, number> = {
+  monthly: 1,
+  quarterly: 3,
+  semiannual: 6,
+  annual: 12,
+};
+
+/** Tolerance for calling a tenor a whole number of months. `1.5 * 12` is
+ * exactly 18, but a tenor typed in years can land a float hair off. */
+const MONTH_TOL = 1e-6;
+
+/**
+ * The tenor in whole months, or null when it is not a whole number of months.
+ *
+ * A note matures on a date, not part way through a month, so a tenor that is
+ * not a whole number of months does not describe a real trade.
+ */
+export function tenorMonths(tenorYears: number): number | null {
+  const months = tenorYears * 12;
+  const rounded = Math.round(months);
+  if (!Number.isFinite(months) || Math.abs(months - rounded) > MONTH_TOL) return null;
+  return rounded;
+}
+
+/**
+ * Whether a coupon or autocall frequency can be scheduled over this tenor.
+ *
+ * THE RULE: the tenor must be an exact multiple of the period. An 18-month
+ * note can pay semiannually, quarterly or monthly. It cannot pay annually,
+ * because the second annual date would fall six months after the note has
+ * already matured.
+ *
+ * WHY IT IS ENFORCED RATHER THAN ACCOMMODATED. `periodicObs` and
+ * `periodicTimes` count observations with `Math.round(tenorYears *
+ * periodsPerYear)`, which for 18 months annual gives 2, placing a date at
+ * year 2 on a note that ends at year 1.5. That date is then dropped on its
+ * way to the grid, which left a HOLE in `couponObs` (`[1, null, 3]`) and a
+ * duplicated final grid time with a zero-length step. Measured on an 8% p.a.
+ * conditional coupon, the 18-month note paid one coupon worth 7.567 where the
+ * 12-month note paid 7.577: the half-year stub silently vanished and the note
+ * priced BELOW both its 1-year and 2-year neighbours.
+ *
+ * There is no stub convention to choose between here, because a real note's
+ * tenor is always a multiple of its frequency. So the combination is refused
+ * at the input, and again in validation.
+ */
+export function isFrequencyAllowed(tenorYears: number, frequency: Frequency): boolean {
+  const months = tenorMonths(tenorYears);
+  if (months === null || months <= 0) return false;
+  return months % MONTHS_PER_PERIOD[frequency] === 0;
+}
+
+/** Every frequency this tenor can carry, longest period first. Empty only
+ * when the tenor is not a whole number of months. */
+export function allowedFrequencies(tenorYears: number): Frequency[] {
+  return (['annual', 'semiannual', 'quarterly', 'monthly'] as Frequency[]).filter((f) =>
+    isFrequencyAllowed(tenorYears, f),
+  );
+}
+
+/**
+ * `frequency` if this tenor allows it, otherwise the closest one it does.
+ *
+ * Used when the TENOR changes and strands a frequency that was legal a
+ * moment ago. Editing 2 years to 18 months must not leave an annual coupon
+ * selected. Prefers the longest allowed period no longer than the current
+ * one, so an annual coupon on a new 18-month tenor becomes semiannual rather
+ * than monthly. Falls back to the shortest allowed period, then returns the
+ * frequency unchanged when nothing is allowed at all; validation reports that
+ * case rather than this function guessing.
+ */
+export function coerceFrequency(tenorYears: number, frequency: Frequency): Frequency {
+  if (isFrequencyAllowed(tenorYears, frequency)) return frequency;
+  const allowed = allowedFrequencies(tenorYears);
+  if (allowed.length === 0) return frequency;
+  const want = MONTHS_PER_PERIOD[frequency];
+  const shorter = allowed.filter((f) => MONTHS_PER_PERIOD[f] <= want);
+  return shorter.length > 0 ? shorter[0] : allowed[allowed.length - 1];
+}
+
 export interface Underlying {
   name: string;
 }

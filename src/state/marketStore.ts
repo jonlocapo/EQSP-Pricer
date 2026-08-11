@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { DEFAULT_MARKET, SUPPORTED_CURRENCIES, type MarketData, type QuantoParams } from '../model/market';
 import { removeFromCorrelation } from '../model/basket';
+import type { VolSurface } from '../model/volSurface';
 
 /** One additional worst-of leg beyond the primary underlying (index 0),
  * which stays the existing ticker/underlyingName/market.vol/divYield.
@@ -18,6 +19,23 @@ export interface BasketLegState {
   divYield: number;
   currency?: string;
   spot?: number;
+  /**
+   * True once a live fetch has written this leg's volatility and dividend.
+   *
+   * A new leg starts from the primary leg's values so the basket stays
+   * priceable, but those are INHERITED, not measured. Without this flag the
+   * panel showed leg three carrying leg one's volatility and it looked
+   * exactly like a measurement. The panel must say which is which.
+   */
+  fetched?: boolean;
+  /**
+   * This leg's own volatility surface, when the fetch measured one.
+   *
+   * Held per leg, not shared, because a worst-of prices every leg at the
+   * knock-in strike and each leg carries its own skew. See
+   * `BasketAsset.volSurface`.
+   */
+  volSurface?: VolSurface;
 }
 
 /** Realistic worst-of range: 2 to 4 total legs, so at most 3 extra ones. */
@@ -138,7 +156,23 @@ export const useMarketStore = create<MarketState>((set) => ({
       if (s.extraLegs.length >= MAX_EXTRA_LEGS) return s;
       const extraLegs = [
         ...s.extraLegs,
-        { ticker: '', name: '', vol: s.market.vol, divYield: s.market.divYield },
+        // Inherits the primary leg's vol, SURFACE and dividend so the basket
+        // can be priced before a fetch runs. `fetched` stays false until a
+        // live fetch replaces them, so the panel can show them as inherited.
+        //
+        // The surface is inherited for consistency, not for accuracy. Without
+        // it, a fetched leg would price at its barrier volatility while this
+        // one priced at an at-the-money number, mixing two conventions inside
+        // one basket. Borrowing the primary leg's skew is the wrong skew, but
+        // every leg is then read at the same strike.
+        {
+          ticker: '',
+          name: '',
+          vol: s.market.vol,
+          divYield: s.market.divYield,
+          volSurface: s.market.volSurface,
+          fetched: false,
+        },
       ];
       return {
         extraLegs,

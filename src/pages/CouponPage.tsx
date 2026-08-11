@@ -14,6 +14,7 @@ import { runPricing } from '../services/runPricing';
 import { useLiveReprice } from '../hooks/useLiveReprice';
 import { AUTO_LEVERAGE_EPS, autoDownsideLeverage, makeFieldSolved, makeToggleSolve, priceLabelFor, usePricingSpec } from './pageHelpers';
 import type { AcCouponType, BarrierMonitoring, CallType, CouponType, Frequency } from '../model/product';
+import { coerceFrequency, isFrequencyAllowed, MONTHS_PER_PERIOD } from '../model/product';
 
 const FREQ_OPTIONS: { value: Frequency; label: string }[] = [
   { value: 'monthly', label: 'Monthly' },
@@ -21,6 +22,22 @@ const FREQ_OPTIONS: { value: Frequency; label: string }[] = [
   { value: 'semiannual', label: 'Semi-annual' },
   { value: 'annual', label: 'Annual' },
 ];
+
+/** FREQ_OPTIONS with the periods this tenor cannot carry greyed out. A note's
+ * tenor is always a multiple of its frequency, so an 18-month note simply has
+ * no annual option. See `isFrequencyAllowed` for what went wrong when the
+ * combination was reachable. */
+function freqOptionsFor(tenorYears: number) {
+  return FREQ_OPTIONS.map((o) =>
+    isFrequencyAllowed(tenorYears, o.value)
+      ? o
+      : {
+          ...o,
+          disabled: true,
+          tooltip: `A ${MONTHS_PER_PERIOD[o.value]}-month period does not divide this tenor.`,
+        },
+  );
+}
 
 export function CouponPage() {
   const spec = useTradeStore((s) => s.couponSpec);
@@ -31,7 +48,7 @@ export function CouponPage() {
   const basketCorrelation = useMarketStore((s) => s.basketCorrelation);
   const running = useResultsStore((s) => s.running);
 
-  const { underlyingName, underlyings, pricingSpec } = usePricingSpec(spec);
+  const { underlyingName, legsForValidation, pricingSpec } = usePricingSpec(spec);
 
   const [greeks, setGreeks] = useState(false);
   const [leverageAuto, setLeverageAuto] = useState(true);
@@ -63,6 +80,20 @@ export function CouponPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spec.callType, spec.tenorYears, spec.callFrequency]);
 
+  // A tenor edit can strand a frequency that was legal a moment ago: 2 years
+  // annual becomes 18 months annual, and the second annual date would fall
+  // after maturity. Snap both schedules to the closest period the new tenor
+  // allows. This runs BEFORE the AUTO effect below, so a coupon frequency
+  // following the call frequency picks up the corrected value.
+  useEffect(() => {
+    const call = coerceFrequency(spec.tenorYears, spec.callFrequency);
+    const coupon = coerceFrequency(spec.tenorYears, spec.couponFrequency);
+    if (call !== spec.callFrequency || coupon !== spec.couponFrequency) {
+      setSpec({ callFrequency: call, couponFrequency: coupon });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spec.tenorYears, spec.callFrequency, spec.couponFrequency]);
+
   // When AUTO is on, downside leverage is locked to 1/putStrike, the
   // industry-standard geared put, and recomputed whenever the put strike
   // changes or AUTO is toggled on. Guarded so it only writes when the value
@@ -87,7 +118,7 @@ export function CouponPage() {
   }, [couponFreqAuto, spec.callFrequency, spec.callType, spec.couponFrequency]);
 
   const validation = validateCoupon(spec, market);
-  const basketValidation = validateBasket(underlyings, basketCorrelation, market);
+  const basketValidation = validateBasket(legsForValidation, basketCorrelation, market);
 
   // Per-field solve availability, mirroring the old solveOptions.ts helper.
   // Under issuerCallable (LSMC pricing; v1 supports Price only), nothing
@@ -323,7 +354,7 @@ export function CouponPage() {
               </div>
               <Segmented<Frequency>
                 value={spec.callFrequency}
-                options={FREQ_OPTIONS}
+                options={freqOptionsFor(spec.tenorYears)}
                 onChange={(v) => setSpec({ callFrequency: v })}
               />
             </div>
@@ -455,7 +486,7 @@ export function CouponPage() {
             options={
               couponFreqAuto && spec.callType !== 'none'
                 ? FREQ_OPTIONS.map((o) => ({ ...o, disabled: true, tooltip: 'Following the call frequency (AUTO).' }))
-                : FREQ_OPTIONS
+                : freqOptionsFor(spec.tenorYears)
             }
             onChange={(v) => setSpec({ couponFrequency: v })}
           />

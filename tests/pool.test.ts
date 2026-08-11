@@ -30,6 +30,7 @@ class FakePoolSliceRunner implements SliceRunner {
     seed: number,
     antithetic: boolean,
     sliceIndices: number[],
+    keepSamples: boolean,
     onSliceDone: (slicePaths: number) => void,
   ): Promise<McRunResult[]> {
     const promises = sliceIndices.map(
@@ -40,7 +41,7 @@ class FakePoolSliceRunner implements SliceRunner {
           // in an order unrelated to dispatch order.
           const delayMs = (sliceIndices.length - i) * 2;
           setTimeout(() => {
-            const result = evaluatePriceSlice(spec, market, numPaths, seed, antithetic, sliceIndex);
+            const result = evaluatePriceSlice(spec, market, numPaths, seed, antithetic, sliceIndex, keepSamples);
             onSliceDone(sliceSizeOf(numPaths, sliceIndex));
             resolve(result);
           }, delayMs);
