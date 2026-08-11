@@ -1312,9 +1312,11 @@ select.input:focus {
 .ticker-chips {
   display: flex;
   flex-wrap: wrap;
-  /* Chips sit directly after the label. Right-aligning them reopened the gap
-   * this class exists to close: one chip alone would drift to the far edge. */
-  justify-content: flex-start;
+  /* Chips trail to the RIGHT of the row, so they finish flush with the search
+   * box and the `+` beside it rather than floating mid-row. With a full basket
+   * they fill the row either way; a wrapped chip lands under the ones before
+   * it, which is the shape the layout was drawn to. */
+  justify-content: flex-end;
   align-items: center;
   gap: 4px;
   flex: 1;
