@@ -31,20 +31,10 @@ export function BasketPanel({ onPickPrimary }: Props) {
 
   const nLegs = 1 + extraLegs.length;
 
-  // With one leg there is no worst-of yet, so the sidebar shows nothing
-  // beyond a single, quiet way to start one. The modal itself has the leg-1
-  // tile plus the add-leg search regardless of leg count, so opening it
-  // here is enough to go from one leg to two.
-  if (nLegs < 2) {
-    return (
-      <div className="field-group">
-        <button type="button" className="btn btn-sm" onClick={() => setModalOpen(true)}>
-          + Add worst-of leg
-        </button>
-        {modalOpen && <BasketModal onClose={() => setModalOpen(false)} onPickPrimary={onPickPrimary} />}
-      </div>
-    );
-  }
+  // With one leg there is no worst-of yet, and nothing to summarise. A leg is
+  // added from the `+` beside the ticker search, so this panel does not carry
+  // a second, competing add button below it.
+  if (nLegs < 2) return null;
 
   const names = [underlyingName, ...extraLegs.map((l) => l.name || l.ticker || 'Unnamed leg')];
 

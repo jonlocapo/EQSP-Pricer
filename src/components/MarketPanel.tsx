@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useMarketStore } from '../state/marketStore';
+import { MAX_EXTRA_LEGS, useMarketStore } from '../state/marketStore';
 import { fetchSpot, recentRouteAttempts, type RouteAttempt } from '../services/spotFetch';
 import { fetchFxRealizedVolAndCorr, fetchRateCurve, fetchRefRate, REF_RATE_CCYS } from '../services/marketFetch';
 import { fetchVolPipeline, type VolSourceKind } from '../services/volPipeline';
@@ -351,6 +351,8 @@ export function MarketPanel() {
   const assetType = useMarketStore((s) => s.assetType);
   const setAssetType = useMarketStore((s) => s.setAssetType);
   const extraLegs = useMarketStore((s) => s.extraLegs);
+  const addLeg = useMarketStore((s) => s.addLeg);
+  const setLeg = useMarketStore((s) => s.setLeg);
   const basketCorrelation = useMarketStore((s) => s.basketCorrelation);
   const activePage = useTradeStore((s) => s.activePage);
 
@@ -490,6 +492,29 @@ export function MarketPanel() {
     void handleFetchLive(m.symbol);
   }
 
+  /** One chip per underlying, primary first, in `spec.underlyings` order. The
+   * ticker is the chip text because it is short and unique; the full name is
+   * the hover title. A leg with no ticker yet still gets a chip, so adding one
+   * is visibly acknowledged. */
+  const legChips = [
+    { label: ticker || underlyingName || 'Leg 1', title: underlyingName },
+    ...extraLegs.map((l, i) => ({
+      label: l.ticker || l.name || `Leg ${i + 2}`,
+      title: l.name || l.ticker,
+    })),
+  ];
+
+  /** `+` adds the highlighted search match as a NEW leg, then fetches its
+   * volatility and dividend the way the primary leg's pick does. Without the
+   * fetch the leg would inherit leg 1's numbers and look measured. */
+  function handleAddLeg(m: SymbolMatch) {
+    if (extraLegs.length >= MAX_EXTRA_LEGS) return;
+    const index = extraLegs.length; // addLeg appends here
+    addLeg();
+    setLeg(index, { ticker: m.symbol, name: m.name });
+    void handleFetchLive();
+  }
+
   const quantoMismatch = !!underlyingCurrency && underlyingCurrency !== market.currency;
 
   // Costs default to zero, a pure risk-neutral fair value. The badge makes
@@ -560,12 +585,25 @@ export function MarketPanel() {
           onChange={(v) => void handleCurrencyChange(v)}
         />
 
-        {/* With one leg, this IS the underlying picker, exactly as a plain
-         * single-name trade has always looked. With two or more legs, the
-         * ticker search for every leg — including this one — moves into the
-         * basket grid below, one column per leg, so leg 1 does not look any
-         * more important than leg 3. */}
-        {singleLegLayout && (
+        {/* One search box for the whole pool. The chips on the label row name
+         * every underlying the note carries, so leg 1 does not look more
+         * important than leg 3, and `+` adds the highlighted match as another
+         * leg. Picking from the dropdown replaces the note's underlying
+         * instead, which is the only thing a single-name trade ever needs.
+         * Per-leg spot, volatility and dividend still live in the basket
+         * modal; this row is about WHICH names, not their inputs. */}
+        {basketUiEnabled && (
+          <TickerSearch
+            ticker={ticker}
+            displayName={underlyingName}
+            onPick={handlePrimaryPick}
+            chips={legChips}
+            onAdd={handleAddLeg}
+            addDisabled={extraLegs.length >= MAX_EXTRA_LEGS}
+            addDisabledReason={`A worst-of takes at most ${MAX_EXTRA_LEGS + 1} underlyings.`}
+          />
+        )}
+        {!basketUiEnabled && (
           <TickerSearch ticker={ticker} displayName={underlyingName} onPick={handlePrimaryPick} />
         )}
 
@@ -747,11 +785,9 @@ export function MarketPanel() {
               </button>
             </span>
           </div>
-          {!costsOpen && (
+          {!costsOpen && costsActive && (
             <div className="status-line">
-              {costsActive
-                ? `Funding +${costs.fundingSpreadBp}bp · Borrow ${costs.borrowCostBp}bp · Fee ${costs.feePct}%`
-                : 'No costs. Pricing is the pure risk-neutral fair value.'}
+              {`Funding +${costs.fundingSpreadBp}bp · Borrow ${costs.borrowCostBp}bp · Fee ${costs.feePct}%`}
             </div>
           )}
           {costsOpen && (

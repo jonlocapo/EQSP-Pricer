@@ -1296,6 +1296,53 @@ select.input:focus {
   position: relative;
 }
 
+/* The label row for the ticker search. `.field-label` pushes its last child
+ * to the right with space-between, which left a gap between "Underlying" and
+ * a lone chip. Here the chips follow the label directly and take the rest of
+ * the row. */
+.ticker-label {
+  justify-content: flex-start;
+  align-items: flex-start;
+}
+
+/* Chips wrap as WHOLE chips. A chip is a ticker, so breaking one across two
+ * lines makes it unreadable; running out of room moves the whole chip down
+ * instead. `min-width: 0` lets the row shrink inside the sidebar so the wrap
+ * actually happens rather than the row overflowing. */
+.ticker-chips {
+  display: flex;
+  flex-wrap: wrap;
+  /* Chips sit directly after the label. Right-aligning them reopened the gap
+   * this class exists to close: one chip alone would drift to the far edge. */
+  justify-content: flex-start;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Search box and the add-a-leg button on one line. The box takes whatever the
+ * button does not. */
+.ticker-input-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.ticker-input-row .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.ticker-add {
+  flex: 0 0 auto;
+  min-width: 38px;
+  font-size: 15px;
+  line-height: 1;
+  font-weight: 700;
+  padding-inline: 10px;
+}
+
 .ticker-badge {
   font-size: 10px;
   color: var(--accent);
