@@ -77,6 +77,17 @@ A fair value is not a bank's quote. Costs are modelled explicitly in
 *more* generously, borrow makes it *less*, and the retained fee is the main
 reason a real quote is less aggressive than fair value.
 
+## Working with a time box
+
+When the user gives a time box, read the clock: `date` at the start, `date`
+when the work looks finished. Do not spawn a subagent to act as a timer. A
+subagent costs a cold start and cannot interrupt anything. Use a background
+`sleep` only when the point is to be stopped at the deadline, not to measure
+how long a task took.
+
+Do not create scheduled jobs, cron entries or recurring wake-ups without
+asking first.
+
 ## Verification
 
 `npx tsc --noEmit`, `npm test`, and `npm run build` must all be clean. For

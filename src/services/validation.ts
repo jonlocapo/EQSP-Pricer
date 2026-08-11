@@ -1,4 +1,5 @@
 import type { AccumulatorSpec, CouponProductSpec, ParticipationSpec } from '../model/product';
+import { isFrequencyAllowed, tenorMonths } from '../model/product';
 import type { MarketData } from '../model/market';
 
 /** One basket leg's identity, as far as `validateBasket` needs it. `name` is
@@ -24,7 +25,14 @@ interface ValidationResult {
 function commonErrors(notional: number, tenorYears: number): FieldErrors {
   const errors: FieldErrors = {};
   if (!(notional > 0)) errors.notional = 'Notional must be positive.';
-  if (!(tenorYears > 0) || tenorYears > 10) errors.tenorYears = 'Tenor must be > 0 and ≤ 10y.';
+  if (!(tenorYears > 0) || tenorYears > 10) {
+    errors.tenorYears = 'Tenor must be > 0 and ≤ 10y.';
+  } else if (tenorMonths(tenorYears) === null) {
+    // A note matures on a date, so its tenor is a whole number of months.
+    // Report that here rather than letting it surface as every frequency
+    // being unavailable, which describes the symptom and not the cause.
+    errors.tenorYears = 'Tenor must be a whole number of months.';
+  }
   return errors;
 }
 
@@ -45,6 +53,19 @@ export function validateCoupon(spec: CouponProductSpec, market: MarketData): Val
 
   if (spec.reofferPct < 0) errors.reofferPct = 'Must be ≥ 0.';
   if (spec.issuePricePct < 0) errors.issuePricePct = 'Must be ≥ 0.';
+
+  // The tenor must be an exact multiple of every schedule's period. The
+  // pickers already grey out the periods that do not divide, but a UI control
+  // is not a model invariant: a stored trade or a restored history entry can
+  // carry any combination. An overshooting observation leaves a hole in
+  // couponObs and silently drops a coupon, so refuse it here too. See
+  // `isFrequencyAllowed`.
+  if (!isFrequencyAllowed(spec.tenorYears, spec.couponFrequency)) {
+    errors.couponFrequency = 'The tenor is not a whole number of these periods.';
+  }
+  if (spec.callType !== 'none' && !isFrequencyAllowed(spec.tenorYears, spec.callFrequency)) {
+    errors.callFrequency = 'The tenor is not a whole number of these periods.';
+  }
 
   // At or below, not strictly below: a one-star / airbag note sets the put
   // strike EQUAL to the barrier on purpose, so that the loss is measured from

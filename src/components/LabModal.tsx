@@ -3,6 +3,7 @@ import type { LabBlock } from '../model/lab';
 import { LAB_PRESETS, makeBlock } from '../model/lab';
 import type { LabSpec } from '../model/lab';
 import type { BarrierMonitoring, Frequency } from '../model/product';
+import { coerceFrequency, isFrequencyAllowed } from '../model/product';
 import type { PriceRequest, PriceResult } from '../model/request';
 import { DEFAULT_MC } from '../model/request';
 import { pricerClient } from '../worker/client';
@@ -69,13 +70,28 @@ function blockSummary(b: LabBlock): string {
 /** One canvas block's own field editor. Every numeric/select/toggle input
  * reuses the shared field components — see App.tsx's other pages — instead
  * of raw <input> elements, so the Lab matches the rest of the app's look. */
-function BlockFields({ block, onChange }: { block: LabBlock; onChange: (next: LabBlock) => void }) {
+function BlockFields({
+  block,
+  tenorYears,
+  onChange,
+}: {
+  block: LabBlock;
+  /** The contract's tenor, so a block cannot pick a period the tenor does not
+   * divide. See `isFrequencyAllowed`. */
+  tenorYears: number;
+  onChange: (next: LabBlock) => void;
+}) {
+  const freqOptions = FREQ_OPTIONS.map((o) =>
+    isFrequencyAllowed(tenorYears, o.value)
+      ? o
+      : { ...o, disabled: true, label: `${o.label} (does not divide tenor)` },
+  );
   switch (block.t) {
     case 'coupon':
       return (
         <div className="field-group">
           <div className="field-row">
-            <SelectField label="Frequency" value={block.frequency} options={FREQ_OPTIONS} onChange={(v) => onChange({ ...block, frequency: v as Frequency })} />
+            <SelectField label="Frequency" value={block.frequency} options={freqOptions} onChange={(v) => onChange({ ...block, frequency: v as Frequency })} />
             <NumericField label="Rate" suffix="% p.a." step={0.5} value={block.ratePaPct} onChange={(v) => onChange({ ...block, ratePaPct: v })} />
           </div>
           <div className="field-row">
@@ -95,7 +111,7 @@ function BlockFields({ block, onChange }: { block: LabBlock; onChange: (next: La
       return (
         <div className="field-group">
           <div className="field-row">
-            <SelectField label="Frequency" value={block.frequency} options={FREQ_OPTIONS} onChange={(v) => onChange({ ...block, frequency: v as Frequency })} />
+            <SelectField label="Frequency" value={block.frequency} options={freqOptions} onChange={(v) => onChange({ ...block, frequency: v as Frequency })} />
             <NumericField label="From period" step={1} min={1} value={block.fromPeriod} onChange={(v) => onChange({ ...block, fromPeriod: v })} />
           </div>
           <div className="field-row">
@@ -384,7 +400,7 @@ export function LabModal({ onClose }: LabModalProps) {
                   </div>
                   {expandedId === b.id && (
                     <div className="lab-canvas-block-body">
-                      <BlockFields block={b} onChange={(next) => updateBlock(b.id, next)} />
+                      <BlockFields block={b} tenorYears={spec.tenorYears} onChange={(next) => updateBlock(b.id, next)} />
                     </div>
                   )}
                 </div>
@@ -394,7 +410,26 @@ export function LabModal({ onClose }: LabModalProps) {
 
           <div className="lab-price-bar">
             <div className="field-row">
-              <NumericField label="Tenor" suffix="y" step={0.25} min={0.25} max={10} value={spec.tenorYears} onChange={(v) => setSpec((s) => ({ ...s, tenorYears: v }))} />
+              <NumericField
+                label="Tenor"
+                suffix="y"
+                step={0.25}
+                min={0.25}
+                max={10}
+                value={spec.tenorYears}
+                // A tenor edit can strand a block on a period the new tenor
+                // does not divide, so every block's frequency snaps to the
+                // closest one it allows. See `coerceFrequency`.
+                onChange={(v) =>
+                  setSpec((s) => ({
+                    ...s,
+                    tenorYears: v,
+                    blocks: s.blocks.map((b) =>
+                      'frequency' in b ? { ...b, frequency: coerceFrequency(v, b.frequency) } : b,
+                    ),
+                  }))
+                }
+              />
               <NumericField label="Notional" step={100_000} value={spec.notional} onChange={(v) => setSpec((s) => ({ ...s, notional: v }))} />
             </div>
             <button className="btn btn-primary" type="button" disabled={!canPrice || pricing} onClick={() => void priceLab()}>
