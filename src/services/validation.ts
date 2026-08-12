@@ -147,6 +147,16 @@ export function validateBasket(
   market: MarketData
 ): ValidationResult {
   const errors: FieldErrors = {};
+
+  // A trade needs an underlying, whatever the leg count. Nothing downstream
+  // can price "no name": the spot, the volatility and the dividend all belong
+  // to a specific instrument. Checked here rather than only for a basket,
+  // because the single-name case is the one a user actually reaches by
+  // clearing the field.
+  if (!underlyings[0] || !underlyings[0].name.trim()) {
+    errors.underlying0 = 'Select an underlying.';
+  }
+
   if (underlyings.length >= 2) {
     const seen = new Set<string>();
     underlyings.forEach((u, i) => {

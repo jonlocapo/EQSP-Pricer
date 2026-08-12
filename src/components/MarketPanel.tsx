@@ -6,7 +6,6 @@ import { fetchVolPipeline, type VolSourceKind } from '../services/volPipeline';
 import { useTradeStore } from '../state/tradeStore';
 import { NumericField } from './NumericField';
 import { SelectField } from './SelectField';
-import { Segmented } from './Segmented';
 import { TickerSearch } from './TickerSearch';
 import { BasketPanel } from './BasketPanel';
 import { buildBasket } from '../model/basket';
@@ -348,11 +347,18 @@ export function MarketPanel() {
   const setBasket = useMarketStore((s) => s.setBasket);
   const setUnderlying = useMarketStore((s) => s.setUnderlying);
 
-  const assetType = useMarketStore((s) => s.assetType);
-  const setAssetType = useMarketStore((s) => s.setAssetType);
   const extraLegs = useMarketStore((s) => s.extraLegs);
   const addLeg = useMarketStore((s) => s.addLeg);
   const setLeg = useMarketStore((s) => s.setLeg);
+  const removeLeg = useMarketStore((s) => s.removeLeg);
+
+  /** Back to a single-name trade. Removes from the end so each removal keeps
+   * the remaining legs' indices, and the correlation matrix shrinks with
+   * them (see `removeFromCorrelation`). */
+  function clearLegs() {
+    const n = useMarketStore.getState().extraLegs.length;
+    for (let i = n - 1; i >= 0; i--) useMarketStore.getState().removeLeg(i);
+  }
   const basketCorrelation = useMarketStore((s) => s.basketCorrelation);
   const activePage = useTradeStore((s) => s.activePage);
 
@@ -497,10 +503,14 @@ export function MarketPanel() {
    * the hover title. A leg with no ticker yet still gets a chip, so adding one
    * is visibly acknowledged. */
   const legChips = [
+    // The note's own underlying has no `×`: a trade always has one, and
+    // removing it would leave nothing to price. Replace it by picking another
+    // from the dropdown.
     { label: ticker || underlyingName || 'Leg 1', title: underlyingName },
     ...extraLegs.map((l, i) => ({
       label: l.ticker || l.name || `Leg ${i + 2}`,
       title: l.name || l.ticker,
+      onRemove: () => removeLeg(i),
     })),
   ];
 
@@ -601,25 +611,18 @@ export function MarketPanel() {
             onAdd={handleAddLeg}
             addDisabled={extraLegs.length >= MAX_EXTRA_LEGS}
             addDisabledReason={`A worst-of takes at most ${MAX_EXTRA_LEGS + 1} underlyings.`}
+            onClearAll={extraLegs.length > 0 ? clearLegs : undefined}
           />
         )}
         {!basketUiEnabled && (
           <TickerSearch ticker={ticker} displayName={underlyingName} onPick={handlePrimaryPick} />
         )}
 
-        <div className="field">
-          <div className="field-label">
-            <span>Asset type</span>
-          </div>
-          <Segmented
-            value={assetType}
-            options={[
-              { value: 'share', label: 'Share' },
-              { value: 'index', label: 'Index' },
-            ]}
-            onChange={setAssetType}
-          />
-        </div>
+        {/* NO ASSET TYPE CONTROL. The picked symbol already says whether it
+          * is a share or an index (`quoteType`), so asking again invited the
+          * two to disagree, and a user who set it by hand had no idea it only
+          * ever gated the accumulator. The accumulator states the share-only
+          * rule against the underlying itself instead. */}
 
         <button
           className="btn btn-sm btn-primary"
