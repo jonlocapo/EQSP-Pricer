@@ -228,7 +228,9 @@ export function BasketModal({ onClose, onPickPrimary }: Props) {
 
                   {currencyMismatch && (
                     <div className="status-line error">
-                      {leg.currency} vs note {market.currency}. A worst-of must be single-currency.
+                      {leg.currency} vs note {market.currency}. Fetch live to measure this leg's FX
+                      volatility and equity-FX correlation, or type them: a foreign leg prices as a
+                      quanto leg and cannot price without them.
                     </div>
                   )}
 

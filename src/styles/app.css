@@ -718,7 +718,9 @@ select.input:focus {
   min-width: 0;
 }
 
-/* A currency mismatch is a silent-misprice risk (see validateBasket), so
+/* A foreign leg with MISSING quanto inputs is a silent-misprice risk (see
+ * validateBasket). The mismatch itself is legal now — each leg drifts at its
+ * own currency's rate — so what this marks is the gap, not the mismatch. So
  * the offending tile gets a loud border, not a quiet note easy to miss
  * among four tiles. */
 .basket-tile-error {

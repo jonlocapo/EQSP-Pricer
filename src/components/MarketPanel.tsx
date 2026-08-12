@@ -438,6 +438,17 @@ export function MarketPanel() {
   async function handleCurrencyChange(next: string) {
     if (next === market.currency) return;
     setMarket({ currency: next });
+    // EVERY LEG'S QUANTO BLOCK IS NOW STALE. Its FX volatility and equity-FX
+    // correlation were measured against the OLD note currency, so they
+    // describe a pair the note no longer pays in. Keeping them would price a
+    // EUR note's legs on their USD covariance. Clearing them makes
+    // `validateBasket` ask for a fresh measurement, which "Fetch live"
+    // supplies. This is the same failure `fetchLiveData` already guards for
+    // the rate, one level up.
+    const legs = useMarketStore.getState().extraLegs;
+    legs.forEach((l, i) => {
+      if (l.quanto) setLeg(i, { quanto: undefined });
+    });
     const generation = ++rateGeneration.current;
     if (!(REF_RATE_CCYS as readonly string[]).includes(next)) {
       setFetchLines([{ kind: 'info', msg: `No open rate source for ${next}. Enter the rate manually.` }]);
