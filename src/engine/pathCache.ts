@@ -125,12 +125,29 @@ export function computeCacheKey(p: CacheKeyParams): string {
     // logged. The per-leg schedule belongs here for the same reason: it
     // changes every diffCoeff, so two baskets that agree on the flat `vol`
     // and differ only in term structure are not the same paths.
+    //
+    // The per-leg QUANTO block belongs here for the same reason, and the risk
+    // is the same class of bug the borrow cost already caused once: every one
+    // of its fields enters that leg's drift, so a change to any of them moves
+    // every path of that leg. Omitting one would leave the cache warm and
+    // replay the previous currency's paths under the new label. `currency` is
+    // keyed too, although the drift never reads it: it is the field the user
+    // edits FIRST when moving a leg between currencies, and keying it makes
+    // the miss happen at the edit rather than one input later.
     basket: p.market.basket
       ? {
           assets: p.market.basket.assets.map((a) => ({
             vol: a.vol,
             divYield: a.divYield,
             volPerStep: a.volPerStep,
+            quanto: a.quanto
+              ? {
+                  currency: a.quanto.currency,
+                  rateUnderlying: a.quanto.rateUnderlying,
+                  fxVol: a.quanto.fxVol,
+                  corrEqFx: a.quanto.corrEqFx,
+                }
+              : undefined,
           })),
           correlation: p.market.basket.correlation,
         }

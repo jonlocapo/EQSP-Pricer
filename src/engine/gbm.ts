@@ -1,5 +1,5 @@
 import type { MarketData } from '../model/market';
-import { riskNeutralDrift } from '../model/market';
+import { legQuantoOf, riskNeutralDrift } from '../model/market';
 import { rateAt } from './discount';
 import { choleskyLower } from '../model/correlation';
 import { normals } from './rng';
@@ -376,22 +376,36 @@ export class PathBatchGenerator {
  *
  * Both arrays are STEP-MAJOR: leg `j` of step `i` sits at `i * nAssets + j`.
  *
- * Each leg drifts at `rate - divYield_j - borrow`, with its own dividend, and
- * carries its own Ito correction `-0.5 * vol_j^2`, so the log-Euler step is
- * exact for the piecewise-constant model. A rate curve substitutes that step's
- * instantaneous forward rate for the flat `rate`, the same substitution the
- * scalar branch makes.
+ * A leg in the NOTE currency drifts at `rate - divYield_j - borrow`, with its
+ * own dividend, and carries its own Ito correction `-0.5 * vol_j^2`, so the
+ * log-Euler step is exact for the piecewise-constant model. A rate curve
+ * substitutes that step's instantaneous forward rate for the flat `rate`, the
+ * same substitution the scalar branch makes.
  *
- * Two combinations THROW rather than pricing something quietly wrong:
+ * A leg in ANOTHER currency is a quanto leg (see `BasketAsset.quanto`). Under
+ * the note-currency risk-neutral measure it drifts at
  *
- *  - Basket plus quanto. The quanto correction is `-rho_j * vol_j * fxVol` and
- *    needs one correlation PER LEG against the exchange rate. `QuantoParams`
- *    carries a single `corrEqFx`, which is the single-underlying case, so
- *    there is no honest value to use for the other legs.
- *  - Basket plus a per-step vol schedule. `volPerStep` is built from ONE
- *    surface at ONE risk strike (see worker/pricing.ts's `effectiveMarketFor`)
- *    and a basket needs a schedule per leg. A flat per-leg vol is the v1
- *    scope, so a schedule reaching here means the caller built it wrongly.
+ *   mu_j = r_j - q_j - borrow - rho_{j,FX_j} * sigma_j * sigmaFX_j
+ *
+ * where `r_j` is the risk-free rate of the LEG's own currency, `sigmaFX_j` is
+ * the volatility of that currency against the note currency, and
+ * `rho_{j,FX_j}` is the correlation between the leg's price and that FX rate.
+ * The formula, and its sign, are the single-name `riskNeutralDrift` applied
+ * per leg. A quanto leg ignores the note currency's rate curve for its drift,
+ * for the reason the scalar branch states: the curve is the WRONG currency's
+ * curve for that leg. Discounting still runs on the note curve.
+ *
+ * The correlation term uses the leg's FLAT `vol`, not its per-step volatility,
+ * even when the leg carries a term structure. That matches the single-name
+ * rule in `MarketData.volPerStep`: the equity-FX covariance is a cross-asset
+ * anchor, held constant across steps.
+ *
+ * One combination still THROWS rather than pricing something quietly wrong:
+ * basket plus a per-step vol schedule on `MarketData` itself. `volPerStep`
+ * there is built from ONE surface at ONE risk strike (see worker/pricing.ts's
+ * `effectiveMarketFor`) and a basket needs a schedule per leg. So a schedule
+ * reaching here means the caller built it wrongly. Per-LEG schedules are
+ * supported: see `BasketAsset.volPerStep`.
  */
 function buildBasketCoefficients(
   market: MarketData,
@@ -401,9 +415,6 @@ function buildBasketCoefficients(
   stepStartTimes: Float64Array,
 ): { drift: Float64Array; diffCoeff: Float64Array; chol: Float64Array } {
   const basket = market.basket!;
-  if (market.quanto) {
-    throw new Error('A worst-of basket cannot be quanto: the drift needs one equity-FX correlation per leg');
-  }
   if (market.volPerStep) {
     throw new Error('A worst-of basket cannot carry a per-step vol schedule: it is built for one underlying');
   }
@@ -430,6 +441,12 @@ function buildBasketCoefficients(
   const diffCoeff = new Float64Array(nSteps * nAssets);
   const dtOf = (i: number): number => (typeof stepDt === 'number' ? stepDt : stepDt[i]);
 
+  // Resolve each leg's quanto parameters ONCE, before the step loop, exactly
+  // like every other coefficient here. `legQuantoOf` returns undefined for a
+  // leg that settles in the note currency, which is every leg of a
+  // single-currency basket.
+  const legQuanto = basket.assets.map((_, j) => legQuantoOf(market, j));
+
   for (let i = 0; i < nSteps; i++) {
     const dt = dtOf(i);
     const sqrtDt = Math.sqrt(dt);
@@ -446,7 +463,14 @@ function buildBasketCoefficients(
       // structure. The arrays are already indexed by step and by leg, so a
       // per-leg schedule costs one lookup and no extra memory.
       const v = leg.volPerStep ? leg.volPerStep[i] : leg.vol;
-      drift[base + j] = (rate - leg.divYield - borrow - 0.5 * v * v) * dt;
+      const q = legQuanto[j];
+      // A note-currency leg keeps the arithmetic it has always had, operand
+      // for operand, which is what holds a single-currency basket
+      // bit-identical. A quanto leg swaps the note rate for its own currency's
+      // rate and subtracts the equity-FX covariance term.
+      drift[base + j] = q
+        ? (q.rateUnderlying - leg.divYield - borrow - q.corrEqFx * leg.vol * q.fxVol - 0.5 * v * v) * dt
+        : (rate - leg.divYield - borrow - 0.5 * v * v) * dt;
       diffCoeff[base + j] = v * sqrtDt;
     }
   }

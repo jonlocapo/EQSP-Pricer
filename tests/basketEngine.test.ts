@@ -140,13 +140,17 @@ describe('worst-of path generator against the closed forms', () => {
       [1, 0.4],
       [0.4, 1],
     ];
-    // Quanto needs one equity-FX correlation PER LEG, and QuantoParams carries
-    // a single one. There is no honest value for the other legs.
+    // A basket used to refuse `market.quanto` outright, because one
+    // `corrEqFx` cannot describe every leg. The engine now takes ONE quanto
+    // block PER LEG, and reads `market.quanto` as the PRIMARY leg's block
+    // (see model/market.ts's `legQuantoOf`). So this combination prices
+    // instead of throwing. tests/basketQuanto.test.ts checks the drift it
+    // produces against a hand-computed forward.
     const quanto: MarketData = {
       ...basketMarket([0.2, 0.3], [0.01, 0.02], corr),
       quanto: { rateUnderlying: 0.04, fxVol: 0.1, corrEqFx: -0.3 },
     };
-    expect(() => new PathBatchGenerator(1, 4, 100, quanto, 0.25)).toThrow(/quanto/i);
+    expect(() => new PathBatchGenerator(1, 4, 100, quanto, 0.25)).not.toThrow();
 
     // A per-step vol schedule is built from ONE surface at ONE risk strike.
     const perStep: MarketData = {

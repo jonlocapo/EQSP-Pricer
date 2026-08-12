@@ -3,7 +3,7 @@ import { buildBasket, resizeCorrelation, removeFromCorrelation } from '../src/mo
 import { isPsd } from '../src/model/correlation';
 import { validateBasket } from '../src/services/validation';
 import { realizedCorrelation, type DatedClose } from '../src/services/marketFetch';
-import { NO_COSTS, type MarketData } from '../src/model/market';
+import { NO_COSTS, type LegQuantoParams, type MarketData } from '../src/model/market';
 
 const market: MarketData = { spot: 100, vol: 0.25, rate: 0.02, divYield: 0.02, currency: 'EUR' };
 
@@ -83,9 +83,13 @@ describe('validateBasket', () => {
     const outOfRange = validateBasket([{ name: 'A' }, { name: 'B' }], [[1, 1.5], [1.5, 1]], market);
     expect(outOfRange.errors.correlation).toMatch(/between -1 and 1/);
 
+    // `market.quanto` on a basket is no longer a clash. It describes the
+    // PRIMARY leg of a multi-currency worst-of, and the engine prices that
+    // leg with its own quanto drift (see model/market.ts's `legQuantoOf`).
+    // Neither leg here reports a currency, so there is nothing to flag.
     const quantoMarket: MarketData = { ...market, quanto: { rateUnderlying: 0.01, fxVol: 0.1, corrEqFx: 0 } };
-    const quantoClash = validateBasket([{ name: 'A' }, { name: 'B' }], [[1, 0.2], [0.2, 1]], quantoMarket);
-    expect(quantoClash.errors.basket).toMatch(/single-currency/);
+    const quantoOk = validateBasket([{ name: 'A' }, { name: 'B' }], [[1, 0.2], [0.2, 1]], quantoMarket);
+    expect(quantoOk.valid).toBe(true);
 
     // Costs on their own do not interact with the basket rules at all.
     const withCosts = validateBasket([{ name: 'A' }, { name: 'B' }], [[1, 0.2], [0.2, 1]], {
@@ -95,22 +99,67 @@ describe('validateBasket', () => {
     expect(withCosts.valid).toBe(true);
   });
 
-  it('flags a leg whose currency differs from the note currency, even when market.quanto is unset', () => {
-    // The note is EUR (see `market` above). A leg reporting USD is a silent
-    // misprice risk: the engine has no per-leg FX handling for a basket, so
-    // an unflagged mismatched leg would price as though it traded in EUR.
-    // This must be caught here, per leg, not only via the primary-leg-
-    // derived market.quanto check (which a mismatched EXTRA leg never sets).
-    const mismatch = validateBasket(
-      [
-        { name: 'Rheinmetall AG', ticker: 'RHM.DE', currency: 'EUR' },
-        { name: 'Lockheed Martin', ticker: 'LMT', currency: 'USD' },
-      ],
-      [[1, 0.2], [0.2, 1]],
-      market,
-    );
+  it('flags a foreign leg with no quanto inputs, and accepts the same leg once it has them', () => {
+    // The note is EUR (see `market` above). A USD leg is allowed now — it
+    // prices as a quanto leg — but only when it carries the three inputs its
+    // drift needs. Without them the leg would drift at the EUR rate with no
+    // FX correction, which is the silent misprice the old single-currency
+    // rule existed to stop.
+    const legs = [
+      { name: 'Rheinmetall AG', ticker: 'RHM.DE', currency: 'EUR' },
+      { name: 'Lockheed Martin', ticker: 'LMT', currency: 'USD' },
+    ];
+    const corr = [[1, 0.2], [0.2, 1]];
+    const mismatch = validateBasket(legs, corr, market);
     expect(mismatch.valid).toBe(false);
     expect(mismatch.errors.currency1).toMatch(/LMT.*USD.*EUR/);
+
+    // The same basket, with leg 2's quanto inputs present, prices.
+    const usdLeg: LegQuantoParams = { currency: 'USD', rateUnderlying: 0.043, fxVol: 0.08, corrEqFx: -0.25 };
+    const multiCcy: MarketData = {
+      ...market,
+      basket: {
+        assets: [
+          { vol: 0.25, divYield: 0.02 },
+          { vol: 0.28, divYield: 0.015, quanto: usdLeg },
+        ],
+        correlation: corr,
+      },
+    };
+    expect(validateBasket(legs, corr, multiCcy).valid).toBe(true);
+
+    // Inputs measured against the WRONG currency are refused: they describe a
+    // different FX rate, so they would price the leg on the wrong forward.
+    const staleCcy: MarketData = {
+      ...multiCcy,
+      basket: {
+        assets: [
+          { vol: 0.25, divYield: 0.02 },
+          { vol: 0.28, divYield: 0.015, quanto: { ...usdLeg, currency: 'CHF' } },
+        ],
+        correlation: corr,
+      },
+    };
+    expect(validateBasket(legs, corr, staleCcy).errors.currency1).toMatch(/CHF/);
+
+    // A zero FX vol is not a neutral default: it prices the quanto leg as
+    // though the two currencies never moved apart.
+    const zeroFxVol: MarketData = {
+      ...multiCcy,
+      basket: {
+        assets: [
+          { vol: 0.25, divYield: 0.02 },
+          { vol: 0.28, divYield: 0.015, quanto: { ...usdLeg, fxVol: 0 } },
+        ],
+        correlation: corr,
+      },
+    };
+    expect(zeroFxVol.basket).toBeDefined();
+    expect(validateBasket(legs, corr, zeroFxVol).errors.currency1).toMatch(/FX vol/);
+
+    // A leg back in the note currency must not keep its quanto inputs.
+    const eurLegs = [legs[0], { ...legs[1], currency: 'EUR' }];
+    expect(validateBasket(eurLegs, corr, multiCcy).errors.currency1).toMatch(/still carries quanto inputs/);
 
     // Same-currency legs pass, and an unfetched leg (no currency yet) is
     // not a mismatch — it simply has nothing to compare yet.

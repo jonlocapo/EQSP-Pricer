@@ -1,6 +1,7 @@
 import type { AccumulatorSpec, CouponProductSpec, ParticipationSpec } from '../model/product';
 import { isFrequencyAllowed, tenorMonths } from '../model/product';
-import type { MarketData } from '../model/market';
+import type { LegQuantoParams, MarketData } from '../model/market';
+import { legQuantoOf } from '../model/market';
 
 /** One basket leg's identity, as far as `validateBasket` needs it. `name` is
  * the same value `spec.underlyings` carries; `ticker` and `currency` are
@@ -132,6 +133,36 @@ export function validateParticipation(spec: ParticipationSpec, market: MarketDat
 }
 
 /**
+ * What is wrong with a foreign leg's quanto inputs, or an empty string when
+ * the inputs can price. The caller prefixes the leg's identity.
+ *
+ * The FX volatility must be positive and the correlation must be a real
+ * correlation. A zero FX volatility is not a neutral default: it says the two
+ * currencies never move against each other, which turns the quanto note into
+ * a plain note and hides the very risk the inputs exist to price.
+ *
+ * `legCurrency` is the currency the ticker actually trades in. A leg's own
+ * quanto block names its currency, so a mismatch means the inputs are left
+ * over from an earlier currency and describe the wrong FX rate. The primary
+ * leg's fallback block (see `legQuantoOf`) carries the placeholder name
+ * 'primary' and skips that comparison.
+ */
+function quantoInputProblem(quanto: LegQuantoParams | undefined, legCurrency: string): string {
+  if (!quanto) {
+    return 'Fetch or type this leg’s rate, FX vol and equity-FX correlation before pricing.';
+  }
+  if (quanto.currency !== 'primary' && quanto.currency !== legCurrency) {
+    return `Its quanto inputs are for ${quanto.currency}. Refresh them for ${legCurrency}.`;
+  }
+  if (!Number.isFinite(quanto.rateUnderlying)) return 'Its own risk-free rate is missing.';
+  if (!(quanto.fxVol > 0) || !Number.isFinite(quanto.fxVol)) return 'Its FX vol must be above zero.';
+  if (!Number.isFinite(quanto.corrEqFx) || quanto.corrEqFx < -1 || quanto.corrEqFx > 1) {
+    return 'Its equity-FX correlation must be between -1 and 1.';
+  }
+  return '';
+}
+
+/**
  * Rules for a worst-of basket (two or more legs). Returns no errors at all
  * for a single leg: today's behavior stays untouched.
  *
@@ -140,6 +171,11 @@ export function validateParticipation(spec: ParticipationSpec, market: MarketDat
  * entry, because repair always produces entries inside that range by
  * construction (a valid correlation matrix cannot hold one outside it), so
  * checking the repaired matrix could never catch a bad typed value.
+ *
+ * A basket MAY mix currencies. Each leg outside the note currency prices as a
+ * quanto leg, so the rule this function enforces is not "one currency" but
+ * "every foreign leg carries the three quanto inputs its drift needs". See
+ * `quantoInputProblem`.
  */
 export function validateBasket(
   underlyings: BasketLegRef[],
@@ -174,16 +210,26 @@ export function validateBasket(
       }
       seen.add(key);
 
-      // A currency mismatch is a SILENT MISPRICE, not a cosmetic issue: the
-      // engine has no per-leg FX handling for a basket (see the quanto
-      // check below), so a leg in the wrong currency prices as though it
-      // traded in the note currency. Catch it here, per leg, not only via
-      // the primary-leg-derived `market.quanto` check, so a mismatched
-      // extra leg cannot pass validation silently.
+      // A MULTI-CURRENCY worst-of is allowed: the engine gives each foreign
+      // leg its own quanto drift (see engine/gbm.ts's
+      // `buildBasketCoefficients`). What is NOT allowed is a foreign leg with
+      // no quanto inputs. That leg would drift at the NOTE currency's rate
+      // with no equity-FX correction, which is a silent misprice — the same
+      // failure the old single-currency rule existed to stop.
+      const label = u.ticker?.trim() || name;
+      const quanto = legQuantoOf(market, i);
       if (u.currency && u.currency !== market.currency) {
-        const label = u.ticker?.trim() || name;
+        const problem = quantoInputProblem(quanto, u.currency);
+        if (problem) {
+          errors[`currency${i}`] = `Leg ${i + 1} (${label}) is ${u.currency} but the note is ${market.currency}. ${problem}`;
+        }
+      } else if (u.currency && u.currency === market.currency && quanto) {
+        // A leg that moved back into the note currency must lose its quanto
+        // inputs with the move. Stale inputs are not harmless here: the engine
+        // applies the correction to any leg that carries one, so the leg would
+        // price with an FX adjustment it no longer has.
         errors[`currency${i}`] =
-          `Leg ${i + 1} (${label}) is ${u.currency} but the note is ${market.currency}. A worst-of must be single-currency.`;
+          `Leg ${i + 1} (${label}) is now ${market.currency}, the note currency, but still carries quanto inputs. Clear them.`;
       }
     });
 
@@ -198,13 +244,6 @@ export function validateBasket(
       }
     }
 
-    // A basket cannot be quanto: the engine throws (see model/market.ts,
-    // riskNeutralDrift). Quanto needs one equity-FX correlation per leg,
-    // which this model does not carry, so the two features are mutually
-    // exclusive rather than combinable.
-    if (market.quanto) {
-      errors.basket = 'Worst-of baskets must be single-currency. Resolve the quanto mismatch first.';
-    }
   }
   return { errors, valid: Object.keys(errors).length === 0 };
 }
