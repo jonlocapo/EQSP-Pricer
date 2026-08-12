@@ -25,7 +25,6 @@ interface Props {
  * trade stays visually simple, exactly as before.
  */
 export function BasketPanel({ onPickPrimary }: Props) {
-  const underlyingName = useMarketStore((s) => s.underlyingName);
   const extraLegs = useMarketStore((s) => s.extraLegs);
   const [modalOpen, setModalOpen] = useState(false);
 
@@ -36,25 +35,17 @@ export function BasketPanel({ onPickPrimary }: Props) {
   // a second, competing add button below it.
   if (nLegs < 2) return null;
 
-  const names = [underlyingName, ...extraLegs.map((l) => l.name || l.ticker || 'Unnamed leg')];
-
+  // The legs' own numbers are in the sidebar now, so this panel is down to
+  // one job: opening the correlation editor. The names it used to summarise
+  // are the chips on the ticker search, and the spots, volatilities and
+  // dividends are the metric grids above. Repeating them cost the rows that
+  // pushed a four-leg sidebar into a scrollbar.
   return (
-    <div className="field-group">
-      <div className="field-label">
-        <span>Basket</span>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span className="text-muted" style={{ fontSize: 11 }}>
-            {nLegs} legs
-          </span>
-          <button type="button" className="btn btn-sm" onClick={() => setModalOpen(true)}>
-            Edit
-          </button>
-        </span>
-      </div>
-      <div className="basket-summary-names" title={names.join(' · ')}>
-        {names.join(' · ')}
-      </div>
+    <>
+      <button type="button" className="btn btn-sm" onClick={() => setModalOpen(true)} title="Per-pair correlations, and every leg's detail in one place.">
+        Correlation
+      </button>
       {modalOpen && <BasketModal onClose={() => setModalOpen(false)} onPickPrimary={onPickPrimary} />}
-    </div>
+    </>
   );
 }

@@ -525,6 +525,34 @@ export function MarketPanel() {
     void handleFetchLive();
   }
 
+  /** Every leg's market inputs behind one uniform accessor, primary first, so
+   * the grids below do not special-case leg 0. The primary leg's numbers live
+   * on `market`; the extras live on their own store entries. */
+  const legFields = [
+    {
+      label: ticker || underlyingName || 'Leg 1',
+      spot: market.spot,
+      vol: market.vol,
+      divYield: market.divYield,
+      fetched: true,
+      setSpot: (v: number) => setMarket({ spot: v }),
+      setVol: (v: number) => setMarket({ vol: v }),
+      setDivYield: (v: number) => setMarket({ divYield: v }),
+    },
+    ...extraLegs.map((l, i) => ({
+      label: l.ticker || l.name || `Leg ${i + 2}`,
+      // A leg starts from the primary's spot only as a placeholder; it is the
+      // fetch that gives it a real one.
+      spot: l.spot ?? market.spot,
+      vol: l.vol,
+      divYield: l.divYield,
+      fetched: !!l.fetched,
+      setSpot: (v: number) => setLeg(i, { spot: v }),
+      setVol: (v: number) => setLeg(i, { vol: v }),
+      setDivYield: (v: number) => setLeg(i, { divYield: v }),
+    })),
+  ];
+
   const quantoMismatch = !!underlyingCurrency && underlyingCurrency !== market.currency;
 
   // Costs default to zero, a pure risk-neutral fair value. The badge makes
@@ -624,15 +652,20 @@ export function MarketPanel() {
           * ever gated the accumulator. The accumulator states the share-only
           * rule against the underlying itself instead. */}
 
-        <button
-          className="btn btn-sm btn-primary"
-          type="button"
-          disabled={fetching}
-          onClick={() => void handleFetchLive()}
-          title="Fetches delayed spot, reference rate, and options-implied vol + dividend yield (falling back to 1Y realized vol) for every leg in one go. Manual edits always override."
-        >
-          {fetching ? 'Fetching…' : 'Fetch live data'}
-        </button>
+        {/* Fetch and the correlation editor share one row. Each on its own
+          * line cost the height that pushed a four-leg sidebar into a
+          * scrollbar. */}
+        <div className="field-row">
+          <button
+            className="btn btn-sm btn-primary"
+            type="button"
+            disabled={fetching}
+            onClick={() => void handleFetchLive()}
+            title="Fetches delayed spot, reference rate, and options-implied vol + dividend yield (falling back to 1Y realized vol) for every leg in one go. Manual edits always override."
+          >
+            {fetching ? 'Fetching…' : 'Fetch live data'}
+          </button>
+          </div>
         {(() => {
           const okLines = fetchLines.filter((l) => l.kind === 'ok');
           const otherLines = fetchLines.filter((l) => l.kind !== 'ok');
@@ -652,11 +685,85 @@ export function MarketPanel() {
           );
         })()}
         {quantoMismatch && (
-          <div className="status-line warn">
-            {market.quanto
-              ? 'Cross-currency note. Quanto drift adjustment is active.'
-              : `Underlying trades in ${underlyingCurrency}, note in ${market.currency}. Quanto and composite effects are not modelled, so prices assume a single currency.`}
+          <div
+            className={`status-line ${market.quanto ? '' : 'warn'}`}
+            // The long form goes in the tooltip. A 260px column cannot carry
+            // three lines of prose next to the numbers it is describing.
+            title={
+              market.quanto
+                ? `The underlying trades in ${underlyingCurrency} and the note pays in ${market.currency}. The drift uses the underlying currency's rate less the equity-FX covariance term, so the price is a quanto price.`
+                : `The underlying trades in ${underlyingCurrency} and the note pays in ${market.currency}. Enter the FX volatility and the equity-FX correlation to price it as a quanto. Until then the price assumes one currency.`
+            }
+          >
+            {market.quanto ? `Quanto ${underlyingCurrency}/${market.currency}` : `${underlyingCurrency} underlying, ${market.currency} note`}
           </div>
+        )}
+
+        {/* MULTI-LEG MARKET INPUTS, INLINE. One row per METRIC, one column per
+          * leg, so "Spot 1 | Spot 2 | Spot 3" reads across and no leg looks
+          * more important than another. This used to live behind an Edit
+          * button in a modal, which hid the numbers that decide the price.
+          *
+          * Four legs use two columns and wrap to a 2x2 block: at 260px, four
+          * side by side leaves about 55px per cell, which truncates the
+          * values it exists to show. */}
+        {!singleLegLayout && (
+          <>
+            <div className="field-group leg-metric">
+              <div className="field-label">
+                <span>Spot</span>
+              </div>
+              <div className={`metric-grid ${nLegs === 3 ? 'cols-3' : 'cols-2'}`}>
+                {legFields.map((leg, i) => (
+                  <NumericField
+                    key={`spot-${i}`}
+                    label={leg.label}
+                    value={leg.spot}
+                    step={0.01}
+                    onChange={leg.setSpot}
+                  />
+                ))}
+              </div>
+            </div>
+
+            <div className="field-group leg-metric">
+              <div className="field-label">
+                <span>Volatility</span>
+              </div>
+              <div className={`metric-grid ${nLegs === 3 ? 'cols-3' : 'cols-2'}`}>
+                {legFields.map((leg, i) => (
+                  <NumericField
+                    key={`vol-${i}`}
+                    label={leg.label}
+                    value={Number((leg.vol * 100).toFixed(4))}
+                    step={0.5}
+                    suffix="%"
+                    onChange={(v) => leg.setVol(v / 100)}
+                    badge={leg.fetched ? undefined : 'INHERITED'}
+                    badgeClassName="manual-badge"
+                  />
+                ))}
+              </div>
+            </div>
+
+            <div className="field-group leg-metric">
+              <div className="field-label">
+                <span>Dividend yield</span>
+              </div>
+              <div className={`metric-grid ${nLegs === 3 ? 'cols-3' : 'cols-2'}`}>
+                {legFields.map((leg, i) => (
+                  <NumericField
+                    key={`div-${i}`}
+                    label={leg.label}
+                    value={Number((leg.divYield * 100).toFixed(4))}
+                    step={0.1}
+                    suffix="%"
+                    onChange={(v) => leg.setDivYield(v / 100)}
+                  />
+                ))}
+              </div>
+            </div>
+          </>
         )}
 
         {singleLegLayout && (
@@ -683,14 +790,10 @@ export function MarketPanel() {
               </div>
             )}
 
-            {/* A worst-of basket cannot be multi-currency in this engine
-             * (the quanto drift needs one equity-FX correlation PER LEG,
-             * and QuantoParams carries only one — see validateBasket), so
-             * the only case with a second genuine rate is a QUANTO
-             * SINGLE-NAME note: the note currency's rate and the
-             * underlying currency's rate, shown side by side. This branch
-             * cannot fire once a second leg exists, so it is safe here in
-             * the single-leg layout only. */}
+            {/* Two genuine rates on a single name: the note currency's and the
+             * underlying currency's, shown side by side. A basket carries its
+             * own per-leg quanto block instead (see `BasketAsset.quanto`), so
+             * this branch belongs to the single-leg layout only. */}
             {market.quanto ? (
               <div className="metric-grid cols-2">
                 <NumericField

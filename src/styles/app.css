@@ -577,9 +577,12 @@ select.input:focus {
  * sidebar, out past its own width. The 0 floor lets each track actually
  * shrink to the space this narrow column has. Four legs use `cols-2`
  * deliberately: two columns, four cells, wraps to two rows on its own. */
+/* A leg grid stacks up to three of these in a 260px column, so the vertical
+ * gap is the tighter of the two: at four legs each grid is two rows, and the
+ * loose gap was what pushed the sidebar past the viewport. */
 .metric-grid {
   display: grid;
-  gap: 8px 6px;
+  gap: 4px 6px;
 }
 
 .metric-grid.cols-2 {
@@ -598,6 +601,20 @@ select.input:focus {
  * narrow. */
 .metric-grid > * {
   min-width: 0;
+}
+
+/* One metric's header plus its grid is a single visual unit, so it needs less
+ * air inside it than between two unrelated fields. */
+.leg-metric {
+  gap: 4px;
+}
+
+/* A cell label inside a leg grid is a ticker, not a sentence, so it runs
+ * tighter than a normal field label. Three stacked grids at four legs is six
+ * label rows; the default rhythm spent the last of the viewport on them. */
+.metric-grid .field-label {
+  font-size: 11px;
+  line-height: 1.05;
 }
 
 .metric-grid .field-label span:first-child {
