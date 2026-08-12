@@ -1341,6 +1341,13 @@ select.input:focus {
  * word labels, which pushed a single character off centre. Zero padding plus
  * `place-items: center` puts the glyph in the middle of the box in both axes,
  * and a square min-size keeps the box from collapsing around one character. */
+/* Holds the `+`'s tooltip, because a disabled button swallows mouse events
+ * and never shows its own. */
+.ticker-add-wrap {
+  display: flex;
+  flex: 0 0 auto;
+}
+
 .ticker-add {
   flex: 0 0 auto;
   display: grid;

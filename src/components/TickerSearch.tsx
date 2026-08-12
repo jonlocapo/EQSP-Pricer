@@ -163,7 +163,18 @@ export function TickerSearch({
   const addable = onAdd && matches.length > 0 ? matches[highlight] : undefined;
 
   function add() {
-    if (!onAdd || !addable || addDisabled) return;
+    if (!onAdd || addDisabled) return;
+    // NOTHING TO ADD YET, so send the user where they need to go instead of
+    // sitting there greyed out. A disabled button does not fire mouse events
+    // in most browsers, so its `title` never appears: the `+` looked broken
+    // and gave no reason. It is now only ever disabled when the basket is
+    // genuinely full, and that state carries its reason on a wrapper that can
+    // still be hovered.
+    if (!addable) {
+      inputRef.current?.focus();
+      setEditing(true);
+      return;
+    }
     onAdd(addable);
     // Stay armed. Building a basket means adding several names in a row, so
     // the box clears and waits for the next one instead of closing.
@@ -177,7 +188,7 @@ export function TickerSearch({
     ? (addDisabledReason ?? 'Cannot add another leg.')
     : addable
       ? `Add ${addable.symbol} as another underlying`
-      : 'Search for an underlying, then add it';
+      : 'Search for an underlying, then press + to add it';
 
   return (
     <div className="field ticker-search" ref={rootRef}>
@@ -250,11 +261,13 @@ export function TickerSearch({
           }}
         />
         {onAdd && (
+          // The wrapper carries the title, so the reason is readable even when
+          // the button inside it is disabled.
+          <span className="ticker-add-wrap" title={addTitle}>
           <button
             type="button"
             className="btn btn-sm ticker-add"
-            disabled={addDisabled || !addable}
-            title={addTitle}
+            disabled={addDisabled}
             // The dropdown closes on mousedown outside it, which would clear
             // `matches` before the click landed. Act on mousedown instead.
             onMouseDown={(e) => {
@@ -265,6 +278,7 @@ export function TickerSearch({
             <span aria-hidden="true">+</span>
             <span className="sr-only">Add underlying</span>
           </button>
+          </span>
         )}
       </div>
       {editing && (searching || matches.length > 0 || error) && (
