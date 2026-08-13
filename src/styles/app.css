@@ -689,7 +689,11 @@ select.input:focus {
   width: min(1080px, 94vw);
 }
 
-.basket-modal-body {
+/* `.modal-body` sets `padding: 0` and is declared LATER in this file, so at
+ * equal specificity it won and this padding never applied: the basket and
+ * correlation content sat flush against the modal's edges. Qualifying the
+ * selector puts it above that rule rather than depending on source order. */
+.modal-body.basket-modal-body {
   padding: 16px 18px;
   display: flex;
   flex-direction: column;

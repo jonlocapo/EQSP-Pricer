@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildBasket, resizeCorrelation, removeFromCorrelation } from '../src/model/basket';
+import { buildBasket, resizeCorrelation, removeFromCorrelation, foreignLegsOf } from '../src/model/basket';
 import { isPsd } from '../src/model/correlation';
 import { validateBasket } from '../src/services/validation';
 import { realizedCorrelation, type DatedClose } from '../src/services/marketFetch';
@@ -197,5 +197,48 @@ describe('realizedCorrelation on misaligned calendars', () => {
     // the close-index pairing would break and the correlation would not be
     // a clean -1.
     expect(realizedCorrelation(a, b)).toBeLessThan(-0.99);
+  });
+});
+
+describe('foreignLegsOf finds every leg outside the note currency, not just leg 1', () => {
+  /**
+   * The exact trade that exposed this: a EUR note holding SAP.DE and SAP.TO.
+   * Leg 1 is domestic, leg 2 is Canadian. The old check read leg 1 alone and
+   * reported no mismatch, so the panel showed no quanto banner and no quanto
+   * inputs, while validation refused the price and then allowed it once a
+   * fetch had measured the leg behind the scenes.
+   */
+  it('finds a foreign SECOND leg behind a domestic first one', () => {
+    const legs = foreignLegsOf('EUR', [
+      { label: 'SAP.DE', currency: 'EUR' },
+      { label: 'SAP.TO', currency: 'CAD' },
+    ]);
+    expect(legs).toEqual([{ index: 1, label: 'SAP.TO', currency: 'CAD' }]);
+  });
+
+  it('finds a foreign first leg, which is the case that always worked', () => {
+    const legs = foreignLegsOf('EUR', [{ label: 'AAPL', currency: 'USD' }]);
+    expect(legs).toEqual([{ index: 0, label: 'AAPL', currency: 'USD' }]);
+  });
+
+  it('finds several at once, keeping leg order', () => {
+    const legs = foreignLegsOf('EUR', [
+      { label: 'AAPL', currency: 'USD' },
+      { label: 'SAP.DE', currency: 'EUR' },
+      { label: 'SAP.TO', currency: 'CAD' },
+      { label: '7203.T', currency: 'JPY' },
+    ]);
+    expect(legs.map((l) => l.index)).toEqual([0, 2, 3]);
+    expect(legs.map((l) => l.currency)).toEqual(['USD', 'CAD', 'JPY']);
+  });
+
+  it('reports nothing when every leg is in the note currency', () => {
+    expect(foreignLegsOf('EUR', [{ label: 'A', currency: 'EUR' }, { label: 'B', currency: 'EUR' }])).toEqual([]);
+  });
+
+  it('treats an unknown currency as NOT foreign', () => {
+    // Unknown is not different. Demanding quanto inputs for a leg that may
+    // well settle in the note currency would block a price for no reason.
+    expect(foreignLegsOf('EUR', [{ label: 'A' }, { label: 'B', currency: undefined }])).toEqual([]);
   });
 });
