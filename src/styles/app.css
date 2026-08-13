@@ -1367,6 +1367,15 @@ select.input:focus {
   flex: 0 0 auto;
 }
 
+/* Armed: the next pick adds a leg. The button has to LOOK different, because
+ * that mode is the only thing distinguishing "replace my underlying" from
+ * "add another one". */
+.ticker-add.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
 .ticker-add {
   flex: 0 0 auto;
   display: grid;
@@ -1396,6 +1405,11 @@ select.input:focus {
 /* The `×` inside a chip. It rides in the chip's own colour at reduced
  * opacity, so a row of chips does not read as a row of delete buttons; it
  * comes forward on hover. */
+/* The `×` is HIDDEN until the chip is hovered, then the chip grows to make
+ * room for it. A row of chips reads as a list of underlyings, not a row of
+ * delete buttons, and the affordance appears exactly where the pointer
+ * already is. Width and opacity animate together, so the chip expands rather
+ * than the glyph popping into existing space. */
 .chip-x {
   border: 0;
   background: none;
@@ -1404,13 +1418,52 @@ select.input:focus {
   font-size: 11px;
   line-height: 1;
   padding: 0;
-  margin-left: 4px;
   cursor: pointer;
-  opacity: 0.55;
+  /* max-width, not width: `auto` does not animate. 1.2em comfortably holds
+   * one glyph at this size. */
+  max-width: 0;
+  margin-left: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition:
+    max-width 120ms ease,
+    margin-left 120ms ease,
+    opacity 120ms ease;
 }
 
-.chip-x:hover {
+/* Hover reveals it; focus-within reveals it for the keyboard, which has no
+ * pointer to hover with. */
+.ticker-badge:hover .chip-x,
+.ticker-badge:focus-within .chip-x {
+  max-width: 1.2em;
+  margin-left: 4px;
+  opacity: 0.65;
+}
+
+.chip-x:hover,
+.chip-x:focus-visible {
   opacity: 1;
+}
+
+/* The chip itself needs the same transition, so the growth reads as one
+ * movement rather than the text jumping. */
+.ticker-badge {
+  transition: padding-right 120ms ease;
+}
+
+/* Someone who cannot use a pointer, or who has asked for less motion, still
+ * needs the control: show it always and drop the animation. */
+@media (prefers-reduced-motion: reduce) {
+  .chip-x {
+    transition: none;
+    max-width: 1.2em;
+    margin-left: 4px;
+    opacity: 0.65;
+  }
+
+  .ticker-badge {
+    transition: none;
+  }
 }
 
 /* Clears every added leg at once. Deliberately outside the chips, so it is
