@@ -45,6 +45,20 @@ export function ParticipationPage() {
   const lastTwinWinPct = useRef(100);
   const lastProtectionPct = useRef(100);
 
+  /**
+   * Which feature a conflicting toggle SWITCHED OFF on the user's behalf, so
+   * turning that toggle back off can put it back.
+   *
+   * KG and a bare KI barrier are mutually exclusive outside Twin Win KG, so
+   * enabling one drops the other. Every toggle here already restores its OWN
+   * last value from a `last*` ref, but none of them restored the value they
+   * took from a NEIGHBOUR. Enabling KG dropped the KI barrier and disabling
+   * KG left it dropped, so the downside the user had built never came back and
+   * they had to rebuild it by hand.
+   */
+  const kgDroppedKi = useRef(false);
+  const kiDroppedKg = useRef(false);
+
   useEffect(() => {
     if (spec.downside.barrierType !== 'none') lastBarrierType.current = spec.downside.barrierType;
   }, [spec.downside.barrierType]);
@@ -67,13 +81,22 @@ export function ParticipationPage() {
   // only writes when the value actually differs, to avoid redundant
   // re-renders.
   useEffect(() => {
+    // AUTO MUST ACTUALLY ENFORCE. This used to watch only the strike and the
+    // toggle, so anything that wrote `leveragePct` from elsewhere stuck. The
+    // Capital Guaranteed preset writes 0 — correct for that product, since a
+    // guaranteed note has no downside participation — and the strike does not
+    // move, so the effect never re-ran. AUTO stayed lit, the field stayed
+    // disabled so nobody could type it back, and the leverage sat at 0. Switch
+    // the note back off capital guarantee and the put had no leverage at all:
+    // the downside was silently gone from a note that is supposed to have one.
+    // Watching the value itself makes the badge tell the truth.
     if (!leverageAuto) return;
     const auto = autoDownsideLeverage(spec.downside.strikePct);
     if (Math.abs(spec.downside.leveragePct - auto) >= AUTO_LEVERAGE_EPS) {
       patchSpec({ downside: { ...spec.downside, leveragePct: auto } });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leverageAuto, spec.downside.strikePct]);
+  }, [leverageAuto, spec.downside.strikePct, spec.downside.leveragePct]);
 
   const validation = validateParticipation(spec, market);
   const basketValidation = validateBasket(legsForValidation, basketCorrelation, market);
@@ -148,13 +171,30 @@ export function ParticipationPage() {
       const patch: Partial<typeof spec.downside> = { barrierType: 'none' };
       // Twin-win and bonus only make sense while knocked-in monitoring is live.
       if (spec.downside.twinWinPct > 0) patch.twinWinPct = 0;
+      // Remember the barrier being switched off, so KG's restore has
+      // something true to put back rather than the initial default.
+      lastBarrierType.current = spec.downside.barrierType === 'american' ? 'american' : 'european';
+      lastKiLevel.current = spec.downside.kiBarrierPct;
       patchDownside(patch);
       if (spec.bonusPct > 0) patchSpec({ bonusPct: 0 });
+      // Hand KG back if enabling KI is what took it away.
+      if (kiDroppedKg.current) {
+        kiDroppedKg.current = false;
+        patchSpec({ protectionPct: lastProtectionPct.current });
+      }
+      kgDroppedKi.current = false;
     } else {
       // Enabling KI while off implies twin-win was already off, because it
       // requires KI. So the only conflict to resolve is a bare KG floor.
       patchDownside({ barrierType: lastBarrierType.current, kiBarrierPct: lastKiLevel.current });
-      if (kgOn) patchSpec({ protectionPct: 0 });
+      // Same trade in the other direction: KI displaces KG, so remember that
+      // it did and hand KG back when KI goes away again.
+      if (kgOn) {
+        lastProtectionPct.current = spec.protectionPct;
+        kiDroppedKg.current = true;
+        patchSpec({ protectionPct: 0 });
+      }
+      kgDroppedKi.current = false;
     }
   }
 
@@ -190,15 +230,27 @@ export function ParticipationPage() {
   function toggleKG() {
     if (kgOn) {
       patchSpec({ protectionPct: 0 });
+      // Put back the KI barrier that enabling KG took away. Only when KG was
+      // what removed it: a user who turned KI off themselves before touching
+      // KG wants it to stay off.
+      if (kgDroppedKi.current) {
+        kgDroppedKi.current = false;
+        patchDownside({ barrierType: lastBarrierType.current, kiBarrierPct: lastKiLevel.current });
+      }
     } else {
       patchSpec({ protectionPct: lastProtectionPct.current });
       // Enabling KG while a bare KI barrier, with no twin-win, is live. The
-      // two are mutually exclusive outside of TWKG. So drop the KI barrier.
+      // two are mutually exclusive outside of TWKG. So drop the KI barrier,
+      // and REMEMBER that KG is the reason, so turning KG off restores it.
       if (kiOn && !twOn) {
         const patch: Partial<typeof spec.downside> = { barrierType: 'none' };
         if (spec.downside.twinWinPct > 0) patch.twinWinPct = 0;
+        lastBarrierType.current = spec.downside.barrierType === 'american' ? 'american' : 'european';
+        lastKiLevel.current = spec.downside.kiBarrierPct;
+        kgDroppedKi.current = true;
         patchDownside(patch);
       }
+      kiDroppedKg.current = false;
     }
   }
 

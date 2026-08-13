@@ -99,13 +99,17 @@ export function CouponPage() {
   // changes or AUTO is toggled on. Guarded so it only writes when the value
   // actually differs, to avoid redundant re-renders.
   useEffect(() => {
+    // AUTO MUST ACTUALLY ENFORCE: watch the VALUE, not only the strike and the
+    // toggle. See the same effect on the participation page for the case that
+    // exposed it, where a preset wrote the leverage directly and AUTO stayed
+    // lit over a number it was no longer holding.
     if (!leverageAuto) return;
     const auto = autoDownsideLeverage(spec.putStrikePct);
     if (Math.abs(spec.downsideLeveragePct - auto) >= AUTO_LEVERAGE_EPS) {
       setSpec({ downsideLeveragePct: auto });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leverageAuto, spec.putStrikePct]);
+  }, [leverageAuto, spec.putStrikePct, spec.downsideLeveragePct]);
 
   // Keep the coupon frequency following the call frequency while AUTO is on.
   useEffect(() => {
