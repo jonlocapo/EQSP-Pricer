@@ -106,3 +106,35 @@ export function resizeCorrelation(matrix: number[][], n: number): number[][] {
 export function removeFromCorrelation(matrix: number[][], index: number): number[][] {
   return matrix.filter((_, i) => i !== index).map((row) => row.filter((_, j) => j !== index));
 }
+
+/** One leg that trades outside the note currency. */
+export interface ForeignLeg {
+  /** 0 for the note's own underlying, 1 and up for the added legs. */
+  index: number;
+  label: string;
+  currency: string;
+}
+
+/**
+ * Every leg whose trading currency differs from the note currency.
+ *
+ * WHY THIS IS A FUNCTION. The panel used to decide this with
+ * `underlyingCurrency !== market.currency`, which reads LEG ONE ONLY. A EUR
+ * note holding SAP.DE and SAP.TO has a Canadian second leg and a domestic
+ * first one, so that test said "no mismatch": no quanto banner, no quanto
+ * inputs, nothing on screen. `validateBasket` still refused the price and
+ * still let it through once a fetch had quietly measured the leg, so the
+ * number was right and the panel was silent about why.
+ *
+ * A leg with no known currency is NOT foreign. Its currency is unknown, not
+ * different, and guessing it is foreign would demand quanto inputs for a leg
+ * that may well settle in the note currency.
+ */
+export function foreignLegsOf(
+  noteCurrency: string,
+  legs: { label: string; currency?: string }[],
+): ForeignLeg[] {
+  return legs
+    .map((l, index) => ({ index, label: l.label, currency: l.currency }))
+    .filter((l): l is ForeignLeg => !!l.currency && l.currency !== noteCurrency);
+}

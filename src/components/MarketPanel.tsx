@@ -8,10 +8,11 @@ import { NumericField } from './NumericField';
 import { SelectField } from './SelectField';
 import { TickerSearch } from './TickerSearch';
 import { BasketPanel } from './BasketPanel';
-import { buildBasket } from '../model/basket';
+import { buildBasket, foreignLegsOf } from '../model/basket';
 import { NO_COSTS, SUPPORTED_CURRENCIES as CURRENCIES, type CostParams } from '../model/market';
 import { skewPoints } from '../model/volSurface';
-import { fmtMs, type FetchLine } from './fetchFormat';
+import { fmtMs, tooltipFor, worstKind, type FetchLine } from './fetchFormat';
+import { InfoDot } from './InfoDot';
 import { fetchExtraLegsLive } from './basketFetch';
 import type { SymbolMatch } from '../services/symbolSearch';
 
@@ -104,6 +105,7 @@ async function fetchLiveData(
     lines.push({
       kind: 'info',
       msg: `${n} request${n === 1 ? '' : 's'} · ${routeSummary} · total ${fmtMs(totalMs)}`,
+      field: 'run',
     });
   };
 
@@ -135,10 +137,11 @@ async function fetchLiveData(
       kind: 'ok',
       msg: `Spot ${spotT.value.spot} · ${spotT.value.source} · ${fmtMs(spotT.ms)}`,
       short: `spot ${spotT.value.spot}`,
+      field: 'spot',
     });
   } else {
     const msg = spotT.error instanceof Error ? spotT.error.message : 'failed';
-    lines.push({ kind: 'err', msg: `Spot: ${msg} after ${fmtMs(spotT.ms)}` });
+    lines.push({ kind: 'err', msg: `Spot: ${msg} after ${fmtMs(spotT.ms)}`, field: 'spot' });
   }
 
   // The rate MUST match the currency the note ends up in. The spot fetch is
@@ -155,12 +158,13 @@ async function fetchLiveData(
       lines.push({
         kind: 'ok',
         msg: `Rate ${(rateT.value.rate * 100).toFixed(3)}% · ${rateT.value.source} ${rateT.value.asOf} · ${fmtMs(rateT.ms)}`,
+        field: 'rate',
         short: `rate ${(rateT.value.rate * 100).toFixed(3)}%`,
       });
     }
   } else {
     const msg = rateT.error instanceof Error ? rateT.error.message : 'failed';
-    lines.push({ kind: 'err', msg: `Rate: ${msg} after ${fmtMs(rateT.ms)}` });
+    lines.push({ kind: 'err', msg: `Rate: ${msg} after ${fmtMs(rateT.ms)}`, field: 'rate' });
   }
 
   // The rate CURVE, best-effort: 3M/1Y/2Y/5Y zero rates for the note
@@ -179,6 +183,7 @@ async function fetchLiveData(
           kind: 'ok',
           msg: `Rate curve ${rc.curve.map((p) => `${p.tYears}y ${(p.rate * 100).toFixed(2)}%`).join(' / ')} · ${rc.source}`,
           short: `curve ${rc.curve.map((p) => `${(p.rate * 100).toFixed(2)}%`).join('/')}`,
+          field: 'rate',
         });
       }
     } catch (rcErr) {
@@ -186,6 +191,7 @@ async function fetchLiveData(
         lines.push({
           kind: 'info',
           msg: `Rate curve: ${rcErr instanceof Error ? rcErr.message : 'failed'}. Discounting stays flat.`,
+          field: 'rate',
         });
       }
     }
@@ -246,11 +252,12 @@ async function fetchLiveData(
         skewMsg +
         ` · ${fmtMs(volMs)}`,
       short: `vol ${(vp.atmVol * 100).toFixed(2)}%`,
+      field: 'vol',
     });
   } catch (e) {
     const volMs = performance.now() - volStart;
     const msg = e instanceof Error ? e.message : 'all sources failed';
-    lines.push({ kind: 'err', msg: `Vol: ${msg} after ${fmtMs(volMs)}` });
+    lines.push({ kind: 'err', msg: `Vol: ${msg} after ${fmtMs(volMs)}`, field: 'vol' });
   }
 
   // Extra basket legs (worst-of legs 2 and up) get the SAME volatility
@@ -292,14 +299,15 @@ async function fetchLiveData(
           kind: 'ok',
           msg: `Underlying rate ${(ur.rate * 100).toFixed(3)}% · ${ur.source} · ${fmtMs(urMs)}`,
           short: `ul rate ${(ur.rate * 100).toFixed(3)}%`,
+          field: 'quanto',
         });
       } catch (urErr) {
         const urMs = performance.now() - urStart;
         const msg = urErr instanceof Error ? urErr.message : 'failed';
-        lines.push({ kind: 'info', msg: `Underlying rate: ${msg} after ${fmtMs(urMs)}. Enter manually.` });
+        lines.push({ kind: 'info', msg: `Underlying rate: ${msg} after ${fmtMs(urMs)}. Enter manually.`, field: 'quanto' });
       }
     } else {
-      lines.push({ kind: 'info', msg: `No open rate source for ${underlyingCcy}. Set the underlying rate manually.` });
+      lines.push({ kind: 'info', msg: `No open rate source for ${underlyingCcy}. Set the underlying rate manually.`, field: 'quanto' });
     }
 
     const fxStart = performance.now();
@@ -317,6 +325,7 @@ async function fetchLiveData(
         kind: 'ok',
         msg: `FX vol ${(fx.fxVol * 100).toFixed(1)}%, eq-FX corr ${fx.corrEqFx.toFixed(2)} · ${fx.source} · ${fmtMs(fxMs)}`,
         short: `fx ${(fx.fxVol * 100).toFixed(1)}%/${fx.corrEqFx.toFixed(2)}`,
+        field: 'quanto',
       });
     } catch (fxErr) {
       const fxMs = performance.now() - fxStart;
@@ -324,6 +333,7 @@ async function fetchLiveData(
       lines.push({
         kind: 'info',
         msg: `FX vol/correlation: ${msg} after ${fmtMs(fxMs)}. Enter manually.`,
+        field: 'quanto',
       });
     }
   }
@@ -351,6 +361,30 @@ export function MarketPanel() {
   const addLeg = useMarketStore((s) => s.addLeg);
   const setLeg = useMarketStore((s) => s.setLeg);
   const removeLeg = useMarketStore((s) => s.removeLeg);
+
+  /**
+   * Drops the note's own underlying by PROMOTING leg 2 into its place.
+   *
+   * Leg 1 is not a peer of the others in the store: its name, ticker,
+   * volatility and dividend live on `market` and the top-level fields, while
+   * legs 2 and up live in `extraLegs`. So removing it means copying leg 2 up
+   * and then deleting leg 2, which also shrinks the correlation matrix by the
+   * right row. With no leg 2, the underlying clears and validation asks for
+   * another; the market numbers are left alone, because the next pick
+   * overwrites them anyway and blanking them mid-edit only loses work.
+   */
+  function removePrimary() {
+    const st = useMarketStore.getState();
+    const next = st.extraLegs[0];
+    if (!next) {
+      st.setUnderlying('', '', 'share', undefined);
+      return;
+    }
+    st.setUnderlying(next.ticker, next.name, 'share', next.currency);
+    st.setMarket({ vol: next.vol, divYield: next.divYield, ...(next.spot ? { spot: next.spot } : {}) });
+    st.setQuanto(next.quanto ? { ...next.quanto } : undefined);
+    st.removeLeg(0);
+  }
 
   /** Back to a single-name trade. Removes from the end so each removal keeps
    * the remaining legs' indices, and the correlation matrix shrinks with
@@ -514,10 +548,16 @@ export function MarketPanel() {
    * the hover title. A leg with no ticker yet still gets a chip, so adding one
    * is visibly acknowledged. */
   const legChips = [
-    // The note's own underlying has no `×`: a trade always has one, and
-    // removing it would leave nothing to price. Replace it by picking another
-    // from the dropdown.
-    { label: ticker || underlyingName || 'Leg 1', title: underlyingName },
+    // The note's own underlying is removable too. It cannot simply vanish —
+    // something has to be the underlying — so removing it PROMOTES leg 2 into
+    // its place, which is what a user dropping the first of several names
+    // means. With no other leg to promote, the field clears and
+    // `validateBasket` asks for a new one.
+    {
+      label: ticker || underlyingName || 'Leg 1',
+      title: underlyingName,
+      onRemove: removePrimary,
+    },
     ...extraLegs.map((l, i) => ({
       label: l.ticker || l.name || `Leg ${i + 2}`,
       title: l.name || l.ticker,
@@ -564,7 +604,37 @@ export function MarketPanel() {
     })),
   ];
 
-  const quantoMismatch = !!underlyingCurrency && underlyingCurrency !== market.currency;
+  /**
+   * Every leg that trades outside the note currency, primary or not.
+   *
+   * This used to read `underlyingCurrency !== market.currency`, which is LEG
+   * ONE ONLY. A EUR note holding SAP.DE and SAP.TO has a Canadian second leg
+   * and a domestic first one, so the check said "no mismatch" and the panel
+   * showed no quanto anything, while `validateBasket` refused the price and
+   * then let it through once the fetch had quietly measured the leg. The
+   * price was right and the screen said nothing.
+   */
+  const foreignLegs = foreignLegsOf(market.currency, [
+    { label: ticker || underlyingName || 'Leg 1', currency: underlyingCurrency },
+    ...extraLegs.map((l, i) => ({ label: l.ticker || l.name || `Leg ${i + 2}`, currency: l.currency })),
+  ]);
+
+  /** True when ANY leg is foreign. Drives the banner and, for a single-name
+   * trade, the `market.quanto` input group. */
+  const quantoMismatch = foreignLegs.length > 0;
+  /** Leg 1 specifically, which is the leg `market.quanto` describes. */
+  const primaryIsForeign = !!underlyingCurrency && underlyingCurrency !== market.currency;
+
+  /** True once EVERY foreign leg carries the three inputs its drift needs.
+   * Until then the banner warns, because `validateBasket` will refuse. */
+  const quantoReady = foreignLegs.every((l) =>
+    l.index === 0 ? !!market.quanto : !!extraLegs[l.index - 1]?.quanto,
+  );
+  const quantoLegLabels = foreignLegs.map((l) => `${l.label} (${l.currency})`).join(', ');
+  const quantoLegsText =
+    foreignLegs.length === 1
+      ? `${quantoLegLabels} trades outside the note currency ${market.currency}.`
+      : `${foreignLegs.length} legs trade outside the note currency ${market.currency}: ${quantoLegLabels}.`;
 
   // Costs default to zero, a pure risk-neutral fair value. The badge makes
   // it obvious when a quoted level is no longer the fair value.
@@ -576,13 +646,17 @@ export function MarketPanel() {
   // current note rate. When it resolves, or the underlying ccy is unknown,
   // clear them, so single-currency pricing is untouched.
   useEffect(() => {
-    if (quantoMismatch && !market.quanto) {
+    // `market.quanto` is LEG ONE's block (see `legQuantoOf`), so it is seeded
+    // and cleared by leg one's currency alone. Keying it on "any leg is
+    // foreign" would have given a domestic primary leg a quanto block it must
+    // not have, and `validateBasket` refuses exactly that.
+    if (primaryIsForeign && !market.quanto) {
       setQuanto({ rateUnderlying: market.rate, fxVol: 0.1, corrEqFx: 0 });
-    } else if (!quantoMismatch && market.quanto) {
+    } else if (!primaryIsForeign && market.quanto) {
       setQuanto(undefined);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [quantoMismatch, market.quanto]);
+  }, [primaryIsForeign, market.quanto]);
 
   // Rebuilds MarketData.basket whenever a leg or the correlation matrix
   // changes. The accumulator page forces it undefined regardless of how
@@ -677,38 +751,89 @@ export function MarketPanel() {
             {fetching ? 'Fetching…' : 'Fetch live data'}
           </button>
           </div>
-        {(() => {
-          const okLines = fetchLines.filter((l) => l.kind === 'ok');
-          const otherLines = fetchLines.filter((l) => l.kind !== 'ok');
-          return (
-            <>
-              {okLines.length > 0 && (
-                <div className="status-line ok" title={okLines.map((l) => l.msg).join(' · ')}>
-                  ✓ {okLines.map((l) => l.short ?? l.msg).join(' · ')}
-                </div>
-              )}
-              {otherLines.map((l, i) => (
-                <div key={i} className={`status-line ${l.kind === 'err' ? 'error' : ''}`}>
-                  {l.msg}
-                </div>
-              ))}
-            </>
-          );
-        })()}
+        {/* NO LOG BLOCK. Every outcome used to stack here as one run-on
+          * paragraph: spot, rate, curve, volatility, each leg, the
+          * correlation and the request count. Each line now sits on the
+          * information dot of the field it describes, so the provenance of a
+          * number is next to that number. Only lines about the RUN itself —
+          * the request count and the route summary — have no field to belong
+          * to, and they stay here on one dot. */}
+        {tooltipFor(fetchLines, 'run') && (
+          <div className="status-line">
+            Last fetch <InfoDot text={tooltipFor(fetchLines, 'run')} kind={worstKind(fetchLines, 'run')} />
+          </div>
+        )}
         {quantoMismatch && (
           <div
-            className={`status-line ${market.quanto ? '' : 'warn'}`}
+            className={`status-line ${quantoReady ? '' : 'warn'}`}
             // The long form goes in the tooltip. A 260px column cannot carry
             // three lines of prose next to the numbers it is describing.
             title={
-              market.quanto
-                ? `The underlying trades in ${underlyingCurrency} and the note pays in ${market.currency}. The drift uses the underlying currency's rate less the equity-FX covariance term, so the price is a quanto price.`
-                : `The underlying trades in ${underlyingCurrency} and the note pays in ${market.currency}. Enter the FX volatility and the equity-FX correlation to price it as a quanto. Until then the price assumes one currency.`
+              quantoReady
+                ? `${quantoLegsText} Each drifts at its own currency's rate, less its equity-FX covariance, so the price is a quanto price.`
+                : `${quantoLegsText} Every one of them needs its own rate, FX volatility and equity-FX correlation before the note can price. Fetch live measures them.`
             }
           >
-            {market.quanto ? `Quanto ${underlyingCurrency}/${market.currency}` : `${underlyingCurrency} underlying, ${market.currency} note`}
+            {quantoReady ? `Quanto: ${quantoLegLabels}` : `Quanto inputs needed: ${quantoLegLabels}`}
           </div>
         )}
+
+        {/* PER-LEG QUANTO INPUTS. A foreign leg drifts at its OWN currency's
+          * rate, less its equity-FX covariance, so it needs three numbers the
+          * note-level fields cannot supply. "Fetch live" measures them, but
+          * five of the twelve currencies have no open rate source and the
+          * correlation is a judgement a desk overrides, so they are editable
+          * here. A leg with any of them missing is refused by
+          * `validateBasket`, never silently priced at the note's rate. */}
+        {foreignLegs.filter((l) => l.index > 0).map((l) => {
+          const leg = extraLegs[l.index - 1];
+          const q = leg?.quanto;
+          const set = (patch: Partial<NonNullable<typeof q>>) =>
+            setLeg(l.index - 1, {
+              quanto: {
+                currency: l.currency,
+                rateUnderlying: q?.rateUnderlying ?? market.rate,
+                fxVol: q?.fxVol ?? 0.1,
+                corrEqFx: q?.corrEqFx ?? 0,
+                ...patch,
+              },
+            });
+          return (
+            <div className="field-group leg-metric" key={`q-${l.index}`}>
+              <div className="field-label">
+                <span>
+                  Quanto {l.label} ({l.currency})
+                  <InfoDot text={tooltipFor(fetchLines, 'quanto')} kind={worstKind(fetchLines, 'quanto')} />
+                </span>
+                {!q && <span className="manual-badge">MISSING</span>}
+              </div>
+              <div className="metric-grid cols-3">
+                <NumericField
+                  label={`Rate ${l.currency}`}
+                  value={Number(((q?.rateUnderlying ?? market.rate) * 100).toFixed(4))}
+                  step={0.1}
+                  suffix="%"
+                  onChange={(v) => set({ rateUnderlying: v / 100 })}
+                />
+                <NumericField
+                  label="FX vol"
+                  value={Number(((q?.fxVol ?? 0.1) * 100).toFixed(2))}
+                  step={0.5}
+                  suffix="%"
+                  onChange={(v) => set({ fxVol: v / 100 })}
+                />
+                <NumericField
+                  label="Eq-FX corr"
+                  value={Number((q?.corrEqFx ?? 0).toFixed(4))}
+                  step={0.05}
+                  min={-1}
+                  max={1}
+                  onChange={(v) => set({ corrEqFx: v })}
+                />
+              </div>
+            </div>
+          );
+        })}
 
         {/* MULTI-LEG MARKET INPUTS, INLINE. One row per METRIC, one column per
           * leg, so "Spot 1 | Spot 2 | Spot 3" reads across and no leg looks
@@ -786,6 +911,7 @@ export function MarketPanel() {
               onChange={(v) => setMarket({ spot: v })}
               badge={manualOverride ? 'MANUAL' : undefined}
               badgeClassName="manual-badge"
+              labelExtra={<InfoDot text={tooltipFor(fetchLines, 'spot')} kind={worstKind(fetchLines, 'spot')} />}
             />
 
             <NumericField
@@ -794,12 +920,21 @@ export function MarketPanel() {
               step={0.5}
               suffix="%"
               onChange={(v) => setMarket({ vol: v / 100 })}
+              labelExtra={
+                <InfoDot
+                  // The ladder rung that produced this number joins the
+                  // fetch's own volatility lines, so one dot answers "where
+                  // did this come from" completely.
+                  text={[
+                    volSource && `Source: ${[volSource.full, volSource.note].filter(Boolean).join('. ')}`,
+                    tooltipFor(fetchLines, 'vol'),
+                  ]
+                    .filter(Boolean)
+                    .join('\n') || undefined}
+                  kind={worstKind(fetchLines, 'vol')}
+                />
+              }
             />
-            {volSource && (
-              <div className="status-line" title={[volSource.full, volSource.note].filter(Boolean).join('. ')}>
-                Source: {volSource.label}
-              </div>
-            )}
 
             {/* Two genuine rates on a single name: the note currency's and the
              * underlying currency's, shown side by side. A basket carries its
@@ -809,6 +944,7 @@ export function MarketPanel() {
               <div className="metric-grid cols-2">
                 <NumericField
                   label={`Rate ${market.currency}`}
+                  labelExtra={<InfoDot text={tooltipFor(fetchLines, 'rate')} kind={worstKind(fetchLines, 'rate')} />}
                   value={Number((market.rate * 100).toFixed(4))}
                   step={0.1}
                   suffix="%"
@@ -825,6 +961,7 @@ export function MarketPanel() {
             ) : (
               <NumericField
                 label="Rate"
+                labelExtra={<InfoDot text={tooltipFor(fetchLines, 'rate')} kind={worstKind(fetchLines, 'rate')} />}
                 value={Number((market.rate * 100).toFixed(4))}
                 step={0.1}
                 suffix="%"
@@ -843,12 +980,15 @@ export function MarketPanel() {
           </>
         )}
 
-        {/* Two or more legs: this basket can never be quanto (see the note
-         * above), so the rate is always the plain single field, moved here
-         * because it is a note-level input, not a per-leg one. */}
+        {/* Two or more legs. The NOTE's rate is one number whatever the legs
+         * do: a foreign leg carries its own currency's rate inside its quanto
+         * block (see `BasketAsset.quanto`), not here. So this stays the plain
+         * single field, moved down because it is a note-level input rather
+         * than a per-leg one. */}
         {!singleLegLayout && (
           <NumericField
             label="Rate"
+            labelExtra={<InfoDot text={tooltipFor(fetchLines, 'rate')} kind={worstKind(fetchLines, 'rate')} />}
             value={Number((market.rate * 100).toFixed(4))}
             step={0.1}
             suffix="%"
@@ -856,7 +996,7 @@ export function MarketPanel() {
           />
         )}
 
-        {basketUiEnabled && <BasketPanel onPickPrimary={handlePrimaryPick} />}
+        {basketUiEnabled && <BasketPanel onPickPrimary={handlePrimaryPick} fetchLines={fetchLines} />}
 
         {/* Quanto FX inputs. Rendered only when the note actually IS quanto
          * (market.quanto set): no empty heading and no reserved space on

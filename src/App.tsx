@@ -6,7 +6,6 @@ import { AccentPicker } from './components/AccentPicker';
 import { MarketPanel } from './components/MarketPanel';
 import { ResultsBar } from './components/ResultsBar';
 import { HistoryModal } from './components/HistoryModal';
-import { LabModal } from './components/LabModal';
 import { CouponPage } from './pages/CouponPage';
 import { ParticipationPage } from './pages/ParticipationPage';
 import { AccumulatorPage } from './pages/AccumulatorPage';
@@ -22,7 +21,6 @@ export default function App() {
   const activePage = useTradeStore((s) => s.activePage);
   const setActivePage = useTradeStore((s) => s.setActivePage);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [labOpen, setLabOpen] = useState(false);
   const [accentOpen, setAccentOpen] = useState(false);
   const { accentId, setAccentId } = useAccent();
   useAccentShortcut(useCallback(() => setAccentOpen((open) => !open), []));
@@ -56,14 +54,12 @@ export default function App() {
           ))}
         </nav>
         <div className="header-actions">
-          <button
-            className="btn btn-sm lab-launch-btn"
-            type="button"
-            onClick={() => setLabOpen(true)}
-            title="Contract Lab: build a payoff from blocks"
-          >
-            🧪 Lab
-          </button>
+          {/* The Contract Lab is HIDDEN, not deleted. The combinator engine
+            * behind it stays built and tested (tests/lab.test.ts,
+            * tests/combinators.test.ts), because the hand-written products are
+            * pinned bit-identical against it. Only the launcher is gone, so
+            * the app presents the three finished families and nothing
+            * half-finished. Restore this button to bring it back. */}
           <button className="btn btn-sm" type="button" onClick={() => setHistoryOpen(true)}>
             History
           </button>
@@ -83,7 +79,6 @@ export default function App() {
 
       <ResultsBar />
       {historyOpen && <HistoryModal onClose={() => setHistoryOpen(false)} />}
-      {labOpen && <LabModal onClose={() => setLabOpen(false)} />}
       {accentOpen && (
         <AccentPicker accentId={accentId} onPick={setAccentId} onClose={() => setAccentOpen(false)} />
       )}

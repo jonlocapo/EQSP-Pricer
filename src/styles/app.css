@@ -689,7 +689,11 @@ select.input:focus {
   width: min(1080px, 94vw);
 }
 
-.basket-modal-body {
+/* `.modal-body` sets `padding: 0` and is declared LATER in this file, so at
+ * equal specificity it won and this padding never applied: the basket and
+ * correlation content sat flush against the modal's edges. Qualifying the
+ * selector puts it above that rule rather than depending on source order. */
+.modal-body.basket-modal-body {
   padding: 16px 18px;
   display: flex;
   flex-direction: column;
@@ -1367,6 +1371,15 @@ select.input:focus {
   flex: 0 0 auto;
 }
 
+/* Armed: the next pick adds a leg. The button has to LOOK different, because
+ * that mode is the only thing distinguishing "replace my underlying" from
+ * "add another one". */
+.ticker-add.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
 .ticker-add {
   flex: 0 0 auto;
   display: grid;
@@ -1396,6 +1409,11 @@ select.input:focus {
 /* The `×` inside a chip. It rides in the chip's own colour at reduced
  * opacity, so a row of chips does not read as a row of delete buttons; it
  * comes forward on hover. */
+/* The `×` is HIDDEN until the chip is hovered, then the chip grows to make
+ * room for it. A row of chips reads as a list of underlyings, not a row of
+ * delete buttons, and the affordance appears exactly where the pointer
+ * already is. Width and opacity animate together, so the chip expands rather
+ * than the glyph popping into existing space. */
 .chip-x {
   border: 0;
   background: none;
@@ -1404,13 +1422,52 @@ select.input:focus {
   font-size: 11px;
   line-height: 1;
   padding: 0;
-  margin-left: 4px;
   cursor: pointer;
-  opacity: 0.55;
+  /* max-width, not width: `auto` does not animate. 1.2em comfortably holds
+   * one glyph at this size. */
+  max-width: 0;
+  margin-left: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition:
+    max-width 120ms ease,
+    margin-left 120ms ease,
+    opacity 120ms ease;
 }
 
-.chip-x:hover {
+/* Hover reveals it; focus-within reveals it for the keyboard, which has no
+ * pointer to hover with. */
+.ticker-badge:hover .chip-x,
+.ticker-badge:focus-within .chip-x {
+  max-width: 1.2em;
+  margin-left: 4px;
+  opacity: 0.65;
+}
+
+.chip-x:hover,
+.chip-x:focus-visible {
   opacity: 1;
+}
+
+/* The chip itself needs the same transition, so the growth reads as one
+ * movement rather than the text jumping. */
+.ticker-badge {
+  transition: padding-right 120ms ease;
+}
+
+/* Someone who cannot use a pointer, or who has asked for less motion, still
+ * needs the control: show it always and drop the animation. */
+@media (prefers-reduced-motion: reduce) {
+  .chip-x {
+    transition: none;
+    max-width: 1.2em;
+    margin-left: 4px;
+    opacity: 0.65;
+  }
+
+  .ticker-badge {
+    transition: none;
+  }
 }
 
 /* Clears every added leg at once. Deliberately outside the chips, so it is
@@ -2159,4 +2216,46 @@ select.input:focus {
     position: absolute;
     inset: -12px;
   }
+}
+
+/* The circled `i` beside a field label, carrying what the last fetch reported
+ * for THAT field. Sized to the label's own text so it never changes the row's
+ * height, and muted at rest so a panel of them does not compete with the
+ * numbers. */
+.info-dot {
+  display: inline-grid;
+  place-items: center;
+  width: 13px;
+  height: 13px;
+  margin-left: 5px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  font-size: 9px;
+  font-style: italic;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+  vertical-align: middle;
+  opacity: 0.55;
+  transition: opacity 120ms ease;
+}
+
+.info-dot:hover {
+  opacity: 1;
+}
+
+/* An error has to be visible without hovering, so it keeps full opacity and
+ * takes the danger colour. An info sits between the two. */
+.info-dot-ok {
+  color: var(--text-muted);
+}
+
+.info-dot-info {
+  color: var(--warn, var(--text-muted));
+  opacity: 0.85;
+}
+
+.info-dot-err {
+  color: var(--danger);
+  opacity: 1;
 }

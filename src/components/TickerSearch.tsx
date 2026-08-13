@@ -66,6 +66,17 @@ export function TickerSearch({
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [highlight, setHighlight] = useState(0);
+  /**
+   * True once `+` has been pressed and the next pick should ADD a leg rather
+   * than replace the note's underlying.
+   *
+   * WHY A MODE. `+` used to require a highlighted match, so pressing it before
+   * typing anything only moved focus and looked completely dead. The button is
+   * how a user STARTS adding, not how they finish, so it now arms the search
+   * and says so: the placeholder changes, the button lights up, and it stays
+   * armed across several adds.
+   */
+  const [addMode, setAddMode] = useState(false);
   const debounceRef = useRef<number | null>(null);
   const seqRef = useRef(0);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -131,6 +142,7 @@ export function TickerSearch({
     function onDocClick(e: MouseEvent) {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
         setEditing(false);
+        setAddMode(false);
       }
     }
     document.addEventListener('mousedown', onDocClick);
@@ -155,6 +167,14 @@ export function TickerSearch({
   }
 
   function pick(m: SymbolMatch) {
+    // While armed, a pick ADDS. That is the whole point of the mode: "which
+    // name" and "where does it go" stop competing for the same click.
+    if (addMode && onAdd && !addDisabled) {
+      onAdd(m);
+      reset(true);
+      inputRef.current?.focus();
+      return;
+    }
     onPick(m);
     reset();
   }
@@ -171,10 +191,13 @@ export function TickerSearch({
     // genuinely full, and that state carries its reason on a wrapper that can
     // still be hovered.
     if (!addable) {
-      inputRef.current?.focus();
+      // Arm the search instead of doing nothing visible.
+      setAddMode(true);
       setEditing(true);
+      inputRef.current?.focus();
       return;
     }
+    setAddMode(true);
     onAdd(addable);
     // Stay armed. Building a basket means adding several names in a row, so
     // the box clears and waits for the next one instead of closing.
@@ -188,7 +211,9 @@ export function TickerSearch({
     ? (addDisabledReason ?? 'Cannot add another leg.')
     : addable
       ? `Add ${addable.symbol} as another underlying`
-      : 'Search for an underlying, then press + to add it';
+      : addMode
+        ? 'Armed: the next name you pick is added as another underlying. Escape to stop.'
+        : 'Add another underlying: press this, then pick a name.';
 
   return (
     <div className="field ticker-search" ref={rootRef}>
@@ -230,7 +255,7 @@ export function TickerSearch({
         <input
           ref={inputRef}
           className="input"
-          placeholder="Search name or ticker…"
+          placeholder={addMode ? 'Add an underlying…' : 'Search name or ticker…'}
           value={editing ? query : displayName}
           onFocus={() => {
             setEditing(true);
@@ -242,6 +267,15 @@ export function TickerSearch({
           onClick={() => setEditing(true)}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
+            // Escape is handled BEFORE the guard below. Adding a leg clears
+            // the match list, so a guard that returns on an empty list left
+            // the search armed with no way to disarm it from the keyboard.
+            if (e.key === 'Escape') {
+              setEditing(false);
+              setAddMode(false);
+              inputRef.current?.blur();
+              return;
+            }
             if (!editing || matches.length === 0) return;
             if (e.key === 'ArrowDown') {
               e.preventDefault();
@@ -255,8 +289,6 @@ export function TickerSearch({
               // Both reach the same two actions the mouse has.
               if (e.shiftKey && onAdd) add();
               else pick(matches[highlight]);
-            } else if (e.key === 'Escape') {
-              setEditing(false);
             }
           }}
         />
@@ -266,8 +298,9 @@ export function TickerSearch({
           <span className="ticker-add-wrap" title={addTitle}>
           <button
             type="button"
-            className="btn btn-sm ticker-add"
+            className={`btn btn-sm ticker-add${addMode && !addDisabled ? ' active' : ''}`}
             disabled={addDisabled}
+            aria-pressed={addMode && !addDisabled}
             // The dropdown closes on mousedown outside it, which would clear
             // `matches` before the click landed. Act on mousedown instead.
             onMouseDown={(e) => {
