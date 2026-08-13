@@ -4,8 +4,10 @@
  *  - Historical (realized) volatility from Stooq daily closes. This is a
  *    rough starting point for the vol input, NOT implied vol.
  *  - Official overnight reference rates: ECB €STR (EUR), NY Fed SOFR (USD),
- *    BoE SONIA (GBP, via FRED), SNB SARON (CHF), and BoJ TONA (JPY). These
- *    are daily fixings, not a live curve.
+ *    BoE SONIA (GBP, via FRED), SNB SARON (CHF), BoJ TONA (JPY), HKMA
+ *    overnight HIBOR (HKD) and BoC CORRA (CAD). These are daily fixings, not
+ *    a live curve. Other supported note currencies have no keyless daily
+ *    source; the user types their rate. See `REF_RATE_CCYS`.
  * Everything here is a suggestion. Manual override always wins.
  */
 import { fetchTextWithCorsFallback } from './spotFetch';
@@ -171,6 +173,17 @@ const SARON_URL = 'https://data.snb.ch/api/cube/snbgwdzid/data/json/en?dimSel=D0
  * Overnight Call Rate; series STRDCLUCON is the daily average, which is
  * TONA (also called TONAR). */
 const TONA_SERIES_CODE = 'STRDCLUCON';
+/** HKMA public API, daily interbank liquidity figures. The response holds the
+ * overnight HIBOR fixing as `hibor_overnight`, in percent, with the fixing
+ * date as `end_of_date`. `pagesize=1` returns the latest record only, so the
+ * request needs no date filter. */
+const HIBOR_URL =
+  'https://api.hkma.gov.hk/public/market-data-and-statistics/daily-monetary-statistics/' +
+  'daily-figures-interbank-liquidity?pagesize=1';
+/** Bank of Canada Valet API. Series AVG.INTWO is CORRA, the Canadian
+ * Overnight Repo Rate Average, in percent. `recent=5` covers a long weekend
+ * without pulling the history. */
+const CORRA_URL = 'https://www.bankofcanada.ca/valet/observations/AVG.INTWO/json?recent=5';
 
 /** Days since epoch shifted back by `days`, as an ISO calendar date
  * (YYYY-MM-DD). Used to bound the FRED CSV request to a small recent
@@ -247,8 +260,54 @@ export function parseBojTona(text: string): { asOf: string; ratePercent: number 
   return { asOf, ratePercent: latest.ratePercent };
 }
 
-/** Currencies with a keyless official reference-rate source. */
-export const REF_RATE_CCYS = ['EUR', 'USD', 'GBP', 'CHF', 'JPY'] as const;
+/**
+ * Parses the HKMA daily-figures JSON body into the latest (date, percent)
+ * pair for overnight HIBOR. The API answers with the newest record first, so
+ * the first record that carries a finite `hibor_overnight` is the latest
+ * fixing. A public holiday leaves the field null, hence the scan.
+ */
+export function parseHkmaHibor(text: string): { asOf: string; ratePercent: number } {
+  const data = JSON.parse(text) as {
+    result?: { records?: { end_of_date?: string; hibor_overnight?: number | null }[] };
+  };
+  for (const r of data.result?.records ?? []) {
+    if (typeof r.hibor_overnight === 'number' && Number.isFinite(r.hibor_overnight)) {
+      return { asOf: r.end_of_date ?? '', ratePercent: r.hibor_overnight };
+    }
+  }
+  throw new Error('no overnight HIBOR value in HKMA response');
+}
+
+/**
+ * Parses the Bank of Canada Valet JSON body for the CORRA series into the
+ * latest (date, percent) pair. Valet returns observations oldest first, and a
+ * holiday row simply does not appear, so the loop keeps the last finite value.
+ */
+export function parseBocCorra(text: string): { asOf: string; ratePercent: number } {
+  const data = JSON.parse(text) as {
+    observations?: { d?: string; 'AVG.INTWO'?: { v?: string } }[];
+  };
+  let latest: { asOf: string; ratePercent: number } | null = null;
+  for (const o of data.observations ?? []) {
+    const v = Number(o['AVG.INTWO']?.v);
+    if (o.d && Number.isFinite(v)) latest = { asOf: o.d, ratePercent: v };
+  }
+  if (!latest) throw new Error('no CORRA value in Bank of Canada response');
+  return latest;
+}
+
+/**
+ * Currencies with a keyless official reference-rate source.
+ *
+ * SHORTER THAN `SUPPORTED_CURRENCIES`, on purpose. SGD, AUD, SEK, NOK and DKK
+ * are quotable note currencies with no free, keyless, daily source this app
+ * can read from a browser. Those currencies price on a rate the user types,
+ * and `fetchRefRate` rejects with a message that says exactly that. Never
+ * substitute another currency's rate for a missing one: a EUR rate written
+ * onto a NOK note mis-discounts every cashflow and nothing in the UI would
+ * show the error.
+ */
+export const REF_RATE_CCYS = ['EUR', 'USD', 'GBP', 'CHF', 'JPY', 'HKD', 'CAD'] as const;
 
 export async function fetchRefRate(currency: string): Promise<RefRateResult> {
   if (currency === 'EUR') {
@@ -294,13 +353,23 @@ export async function fetchRefRate(currency: string): Promise<RefRateResult> {
     const { asOf, ratePercent } = parseBojTona(text);
     return { rate: ratePercent / 100, asOf, source: proxied ? 'BoJ TONA (proxied)' : 'BoJ TONA' };
   }
+  if (currency === 'HKD') {
+    const { text, proxied } = await fetchTextWithCorsFallback(HIBOR_URL, 8000, (t) => t.trimStart().startsWith('{'));
+    const { asOf, ratePercent } = parseHkmaHibor(text);
+    return { rate: ratePercent / 100, asOf, source: proxied ? 'HKMA O/N HIBOR (proxied)' : 'HKMA O/N HIBOR' };
+  }
+  if (currency === 'CAD') {
+    const { text, proxied } = await fetchTextWithCorsFallback(CORRA_URL, 8000, (t) => t.trimStart().startsWith('{'));
+    const { asOf, ratePercent } = parseBocCorra(text);
+    return { rate: ratePercent / 100, asOf, source: proxied ? 'BoC CORRA (proxied)' : 'BoC CORRA' };
+  }
   throw new Error(`No open reference-rate source for ${currency}. Enter the rate manually.`);
 }
 
 /** Zero-coupon curve points, per currency, keyed by the ECB SDW series
- * suffix for EUR and the FRED series id for USD. Currencies without a
- * keyless multi-tenor curve (GBP, CHF, JPY) keep the flat overnight rate —
- * see `fetchRateCurve`'s doc. */
+ * suffix for EUR and the FRED series id for USD. Every other supported
+ * currency keeps the flat overnight rate, whether or not the app can fetch
+ * that rate — see `fetchRateCurve`'s doc. */
 const RATE_CURVE_SOURCES: Record<
   string,
   { kind: 'ecb' | 'fred'; keys: string[]; tenorsYears: number[] }
@@ -379,8 +448,8 @@ function parToZero(par: { tYears: number; rate: number }[]): { tYears: number; r
 /**
  * A zero-coupon rate curve at 3M/1Y/2Y/5Y for the note currency, from
  * keyless official sources: ECB SDW (EUR zero curve) and FRED constant
- * maturities (USD, bootstrapped). GBP, CHF and JPY have no free
- * multi-tenor source, so they keep the flat overnight rate — the
+ * maturities (USD, bootstrapped). No other supported currency has a free
+ * multi-tenor source, so each keeps the flat overnight rate — the
  * overnight-fixing caveat the curve exists to fix applies to them and the
  * model reports it as flat pricing.
  *
@@ -565,13 +634,7 @@ export async function fetchFxRealizedVolAndCorr(
   noteCcy: string,
   equityTicker: string,
 ): Promise<FxRealizedResult> {
-  const fxSymbol = `${underlyingCcy.toUpperCase()}${noteCcy.toUpperCase()}=X`;
-  let fxCloses: DatedClose[];
-  try {
-    fxCloses = await fetchDailyCloses(fxSymbol);
-  } catch (e) {
-    throw new Error(`FX history unavailable for ${fxSymbol}: ${e instanceof Error ? e.message : 'fetch failed'}`);
-  }
+  const fxCloses = await fetchFxCloses(underlyingCcy, noteCcy);
   const { vol: fxVol, days } = annualizedVolFromCloses(fxCloses.map((d) => d.close));
 
   let corrEqFx = 0;
@@ -585,6 +648,120 @@ export async function fetchFxRealizedVolAndCorr(
   }
 
   return { fxVol, corrEqFx, days, source: 'yahoo 1Y realized' };
+}
+
+/** Daily closes of the FX cross, quoted as units of NOTE currency per one
+ * unit of LEG currency. Yahoo serves that cross as `{LEG}{NOTE}=X`. Shared by
+ * the single-name fetch and the per-leg basket fetch, so both keep the one
+ * quoting convention the drift's sign depends on. */
+async function fetchFxCloses(legCcy: string, noteCcy: string): Promise<DatedClose[]> {
+  const fxSymbol = `${legCcy.toUpperCase()}${noteCcy.toUpperCase()}=X`;
+  try {
+    return await fetchDailyCloses(fxSymbol);
+  } catch (e) {
+    throw new Error(`FX history unavailable for ${fxSymbol}: ${e instanceof Error ? e.message : 'fetch failed'}`);
+  }
+}
+
+/** One basket leg, as far as the FX measurement needs it. */
+export interface BasketLegFxInput {
+  /** Yahoo-style ticker, for example 'LMT' or 'BMW.DE'. */
+  ticker: string;
+  /** The leg's listing currency, for example 'USD'. */
+  currency: string;
+}
+
+/** Measured FX inputs for one leg, in `BasketAsset.quanto`'s shape. */
+export interface BasketLegFxResult {
+  /** Index of the leg in the input array, so a caller can write the result
+   * back without re-matching by ticker. */
+  index: number;
+  /** The leg's currency, copied through. It names the FX rate the two numbers
+   * below were measured against. */
+  currency: string;
+  /** Annualized realized volatility of the leg-currency/note-currency rate. */
+  fxVol: number;
+  /** Corr(leg equity returns, FX returns), in [-1, 1]. */
+  corrEqFx: number;
+  days: number;
+  source: string;
+}
+
+export interface BasketLegFxResults {
+  /** One entry per input leg, in input order. `undefined` means either the leg
+   * already settles in the note currency, so it needs no correction, or its
+   * measurement failed and `errors` says why. */
+  legs: (BasketLegFxResult | undefined)[];
+  /** One message per leg that could not be measured. A failed leg never blocks
+   * the others. */
+  errors: string[];
+}
+
+/**
+ * Realized FX vol and equity-FX correlation for EVERY leg of a
+ * multi-currency worst-of basket, from about 1 year of Yahoo daily closes.
+ *
+ * This is `fetchFxRealizedVolAndCorr` generalised to N legs, and it keeps that
+ * function's quoting convention exactly: the FX rate is note currency per one
+ * unit of the leg's currency, which is the convention the quanto drift's sign
+ * assumes (see model/market.ts's `riskNeutralDrift`).
+ *
+ * TWO LEGS IN THE SAME CURRENCY SHARE ONE FX FETCH. Three US names in a EUR
+ * note need one EURUSD series, not three. The function fetches each distinct
+ * currency once and correlates every leg against the cached series. A leg
+ * already in the note currency is skipped entirely: it takes no quanto
+ * correction, so measuring an FX rate against itself would be meaningless.
+ *
+ * A leg that fails is reported and left `undefined`, exactly as
+ * `realizedCorrelationMatrix` leaves an unmeasurable pair. The caller must NOT
+ * fill the gap with a zero correlation and a guessed FX vol: `validateBasket`
+ * refuses a foreign leg with no quanto inputs, which is the honest outcome.
+ */
+export async function fetchBasketLegFxParams(
+  legs: BasketLegFxInput[],
+  noteCcy: string,
+): Promise<BasketLegFxResults> {
+  const note = noteCcy.toUpperCase();
+  const out: (BasketLegFxResult | undefined)[] = legs.map(() => undefined);
+  const errors: string[] = [];
+
+  // Fetch each distinct foreign currency's FX series once, concurrently.
+  const foreignCcys = [...new Set(legs.map((l) => l.currency.toUpperCase()).filter((c) => c && c !== note))];
+  const fxByCcy = new Map<string, DatedClose[]>();
+  await Promise.all(
+    foreignCcys.map(async (ccy) => {
+      try {
+        fxByCcy.set(ccy, await fetchFxCloses(ccy, note));
+      } catch (e) {
+        errors.push(e instanceof Error ? e.message : `FX history unavailable for ${ccy}${note}=X`);
+      }
+    }),
+  );
+
+  await Promise.all(
+    legs.map(async (leg, index) => {
+      const ccy = leg.currency.toUpperCase();
+      if (!ccy || ccy === note) return; // Note-currency leg: no correction, nothing to measure.
+      const fxCloses = fxByCcy.get(ccy);
+      if (!fxCloses) return; // Its FX series failed; the error is already reported.
+      const { vol: fxVol, days } = annualizedVolFromCloses(fxCloses.map((d) => d.close));
+      try {
+        const eqCloses = await fetchDailyCloses(leg.ticker);
+        out[index] = {
+          index,
+          currency: ccy,
+          fxVol,
+          corrEqFx: realizedCorrelation(eqCloses, fxCloses),
+          days,
+          source: 'yahoo 1Y realized',
+        };
+      } catch (e) {
+        errors.push(`${leg.ticker}: ${e instanceof Error ? e.message : 'equity-FX correlation failed'}`);
+      }
+    }),
+  );
+
+  return { legs: out, errors };
 }
 
 /**

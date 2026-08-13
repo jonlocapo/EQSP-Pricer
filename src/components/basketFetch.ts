@@ -12,7 +12,7 @@
  */
 import { useMarketStore, DEFAULT_LEG_CORRELATION, type BasketLegState, type CorrelationSource } from '../state/marketStore';
 import { fetchVolPipeline } from '../services/volPipeline';
-import { realizedCorrelationMatrix } from '../services/marketFetch';
+import { fetchBasketLegFxParams, fetchRefRate, realizedCorrelationMatrix, REF_RATE_CCYS } from '../services/marketFetch';
 import { applyCorrelationRiskPremium, CORRELATION_RISK_PREMIUM } from '../model/correlation';
 import { fetchSpot } from '../services/spotFetch';
 import { fmtMs, type FetchLine } from './fetchFormat';
@@ -215,7 +215,108 @@ export async function fetchExtraLegsLive(
   const lines = perLeg.flat();
 
   if (isCurrent()) {
+    lines.push(...(await populateLegQuanto(isCurrent)));
+  }
+  if (isCurrent()) {
     lines.push(...(await populateBasketCorrelation(isCurrent)));
+  }
+  return lines;
+}
+
+/**
+ * Per-leg quanto inputs for every leg that trades outside the note currency.
+ *
+ * A worst-of may now mix currencies. Each foreign leg drifts at its OWN
+ * currency's rate, less the covariance between the leg and its FX rate — see
+ * `BasketAsset.quanto`. That needs three measured numbers per leg, and this
+ * fills them in.
+ *
+ * NOTHING IS DEFAULTED. A missing correlation is not zero and a missing FX
+ * volatility is not 0.1: a zero correlation silently deletes the whole quanto
+ * correction, which is the failure this function exists to prevent. A leg that
+ * cannot be measured keeps no quanto block at all, `validateBasket` then
+ * refuses to price it, and the reason names the leg.
+ *
+ * Leg 0 is skipped. The market panel already writes the primary leg's block
+ * through `setQuanto`, and `legQuantoOf` reads it from there.
+ */
+async function populateLegQuanto(isCurrent: () => boolean): Promise<FetchLine[]> {
+  const store = useMarketStore.getState();
+  const noteCcy = store.market.currency;
+  const all = [
+    { ticker: store.ticker, currency: store.underlyingCurrency ?? noteCcy },
+    ...store.extraLegs.map((l) => ({ ticker: l.ticker, currency: l.currency ?? noteCcy })),
+  ];
+  // Nothing foreign beyond the primary leg means nothing to measure.
+  if (all.slice(1).every((l) => l.currency === noteCcy)) {
+    // Still clear any block left over from a currency the leg no longer has.
+    store.extraLegs.forEach((l, i) => {
+      if (l.quanto) store.setLeg(i, { quanto: undefined });
+    });
+    return [];
+  }
+
+  const lines: FetchLine[] = [];
+  const t0 = performance.now();
+  let fx: Awaited<ReturnType<typeof fetchBasketLegFxParams>>;
+  try {
+    fx = await fetchBasketLegFxParams(all, noteCcy);
+  } catch (e) {
+    if (!isCurrent()) return [];
+    const msg = e instanceof Error ? e.message : 'failed';
+    return [{ kind: 'info', msg: `Leg FX: ${msg}. Type each foreign leg's quanto inputs before pricing.` }];
+  }
+  if (!isCurrent()) return [];
+
+  for (let i = 1; i < all.length; i++) {
+    const leg = store.extraLegs[i - 1];
+    const legCcy = all[i].currency;
+    const measured = fx.legs[i];
+    if (!measured) {
+      // Either the leg settles in the note currency, so any block it carries
+      // is stale, or its measurement failed and `fx.errors` says why.
+      if (legCcy === noteCcy && leg.quanto) store.setLeg(i - 1, { quanto: undefined });
+      continue;
+    }
+
+    // The leg's OWN currency rate. Five of the supported currencies have no
+    // open source, so fall back to whatever the user already typed for this
+    // leg, and NEVER to the note currency's rate: that is the substitution
+    // this app refuses everywhere else.
+    let rateUnderlying = leg.quanto?.rateUnderlying;
+    if ((REF_RATE_CCYS as readonly string[]).includes(legCcy)) {
+      try {
+        rateUnderlying = (await fetchRefRate(legCcy)).rate;
+      } catch {
+        // Keep the typed value. The line below reports the gap when there is
+        // no typed value either.
+      }
+    }
+    if (rateUnderlying === undefined) {
+      lines.push({
+        kind: 'info',
+        msg: `${legLabel(leg, i - 1)}: no open ${legCcy} rate source. Type this leg's own rate before pricing.`,
+      });
+      continue;
+    }
+
+    if (!isCurrent()) return [];
+    store.setLeg(i - 1, {
+      quanto: { currency: legCcy, rateUnderlying, fxVol: measured.fxVol, corrEqFx: measured.corrEqFx },
+    });
+    lines.push({
+      kind: 'ok',
+      msg:
+        `${legLabel(leg, i - 1)} quanto ${legCcy}/${noteCcy}: rate ${(rateUnderlying * 100).toFixed(3)}%, ` +
+        `FX vol ${(measured.fxVol * 100).toFixed(2)}%, corr ${measured.corrEqFx.toFixed(2)} · ${measured.source}`,
+      short: `${legLabel(leg, i - 1)} quanto`,
+    });
+  }
+  for (const e of fx.errors) {
+    lines.push({ kind: 'info', msg: `Leg FX: ${e}. Type that leg's inputs before pricing.` });
+  }
+  if (lines.length > 0) {
+    lines.push({ kind: 'info', msg: `Leg quanto inputs in ${fmtMs(performance.now() - t0)}.` });
   }
   return lines;
 }

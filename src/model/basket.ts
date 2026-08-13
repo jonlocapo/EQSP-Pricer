@@ -5,7 +5,7 @@
  * no engine or worker logic; it only shapes data before it reaches them.
  */
 import type { Underlying } from './product';
-import type { BasketAsset, BasketParams } from './market';
+import type { BasketAsset, BasketParams, LegQuantoParams } from './market';
 import type { VolSurface } from './volSurface';
 import { repairCorrelation } from './correlation';
 
@@ -20,6 +20,13 @@ interface BasketLegInput {
    * every leg can price at the risk strike instead of at the money. See
    * `BasketAsset.volSurface`. */
   volSurface?: VolSurface;
+  /**
+   * This leg's quanto inputs, when the leg trades outside the note currency.
+   * Absent means the leg settles in the note currency and takes no FX
+   * correction. See `BasketAsset.quanto` for the drift the engine applies, and
+   * `fetchBasketLegFxParams` (services/marketFetch.ts) for the measurement.
+   */
+  quanto?: LegQuantoParams;
 }
 
 interface BuiltBasket {
@@ -62,10 +69,14 @@ export function buildBasket(legs: BasketLegInput[], rawCorrelation: number[][]):
     return { underlyings, basket: undefined, correlationAdjusted: false };
   }
   const repaired = repairCorrelation(rawCorrelation);
+  // Spread each optional field only when it exists, so a leg with no surface
+  // and no quanto produces exactly `{ vol, divYield }` — the object shape the
+  // single-currency path cache key and the existing tests already pin.
   const assets: BasketAsset[] = legs.map((l) => ({
     vol: l.vol,
     divYield: l.divYield,
     ...(l.volSurface ? { volSurface: l.volSurface } : {}),
+    ...(l.quanto ? { quanto: l.quanto } : {}),
   }));
   return {
     underlyings,

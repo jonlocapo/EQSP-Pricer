@@ -6,6 +6,9 @@ export interface TickerChip {
   label: string;
   /** Full name, shown on hover. */
   title?: string;
+  /** Drops this underlying. Omit for a chip that cannot be removed, which is
+   * the note's own underlying: a trade always has one. */
+  onRemove?: () => void;
 }
 
 interface Props {
@@ -37,6 +40,9 @@ interface Props {
    * hover, so a greyed-out button is never unexplained. */
   addDisabled?: boolean;
   addDisabledReason?: string;
+  /** Drops every added leg at once, back to a single-name trade. Rendered as
+   * a `×` after the chips. */
+  onClearAll?: () => void;
 }
 
 /**
@@ -52,6 +58,7 @@ export function TickerSearch({
   onAdd,
   addDisabled = false,
   addDisabledReason,
+  onClearAll,
 }: Props) {
   const [query, setQuery] = useState('');
   const [editing, setEditing] = useState(false);
@@ -63,6 +70,10 @@ export function TickerSearch({
   const seqRef = useRef(0);
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  /** Mirrors `highlight` for the async search callback, which closes over a
+   * stale render's value otherwise. */
+  const highlightRef = useRef(0);
+  highlightRef.current = highlight;
 
   useEffect(() => {
     if (!editing) return;
@@ -85,8 +96,19 @@ export function TickerSearch({
           setHighlight(0);
         });
         if (seq !== seqRef.current) return;
-        setMatches(res);
-        setHighlight(0);
+        // KEEP POINTING AT THE SAME SYMBOL. The local list paints first and
+        // the relay's list replaces it a moment later, often in a different
+        // order. Resetting the highlight to 0 meant `+` could add whatever the
+        // relay happened to rank first, which is not the row the user was
+        // looking at when they reached for the button. Track the symbol
+        // instead of the index, and fall back to the top only when the symbol
+        // is gone from the new list.
+        setMatches((prev) => {
+          const aimedAt = prev[highlightRef.current]?.symbol;
+          const again = aimedAt ? res.findIndex((r) => r.symbol === aimedAt) : -1;
+          setHighlight(again >= 0 ? again : 0);
+          return res;
+        });
         if (res.length === 0) setError('No matches. Try the exact ticker.');
       } catch (e) {
         if (seq !== seqRef.current) return;
@@ -141,7 +163,18 @@ export function TickerSearch({
   const addable = onAdd && matches.length > 0 ? matches[highlight] : undefined;
 
   function add() {
-    if (!onAdd || !addable || addDisabled) return;
+    if (!onAdd || addDisabled) return;
+    // NOTHING TO ADD YET, so send the user where they need to go instead of
+    // sitting there greyed out. A disabled button does not fire mouse events
+    // in most browsers, so its `title` never appears: the `+` looked broken
+    // and gave no reason. It is now only ever disabled when the basket is
+    // genuinely full, and that state carries its reason on a wrapper that can
+    // still be hovered.
+    if (!addable) {
+      inputRef.current?.focus();
+      setEditing(true);
+      return;
+    }
     onAdd(addable);
     // Stay armed. Building a basket means adding several names in a row, so
     // the box clears and waits for the next one instead of closing.
@@ -155,7 +188,7 @@ export function TickerSearch({
     ? (addDisabledReason ?? 'Cannot add another leg.')
     : addable
       ? `Add ${addable.symbol} as another underlying`
-      : 'Search for an underlying, then add it';
+      : 'Search for an underlying, then press + to add it';
 
   return (
     <div className="field ticker-search" ref={rootRef}>
@@ -166,8 +199,30 @@ export function TickerSearch({
             {shownChips.map((c, i) => (
               <span className="ticker-badge" key={`${c.label}-${i}`} title={c.title}>
                 {c.label}
+                {c.onRemove && (
+                  <button
+                    type="button"
+                    className="chip-x"
+                    title={`Remove ${c.label}`}
+                    aria-label={`Remove ${c.label}`}
+                    onClick={c.onRemove}
+                  >
+                    ×
+                  </button>
+                )}
               </span>
             ))}
+            {onClearAll && (
+              <button
+                type="button"
+                className="chip-clear"
+                title="Remove every added underlying"
+                aria-label="Remove every added underlying"
+                onClick={onClearAll}
+              >
+                ×
+              </button>
+            )}
           </span>
         )}
       </div>
@@ -206,11 +261,13 @@ export function TickerSearch({
           }}
         />
         {onAdd && (
+          // The wrapper carries the title, so the reason is readable even when
+          // the button inside it is disabled.
+          <span className="ticker-add-wrap" title={addTitle}>
           <button
             type="button"
             className="btn btn-sm ticker-add"
-            disabled={addDisabled || !addable}
-            title={addTitle}
+            disabled={addDisabled}
             // The dropdown closes on mousedown outside it, which would clear
             // `matches` before the click landed. Act on mousedown instead.
             onMouseDown={(e) => {
@@ -218,8 +275,10 @@ export function TickerSearch({
               add();
             }}
           >
-            +
+            <span aria-hidden="true">+</span>
+            <span className="sr-only">Add underlying</span>
           </button>
+          </span>
         )}
       </div>
       {editing && (searching || matches.length > 0 || error) && (

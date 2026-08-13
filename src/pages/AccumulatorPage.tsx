@@ -38,6 +38,8 @@ export function AccumulatorPage() {
   const validation = validateAccumulator(spec, market);
   // Accumulators and decumulators are share-only. The product accumulates a
   // daily number of shares, which has no meaning for an index underlying.
+  // `assetType` comes from the picked symbol's quoteType, not from a control
+  // the user sets: the two used to be able to disagree.
   const indexBlocked = assetType === 'index';
   const priceDisabled = !validation.valid || indexBlocked;
   const priceLabel = priceLabelFor(solve);
@@ -92,8 +94,9 @@ export function AccumulatorPage() {
     <div className="page-grid">
       {indexBlocked && (
         <div className="page-banner error" role="alert">
-          Accumulators and Decumulators (AQ/DQ) are share-only. An index underlying cannot be
-          accumulated. Set Asset type to Share in the Market Data panel.
+          Accumulators and Decumulators (AQ/DQ) are share-only, and{' '}
+          {underlyingName || 'this underlying'} is an index. An index cannot be accumulated: the
+          product buys a daily number of shares. Pick a share as the underlying.
         </div>
       )}
 
@@ -264,7 +267,9 @@ export function AccumulatorPage() {
         priceLabel={priceLabel}
         priceDisabled={priceDisabled}
         tooltip={
-          indexBlocked ? 'Accumulators and Decumulators are share-only. Switch Asset type to Share.' : 'Fix validation errors above.'
+          indexBlocked
+            ? 'Accumulators and Decumulators are share-only. Pick a share as the underlying.'
+            : 'Fix validation errors above.'
         }
         onRun={handleRun}
         greeks={greeks}

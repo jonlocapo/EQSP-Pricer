@@ -16,6 +16,24 @@ export interface QuantoParams {
 }
 
 /**
+ * Quanto parameters for ONE leg of a multi-currency worst-of basket.
+ *
+ * A basket leg needs its own set, because each leg trades in its own currency
+ * against the one note currency. `QuantoParams` describes a single underlying,
+ * so a basket cannot reuse it: leg two's FX rate is not leg one's, and each
+ * leg has its own equity-FX correlation.
+ *
+ * `currency` is the leg's listing currency. The engine never reads it: the
+ * drift needs only the three numbers below. The field is here so a stored
+ * trade names the currency the numbers belong to, and so the panel can label
+ * the inputs. Keep it in the path cache key anyway — see `computeCacheKey`.
+ */
+export interface LegQuantoParams extends QuantoParams {
+  /** The leg's own listing currency, for example 'USD' on a EUR note. */
+  currency: string;
+}
+
+/**
  * Costs a real issuer embeds. A textbook risk-neutral price ignores these
  * costs. The costs create the difference between a fair value and the level a
  * bank actually quotes. The model shows each cost explicitly, separate from
@@ -100,6 +118,19 @@ export interface BasketAsset {
    * builder rejects it.
    */
   volPerStep?: number[];
+  /**
+   * Quanto parameters for this leg, when the leg trades in a currency other
+   * than the note currency. ABSENT MEANS THE LEG IS IN THE NOTE CURRENCY: the
+   * leg then drifts at the note rate with no correction, which is exactly the
+   * arithmetic a single-currency basket has always used. So a single-currency
+   * basket stays bit-identical (see tests/basketQuanto.test.ts).
+   *
+   * Present means the leg gets the quanto drift
+   * `rateUnderlying - divYield - borrow - corrEqFx * vol * fxVol`, the same
+   * formula and the same sign convention as the single-name `riskNeutralDrift`
+   * (see `legQuantoOf` and engine/gbm.ts's `buildBasketCoefficients`).
+   */
+  quanto?: LegQuantoParams;
 }
 
 /**
@@ -180,6 +211,10 @@ export interface MarketData {
    * behavior, with drift = rate − divYield. When present, drift uses the
    * quanto-adjusted risk-neutral measure (see riskNeutralDrift). Discounting
    * always stays at the note `rate`.
+   *
+   * With a basket, this field describes the PRIMARY underlying, which is leg
+   * 0. Legs 1 and up carry their own `BasketAsset.quanto`. `legQuantoOf`
+   * resolves the two and is the only function that reads both.
    */
   quanto?: QuantoParams;
   /**
@@ -205,11 +240,73 @@ export const DEFAULT_MARKET: MarketData = {
   currency: 'EUR',
 };
 
-/** Note currencies the app can quote in. The app can source reference rates
- * only for EUR and USD; enter the rest by hand. Both the picker and the
- * "currency follows the underlying" logic share this list, so they cannot
- * drift apart. */
-export const SUPPORTED_CURRENCIES = ['EUR', 'USD', 'CHF', 'GBP', 'JPY'];
+/**
+ * Note currencies the app can quote in. Both the picker and the "currency
+ * follows the underlying" logic share this list, so they cannot drift apart.
+ *
+ * WHAT A CURRENCY MUST HAVE TO BE HERE. An equity structured products desk
+ * settles a note in a currency it can fund and hedge. Two properties decide
+ * the list:
+ *  1. The currency is freely convertible and DELIVERABLE. A desk can trade a
+ *     normal FX forward in it, so a quanto note is hedgeable.
+ *  2. A desk issues retail or private-bank notes in the currency today.
+ * A missing DATA source is not a reason to exclude a currency. The app
+ * degrades to a manually typed rate, and says so — see `fetchRefRate`.
+ *
+ * WHAT EACH CURRENCY HAS. `REF_RATE_CCYS` (services/marketFetch.ts) lists the
+ * overnight fixings the app can fetch: EUR, USD, GBP, CHF, JPY, HKD and CAD.
+ * `RATE_CURVE_SOURCES` lists the multi-tenor zero curves: EUR and USD only.
+ * Every other currency here prices on a rate the user types. The panel reports
+ * the gap in its fetch log; it never substitutes another currency's rate.
+ *
+ *  - EUR, USD, GBP, CHF, JPY: the core note currencies, all with a fetchable
+ *    official overnight fixing.
+ *  - HKD: pegged to USD inside the HKMA convertibility band 7.75-7.85. Hong
+ *    Kong is one of the largest private-bank markets for equity-linked notes.
+ *    The HKMA publishes overnight HIBOR through a keyless API.
+ *  - SGD, AUD, CAD: deliverable, and standard private-bank note currencies in
+ *    Asia and the Commonwealth. Only CAD has a keyless overnight source here
+ *    (Bank of Canada CORRA).
+ *  - SEK, NOK, DKK: the Nordic retail structured products market is large per
+ *    head, and all three currencies are deliverable G10 or G10-adjacent. DKK
+ *    holds a narrow ERM II band against EUR.
+ *
+ * WHAT THIS LIST DELIBERATELY EXCLUDES: currencies with capital controls or a
+ * non-deliverable forward (NDF) market — INR, KRW, TWD, BRL and onshore CNY.
+ * Three separate problems, each fatal for a quanto price here:
+ *  1. THE FORWARD IS NOT A FORWARD. Offshore, these currencies trade as NDFs,
+ *    which cash-settle in USD against a fixing. An NDF curve carries an
+ *    onshore/offshore basis that a covered-interest-parity forward does not.
+ *    So `rateUnderlying` taken from the local policy rate prints the wrong
+ *    forward, by an amount that moves with local liquidity, not with rates.
+ *  2. THE HEDGE IS RESTRICTED. A quanto position needs a continuously
+ *    rebalanced FX hedge of a size that changes with the equity level.
+ *    Capital controls limit who may trade the onshore currency, and in what
+ *    size. Korea opened onshore KRW to registered foreign institutions from
+ *    2024, and the offshore market is still mostly NDF, so even the most
+ *    reformed of these currencies does not yet behave like a deliverable one.
+ *  3. THE CORRELATION IS HARDER TO MEASURE. `corrEqFx` here comes from Yahoo
+ *    daily closes of an FX cross. For an NDF currency, the observable offshore
+ *    rate and the onshore fixing that settles the hedge are different series.
+ *  A desk does quote KRW-denominated quanto notes on foreign indices. The desk
+ *  prices the NDF basis and the restricted hedge into the quote. This model
+ *  has no term for either. Offering the currency would produce a confident
+ *  number that no bank could trade on, so the list omits it.
+ */
+export const SUPPORTED_CURRENCIES = [
+  'EUR',
+  'USD',
+  'GBP',
+  'CHF',
+  'JPY',
+  'HKD',
+  'SGD',
+  'AUD',
+  'CAD',
+  'SEK',
+  'NOK',
+  'DKK',
+];
 
 /**
  * Risk-neutral drift of the underlying under the note-currency measure.
@@ -225,6 +322,34 @@ export function riskNeutralDrift(m: MarketData): number {
     return m.quanto.rateUnderlying - m.divYield - m.quanto.corrEqFx * m.vol * m.quanto.fxVol - borrow;
   }
   return m.rate - m.divYield - borrow;
+}
+
+/**
+ * The quanto parameters that apply to basket leg `legIndex`, or undefined when
+ * the leg settles in the note currency and needs no correction.
+ *
+ * TWO PLACES CAN HOLD LEG 0's PARAMETERS, and this function is the ONLY reader
+ * of both, so the rule lives in one place.
+ *  - `basket.assets[j].quanto` is the per-leg field. Every leg can carry one.
+ *  - `market.quanto` is the single-underlying field. It describes the PRIMARY
+ *    underlying, which is basket leg 0. The market panel fills it whenever the
+ *    primary underlying's currency differs from the note currency, and it
+ *    still does so for a basket. Dropping the field for a basket would throw
+ *    away correct data and misprice leg 0 as if the leg were in the note
+ *    currency.
+ * The leg's own field WINS when both are present. `market.quanto` carries no
+ * currency name, so this function labels it 'primary'.
+ *
+ * A leg with index >= 1 never reads `market.quanto`: that field is about one
+ * underlying, and leg 2 is a different underlying with a different FX rate.
+ */
+export function legQuantoOf(market: MarketData, legIndex: number): LegQuantoParams | undefined {
+  const own = market.basket?.assets[legIndex]?.quanto;
+  if (own) return own;
+  if (legIndex === 0 && market.quanto) {
+    return { ...market.quanto, currency: 'primary' };
+  }
+  return undefined;
 }
 
 /**

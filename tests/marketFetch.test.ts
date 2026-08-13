@@ -1,12 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   annualizedVolFromCloses,
   closesFromYahooChart,
   closesWithDatesFromYahooChart,
+  fetchBasketLegFxParams,
   fetchFxRealizedVolAndCorr,
   fetchHistVol,
   fetchRefRate,
+  parseBocCorra,
   parseBojTona,
+  parseHkmaHibor,
   parseFredLatestPercent,
   parseSnbSaron,
   realizedCorrelation,
@@ -355,6 +358,150 @@ describe('marketFetch (offline)', () => {
       // b lives on completely different calendar days -> zero overlap.
       const b = days.map((t, i) => ({ t: t + 1000 * DAY, close: base[i] }));
       expect(() => realizedCorrelation(a, b)).toThrow(/overlapping/);
+    });
+  });
+
+  describe('parseHkmaHibor (HKD)', () => {
+    // Real shape of the HKMA daily-figures endpoint. The API answers newest
+    // record first, and a Hong Kong public holiday leaves the rate null.
+    const body = (records: unknown[]) =>
+      JSON.stringify({ header: { success: true }, result: { datasize: records.length, records } });
+
+    it('reads the newest overnight fixing and keeps it in percent form', () => {
+      const { asOf, ratePercent } = parseHkmaHibor(
+        body([
+          { end_of_date: '2026-08-11', hibor_overnight: 2.03, hibor_fixing_1m: 2.614 },
+          { end_of_date: '2026-08-08', hibor_overnight: 1.98 },
+        ]),
+      );
+      expect(asOf).toBe('2026-08-11');
+      expect(ratePercent).toBe(2.03);
+    });
+
+    it('skips a holiday row rather than returning null as zero', () => {
+      const { asOf, ratePercent } = parseHkmaHibor(
+        body([
+          { end_of_date: '2026-08-11', hibor_overnight: null },
+          { end_of_date: '2026-08-08', hibor_overnight: 1.98 },
+        ]),
+      );
+      expect(asOf).toBe('2026-08-08');
+      expect(ratePercent).toBe(1.98);
+    });
+
+    it('throws rather than returning 0 for an empty result', () => {
+      expect(() => parseHkmaHibor(body([]))).toThrow(/HIBOR/);
+    });
+  });
+
+  describe('parseBocCorra (CAD)', () => {
+    // Real shape of the Bank of Canada Valet API, oldest observation first,
+    // with the value as a string.
+    const FIXTURE = JSON.stringify({
+      observations: [
+        { d: '2026-08-06', 'AVG.INTWO': { v: '2.2900' } },
+        { d: '2026-08-07', 'AVG.INTWO': { v: '2.2850' } },
+        { d: '2026-08-10', 'AVG.INTWO': { v: '2.2800' } },
+      ],
+    });
+
+    it('picks the last observation and parses the string value', () => {
+      const { asOf, ratePercent } = parseBocCorra(FIXTURE);
+      expect(asOf).toBe('2026-08-10');
+      expect(ratePercent).toBe(2.28);
+    });
+
+    it('throws rather than returning NaN for a malformed body', () => {
+      expect(() => parseBocCorra(JSON.stringify({ observations: [] }))).toThrow(/CORRA/);
+    });
+  });
+
+  describe('fetchBasketLegFxParams (per-leg quanto inputs)', () => {
+    // A synthetic Yahoo chart payload. Each symbol gets its own series, so a
+    // wrong pairing shows up as a wrong correlation rather than passing
+    // silently.
+    const DAY = 86_400;
+    const T0 = 1_700_000_000;
+    const N = 300;
+
+    function chartBody(seed: number): string {
+      const timestamp: number[] = [];
+      const close: number[] = [];
+      let x = seed;
+      let level = 100;
+      for (let i = 0; i < N; i++) {
+        x = (x * 1103515245 + 12345) % 2147483648;
+        level *= 1 + ((x / 2147483648) - 0.5) * 0.02;
+        timestamp.push(T0 + i * DAY);
+        close.push(level);
+      }
+      return JSON.stringify({ chart: { result: [{ timestamp, indicators: { quote: [{ close }] } }] } });
+    }
+
+    /** Serves a distinct series per symbol, whichever route asks for it: the
+     * relay URLs carry the target URL, encoded, so the symbol is still in the
+     * string. */
+    function stubChartFetch(): string[] {
+      const asked: string[] = [];
+      vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+        const url = decodeURIComponent(String(input));
+        const symbol = /chart\/([^?]+)\?/.exec(url)?.[1] ?? '';
+        asked.push(symbol);
+        if (symbol === 'BOOM') throw new Error('no history for BOOM');
+        let seed = 7;
+        for (let i = 0; i < symbol.length; i++) seed = (seed * 31 + symbol.charCodeAt(i)) % 100_000;
+        return new Response(chartBody(seed + 1), { status: 200 });
+      });
+      return asked;
+    }
+
+    afterEach(() => vi.unstubAllGlobals());
+
+    it('measures only the foreign legs, and fetches each currency once', async () => {
+      const asked = stubChartFetch();
+      const { legs, errors } = await fetchBasketLegFxParams(
+        [
+          { ticker: 'BMW.DE', currency: 'EUR' },
+          { ticker: 'LMT', currency: 'USD' },
+          { ticker: 'AAPL', currency: 'USD' },
+        ],
+        'EUR',
+      );
+      expect(errors).toEqual([]);
+      // Leg 0 already settles in the note currency: no correction, nothing
+      // measured, and no request for its equity history either.
+      expect(legs[0]).toBeUndefined();
+      expect(asked).not.toContain('BMW.DE');
+      // One FX series for both USD legs, not two.
+      expect(asked.filter((s) => s === 'USDEUR=X')).toHaveLength(1);
+
+      for (const leg of [legs[1]!, legs[2]!]) {
+        expect(leg.currency).toBe('USD');
+        expect(leg.fxVol).toBeGreaterThan(0);
+        expect(leg.corrEqFx).toBeGreaterThanOrEqual(-1);
+        expect(leg.corrEqFx).toBeLessThanOrEqual(1);
+        expect(leg.days).toBeGreaterThan(100);
+      }
+      // Two different equities against one FX series give two different
+      // correlations. Equal values would mean the legs were not paired with
+      // their own history.
+      expect(legs[1]!.corrEqFx).not.toBe(legs[2]!.corrEqFx);
+      expect(legs[1]!.index).toBe(1);
+      expect(legs[2]!.index).toBe(2);
+    });
+
+    it('reports a failed leg and leaves it unmeasured, without blocking the others', async () => {
+      stubChartFetch();
+      const { legs, errors } = await fetchBasketLegFxParams(
+        [
+          { ticker: 'BOOM', currency: 'USD' },
+          { ticker: 'LMT', currency: 'USD' },
+        ],
+        'EUR',
+      );
+      expect(legs[0]).toBeUndefined();
+      expect(legs[1]).toBeDefined();
+      expect(errors.join(' ')).toMatch(/BOOM/);
     });
   });
 

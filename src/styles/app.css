@@ -577,9 +577,12 @@ select.input:focus {
  * sidebar, out past its own width. The 0 floor lets each track actually
  * shrink to the space this narrow column has. Four legs use `cols-2`
  * deliberately: two columns, four cells, wraps to two rows on its own. */
+/* A leg grid stacks up to three of these in a 260px column, so the vertical
+ * gap is the tighter of the two: at four legs each grid is two rows, and the
+ * loose gap was what pushed the sidebar past the viewport. */
 .metric-grid {
   display: grid;
-  gap: 8px 6px;
+  gap: 4px 6px;
 }
 
 .metric-grid.cols-2 {
@@ -598,6 +601,20 @@ select.input:focus {
  * narrow. */
 .metric-grid > * {
   min-width: 0;
+}
+
+/* One metric's header plus its grid is a single visual unit, so it needs less
+ * air inside it than between two unrelated fields. */
+.leg-metric {
+  gap: 4px;
+}
+
+/* A cell label inside a leg grid is a ticker, not a sentence, so it runs
+ * tighter than a normal field label. Three stacked grids at four legs is six
+ * label rows; the default rhythm spent the last of the viewport on them. */
+.metric-grid .field-label {
+  font-size: 11px;
+  line-height: 1.05;
 }
 
 .metric-grid .field-label span:first-child {
@@ -701,7 +718,9 @@ select.input:focus {
   min-width: 0;
 }
 
-/* A currency mismatch is a silent-misprice risk (see validateBasket), so
+/* A foreign leg with MISSING quanto inputs is a silent-misprice risk (see
+ * validateBasket). The mismatch itself is legal now — each leg drifts at its
+ * own currency's rate — so what this marks is the gap, not the mismatch. So
  * the offending tile gets a loud border, not a quiet note easy to miss
  * among four tiles. */
 .basket-tile-error {
@@ -1336,13 +1355,78 @@ select.input:focus {
   min-width: 0;
 }
 
+/* The `+` is a GLYPH BUTTON, so it centres by grid rather than by inheriting
+ * the text button's padding. `.btn` carries asymmetric horizontal padding for
+ * word labels, which pushed a single character off centre. Zero padding plus
+ * `place-items: center` puts the glyph in the middle of the box in both axes,
+ * and a square min-size keeps the box from collapsing around one character. */
+/* Holds the `+`'s tooltip, because a disabled button swallows mouse events
+ * and never shows its own. */
+.ticker-add-wrap {
+  display: flex;
+  flex: 0 0 auto;
+}
+
 .ticker-add {
   flex: 0 0 auto;
-  min-width: 38px;
-  font-size: 15px;
-  line-height: 1;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  min-width: 34px;
+  padding: 0;
+  font-size: 18px;
   font-weight: 700;
-  padding-inline: 10px;
+  line-height: 1;
+}
+
+/* Visible to a screen reader, not on screen. The `+` alone is meaningless
+ * without it. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The `×` inside a chip. It rides in the chip's own colour at reduced
+ * opacity, so a row of chips does not read as a row of delete buttons; it
+ * comes forward on hover. */
+.chip-x {
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0;
+  margin-left: 4px;
+  cursor: pointer;
+  opacity: 0.55;
+}
+
+.chip-x:hover {
+  opacity: 1;
+}
+
+/* Clears every added leg at once. Deliberately outside the chips, so it is
+ * not mistaken for one more underlying. */
+.chip-clear {
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+}
+
+.chip-clear:hover {
+  color: var(--danger);
 }
 
 .ticker-badge {

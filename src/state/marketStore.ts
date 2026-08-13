@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { DEFAULT_MARKET, SUPPORTED_CURRENCIES, type MarketData, type QuantoParams } from '../model/market';
 import { removeFromCorrelation } from '../model/basket';
 import type { VolSurface } from '../model/volSurface';
+import type { LegQuantoParams } from '../model/market';
 
 /** One additional worst-of leg beyond the primary underlying (index 0),
  * which stays the existing ticker/underlyingName/market.vol/divYield.
@@ -36,6 +37,17 @@ export interface BasketLegState {
    * `BasketAsset.volSurface`.
    */
   volSurface?: VolSurface;
+  /**
+   * Quanto inputs for this leg, when it trades outside the note currency.
+   *
+   * Absent means the leg settles in the note currency and takes no FX
+   * correction. It is CLEARED whenever the leg returns to the note currency,
+   * and whenever the NOTE currency changes, because the FX volatility and the
+   * equity-FX correlation were measured against the old pair and describe a
+   * rate the note no longer pays in. `validateBasket` refuses a stale block
+   * rather than pricing on it.
+   */
+  quanto?: LegQuantoParams;
 }
 
 /** Realistic worst-of range: 2 to 4 total legs, so at most 3 extra ones. */
