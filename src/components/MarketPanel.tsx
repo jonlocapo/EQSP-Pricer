@@ -11,7 +11,8 @@ import { BasketPanel } from './BasketPanel';
 import { buildBasket } from '../model/basket';
 import { NO_COSTS, SUPPORTED_CURRENCIES as CURRENCIES, type CostParams } from '../model/market';
 import { skewPoints } from '../model/volSurface';
-import { fmtMs, type FetchLine } from './fetchFormat';
+import { fmtMs, tooltipFor, worstKind, type FetchLine } from './fetchFormat';
+import { InfoDot } from './InfoDot';
 import { fetchExtraLegsLive } from './basketFetch';
 import type { SymbolMatch } from '../services/symbolSearch';
 
@@ -104,6 +105,7 @@ async function fetchLiveData(
     lines.push({
       kind: 'info',
       msg: `${n} request${n === 1 ? '' : 's'} · ${routeSummary} · total ${fmtMs(totalMs)}`,
+      field: 'run',
     });
   };
 
@@ -135,10 +137,11 @@ async function fetchLiveData(
       kind: 'ok',
       msg: `Spot ${spotT.value.spot} · ${spotT.value.source} · ${fmtMs(spotT.ms)}`,
       short: `spot ${spotT.value.spot}`,
+      field: 'spot',
     });
   } else {
     const msg = spotT.error instanceof Error ? spotT.error.message : 'failed';
-    lines.push({ kind: 'err', msg: `Spot: ${msg} after ${fmtMs(spotT.ms)}` });
+    lines.push({ kind: 'err', msg: `Spot: ${msg} after ${fmtMs(spotT.ms)}`, field: 'spot' });
   }
 
   // The rate MUST match the currency the note ends up in. The spot fetch is
@@ -155,12 +158,13 @@ async function fetchLiveData(
       lines.push({
         kind: 'ok',
         msg: `Rate ${(rateT.value.rate * 100).toFixed(3)}% · ${rateT.value.source} ${rateT.value.asOf} · ${fmtMs(rateT.ms)}`,
+        field: 'rate',
         short: `rate ${(rateT.value.rate * 100).toFixed(3)}%`,
       });
     }
   } else {
     const msg = rateT.error instanceof Error ? rateT.error.message : 'failed';
-    lines.push({ kind: 'err', msg: `Rate: ${msg} after ${fmtMs(rateT.ms)}` });
+    lines.push({ kind: 'err', msg: `Rate: ${msg} after ${fmtMs(rateT.ms)}`, field: 'rate' });
   }
 
   // The rate CURVE, best-effort: 3M/1Y/2Y/5Y zero rates for the note
@@ -179,6 +183,7 @@ async function fetchLiveData(
           kind: 'ok',
           msg: `Rate curve ${rc.curve.map((p) => `${p.tYears}y ${(p.rate * 100).toFixed(2)}%`).join(' / ')} · ${rc.source}`,
           short: `curve ${rc.curve.map((p) => `${(p.rate * 100).toFixed(2)}%`).join('/')}`,
+          field: 'rate',
         });
       }
     } catch (rcErr) {
@@ -186,6 +191,7 @@ async function fetchLiveData(
         lines.push({
           kind: 'info',
           msg: `Rate curve: ${rcErr instanceof Error ? rcErr.message : 'failed'}. Discounting stays flat.`,
+          field: 'rate',
         });
       }
     }
@@ -246,11 +252,12 @@ async function fetchLiveData(
         skewMsg +
         ` · ${fmtMs(volMs)}`,
       short: `vol ${(vp.atmVol * 100).toFixed(2)}%`,
+      field: 'vol',
     });
   } catch (e) {
     const volMs = performance.now() - volStart;
     const msg = e instanceof Error ? e.message : 'all sources failed';
-    lines.push({ kind: 'err', msg: `Vol: ${msg} after ${fmtMs(volMs)}` });
+    lines.push({ kind: 'err', msg: `Vol: ${msg} after ${fmtMs(volMs)}`, field: 'vol' });
   }
 
   // Extra basket legs (worst-of legs 2 and up) get the SAME volatility
@@ -292,14 +299,15 @@ async function fetchLiveData(
           kind: 'ok',
           msg: `Underlying rate ${(ur.rate * 100).toFixed(3)}% · ${ur.source} · ${fmtMs(urMs)}`,
           short: `ul rate ${(ur.rate * 100).toFixed(3)}%`,
+          field: 'quanto',
         });
       } catch (urErr) {
         const urMs = performance.now() - urStart;
         const msg = urErr instanceof Error ? urErr.message : 'failed';
-        lines.push({ kind: 'info', msg: `Underlying rate: ${msg} after ${fmtMs(urMs)}. Enter manually.` });
+        lines.push({ kind: 'info', msg: `Underlying rate: ${msg} after ${fmtMs(urMs)}. Enter manually.`, field: 'quanto' });
       }
     } else {
-      lines.push({ kind: 'info', msg: `No open rate source for ${underlyingCcy}. Set the underlying rate manually.` });
+      lines.push({ kind: 'info', msg: `No open rate source for ${underlyingCcy}. Set the underlying rate manually.`, field: 'quanto' });
     }
 
     const fxStart = performance.now();
@@ -317,6 +325,7 @@ async function fetchLiveData(
         kind: 'ok',
         msg: `FX vol ${(fx.fxVol * 100).toFixed(1)}%, eq-FX corr ${fx.corrEqFx.toFixed(2)} · ${fx.source} · ${fmtMs(fxMs)}`,
         short: `fx ${(fx.fxVol * 100).toFixed(1)}%/${fx.corrEqFx.toFixed(2)}`,
+        field: 'quanto',
       });
     } catch (fxErr) {
       const fxMs = performance.now() - fxStart;
@@ -324,6 +333,7 @@ async function fetchLiveData(
       lines.push({
         kind: 'info',
         msg: `FX vol/correlation: ${msg} after ${fmtMs(fxMs)}. Enter manually.`,
+        field: 'quanto',
       });
     }
   }
@@ -677,24 +687,18 @@ export function MarketPanel() {
             {fetching ? 'Fetching…' : 'Fetch live data'}
           </button>
           </div>
-        {(() => {
-          const okLines = fetchLines.filter((l) => l.kind === 'ok');
-          const otherLines = fetchLines.filter((l) => l.kind !== 'ok');
-          return (
-            <>
-              {okLines.length > 0 && (
-                <div className="status-line ok" title={okLines.map((l) => l.msg).join(' · ')}>
-                  ✓ {okLines.map((l) => l.short ?? l.msg).join(' · ')}
-                </div>
-              )}
-              {otherLines.map((l, i) => (
-                <div key={i} className={`status-line ${l.kind === 'err' ? 'error' : ''}`}>
-                  {l.msg}
-                </div>
-              ))}
-            </>
-          );
-        })()}
+        {/* NO LOG BLOCK. Every outcome used to stack here as one run-on
+          * paragraph: spot, rate, curve, volatility, each leg, the
+          * correlation and the request count. Each line now sits on the
+          * information dot of the field it describes, so the provenance of a
+          * number is next to that number. Only lines about the RUN itself —
+          * the request count and the route summary — have no field to belong
+          * to, and they stay here on one dot. */}
+        {tooltipFor(fetchLines, 'run') && (
+          <div className="status-line">
+            Last fetch <InfoDot text={tooltipFor(fetchLines, 'run')} kind={worstKind(fetchLines, 'run')} />
+          </div>
+        )}
         {quantoMismatch && (
           <div
             className={`status-line ${market.quanto ? '' : 'warn'}`}
@@ -786,6 +790,7 @@ export function MarketPanel() {
               onChange={(v) => setMarket({ spot: v })}
               badge={manualOverride ? 'MANUAL' : undefined}
               badgeClassName="manual-badge"
+              labelExtra={<InfoDot text={tooltipFor(fetchLines, 'spot')} kind={worstKind(fetchLines, 'spot')} />}
             />
 
             <NumericField
@@ -794,12 +799,21 @@ export function MarketPanel() {
               step={0.5}
               suffix="%"
               onChange={(v) => setMarket({ vol: v / 100 })}
+              labelExtra={
+                <InfoDot
+                  // The ladder rung that produced this number joins the
+                  // fetch's own volatility lines, so one dot answers "where
+                  // did this come from" completely.
+                  text={[
+                    volSource && `Source: ${[volSource.full, volSource.note].filter(Boolean).join('. ')}`,
+                    tooltipFor(fetchLines, 'vol'),
+                  ]
+                    .filter(Boolean)
+                    .join('\n') || undefined}
+                  kind={worstKind(fetchLines, 'vol')}
+                />
+              }
             />
-            {volSource && (
-              <div className="status-line" title={[volSource.full, volSource.note].filter(Boolean).join('. ')}>
-                Source: {volSource.label}
-              </div>
-            )}
 
             {/* Two genuine rates on a single name: the note currency's and the
              * underlying currency's, shown side by side. A basket carries its
@@ -809,6 +823,7 @@ export function MarketPanel() {
               <div className="metric-grid cols-2">
                 <NumericField
                   label={`Rate ${market.currency}`}
+                  labelExtra={<InfoDot text={tooltipFor(fetchLines, 'rate')} kind={worstKind(fetchLines, 'rate')} />}
                   value={Number((market.rate * 100).toFixed(4))}
                   step={0.1}
                   suffix="%"
@@ -825,6 +840,7 @@ export function MarketPanel() {
             ) : (
               <NumericField
                 label="Rate"
+                labelExtra={<InfoDot text={tooltipFor(fetchLines, 'rate')} kind={worstKind(fetchLines, 'rate')} />}
                 value={Number((market.rate * 100).toFixed(4))}
                 step={0.1}
                 suffix="%"
@@ -843,12 +859,15 @@ export function MarketPanel() {
           </>
         )}
 
-        {/* Two or more legs: this basket can never be quanto (see the note
-         * above), so the rate is always the plain single field, moved here
-         * because it is a note-level input, not a per-leg one. */}
+        {/* Two or more legs. The NOTE's rate is one number whatever the legs
+         * do: a foreign leg carries its own currency's rate inside its quanto
+         * block (see `BasketAsset.quanto`), not here. So this stays the plain
+         * single field, moved down because it is a note-level input rather
+         * than a per-leg one. */}
         {!singleLegLayout && (
           <NumericField
             label="Rate"
+            labelExtra={<InfoDot text={tooltipFor(fetchLines, 'rate')} kind={worstKind(fetchLines, 'rate')} />}
             value={Number((market.rate * 100).toFixed(4))}
             step={0.1}
             suffix="%"
@@ -856,7 +875,7 @@ export function MarketPanel() {
           />
         )}
 
-        {basketUiEnabled && <BasketPanel onPickPrimary={handlePrimaryPick} />}
+        {basketUiEnabled && <BasketPanel onPickPrimary={handlePrimaryPick} fetchLines={fetchLines} />}
 
         {/* Quanto FX inputs. Rendered only when the note actually IS quanto
          * (market.quanto set): no empty heading and no reserved space on

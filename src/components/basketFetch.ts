@@ -119,18 +119,19 @@ async function fetchOneExtraLeg(
           (spotResult.ok ? `spot ${spotResult.value.spot}, ` : '') +
           `vol ${(vp.atmVol * 100).toFixed(2)}%, div ${(divYield * 100).toFixed(2)}% · ${vp.label} · ${fmtMs(ms)}`,
         short: `${label} vol ${(vp.atmVol * 100).toFixed(2)}%`,
+        field: 'vol',
       },
     ];
     if (!spotResult.ok) {
       const msg = spotResult.error instanceof Error ? spotResult.error.message : 'failed';
-      lines.push({ kind: 'info', msg: `${label} spot: ${msg}. Display only, pricing is unaffected.` });
+      lines.push({ kind: 'info', msg: `${label} spot: ${msg}. Display only, pricing is unaffected.`, field: 'spot' });
     }
     return lines;
   } catch (e) {
     const ms = performance.now() - t0;
     if (!isCurrent()) return [];
     const msg = e instanceof Error ? e.message : 'failed';
-    return [{ kind: 'info', msg: `${label}: ${msg} after ${fmtMs(ms)}. Kept its existing spot, vol and dividend.` }];
+    return [{ kind: 'info', msg: `${label}: ${msg} after ${fmtMs(ms)}. Kept its existing spot, vol and dividend.`, field: 'vol' }];
   }
 }
 
@@ -184,12 +185,13 @@ export async function populateBasketCorrelation(isCurrent: () => boolean): Promi
           errors.length > 0
             ? `Correlation: some pairs unmeasured, defaulted (${errors.join('; ')}). Lifted ${premiumPts} points for the correlation risk premium.`
             : `Correlation matrix populated from 1y realized correlation, lifted ${premiumPts} points for the correlation risk premium.`,
+        field: 'correlation',
       },
     ];
   } catch (e) {
     if (!isCurrent()) return [];
     const msg = e instanceof Error ? e.message : 'failed';
-    return [{ kind: 'info', msg: `Correlation matrix: ${msg}. Left unchanged.` }];
+    return [{ kind: 'info', msg: `Correlation matrix: ${msg}. Left unchanged.`, field: 'correlation' }];
   }
 }
 
@@ -264,7 +266,7 @@ async function populateLegQuanto(isCurrent: () => boolean): Promise<FetchLine[]>
   } catch (e) {
     if (!isCurrent()) return [];
     const msg = e instanceof Error ? e.message : 'failed';
-    return [{ kind: 'info', msg: `Leg FX: ${msg}. Type each foreign leg's quanto inputs before pricing.` }];
+    return [{ kind: 'info', msg: `Leg FX: ${msg}. Type each foreign leg's quanto inputs before pricing.`, field: 'quanto' }];
   }
   if (!isCurrent()) return [];
 
@@ -296,6 +298,7 @@ async function populateLegQuanto(isCurrent: () => boolean): Promise<FetchLine[]>
       lines.push({
         kind: 'info',
         msg: `${legLabel(leg, i - 1)}: no open ${legCcy} rate source. Type this leg's own rate before pricing.`,
+        field: 'quanto',
       });
       continue;
     }
@@ -310,13 +313,14 @@ async function populateLegQuanto(isCurrent: () => boolean): Promise<FetchLine[]>
         `${legLabel(leg, i - 1)} quanto ${legCcy}/${noteCcy}: rate ${(rateUnderlying * 100).toFixed(3)}%, ` +
         `FX vol ${(measured.fxVol * 100).toFixed(2)}%, corr ${measured.corrEqFx.toFixed(2)} · ${measured.source}`,
       short: `${legLabel(leg, i - 1)} quanto`,
+      field: 'quanto',
     });
   }
   for (const e of fx.errors) {
-    lines.push({ kind: 'info', msg: `Leg FX: ${e}. Type that leg's inputs before pricing.` });
+    lines.push({ kind: 'info', msg: `Leg FX: ${e}. Type that leg's inputs before pricing.`, field: 'quanto' });
   }
   if (lines.length > 0) {
-    lines.push({ kind: 'info', msg: `Leg quanto inputs in ${fmtMs(performance.now() - t0)}.` });
+    lines.push({ kind: 'info', msg: `Leg quanto inputs in ${fmtMs(performance.now() - t0)}.`, field: 'run' });
   }
   return lines;
 }

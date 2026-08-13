@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { useMarketStore } from '../state/marketStore';
 import { BasketModal } from './BasketModal';
 import type { SymbolMatch } from '../services/symbolSearch';
+import { tooltipFor, worstKind, type FetchLine } from './fetchFormat';
+import { InfoDot } from './InfoDot';
 
 interface Props {
   /** Picking a ticker for leg 1 (the primary underlying) has to run through
@@ -9,6 +11,9 @@ interface Props {
    * and kicks off the live fetch, neither of which the modal owns. Legs 2
    * and up use the store's own `setLeg` directly, no callback needed. */
   onPickPrimary: (m: SymbolMatch) => void;
+  /** The last fetch's lines, so the correlation outcome can sit on this
+   * button's information dot rather than in a log elsewhere. */
+  fetchLines?: FetchLine[];
 }
 
 /**
@@ -24,7 +29,7 @@ interface Props {
  * Renders nothing when there is only one leg, so a plain single-underlying
  * trade stays visually simple, exactly as before.
  */
-export function BasketPanel({ onPickPrimary }: Props) {
+export function BasketPanel({ onPickPrimary, fetchLines = [] }: Props) {
   const extraLegs = useMarketStore((s) => s.extraLegs);
   const [modalOpen, setModalOpen] = useState(false);
 
@@ -45,6 +50,7 @@ export function BasketPanel({ onPickPrimary }: Props) {
       <button type="button" className="btn btn-sm" onClick={() => setModalOpen(true)} title="Per-pair correlations, and every leg's detail in one place.">
         Correlation
       </button>
+      <InfoDot text={tooltipFor(fetchLines, 'correlation')} kind={worstKind(fetchLines, 'correlation')} />
       {modalOpen && <BasketModal onClose={() => setModalOpen(false)} onPickPrimary={onPickPrimary} />}
     </>
   );

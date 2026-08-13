@@ -2213,3 +2213,45 @@ select.input:focus {
     inset: -12px;
   }
 }
+
+/* The circled `i` beside a field label, carrying what the last fetch reported
+ * for THAT field. Sized to the label's own text so it never changes the row's
+ * height, and muted at rest so a panel of them does not compete with the
+ * numbers. */
+.info-dot {
+  display: inline-grid;
+  place-items: center;
+  width: 13px;
+  height: 13px;
+  margin-left: 5px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  font-size: 9px;
+  font-style: italic;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+  vertical-align: middle;
+  opacity: 0.55;
+  transition: opacity 120ms ease;
+}
+
+.info-dot:hover {
+  opacity: 1;
+}
+
+/* An error has to be visible without hovering, so it keeps full opacity and
+ * takes the danger colour. An info sits between the two. */
+.info-dot-ok {
+  color: var(--text-muted);
+}
+
+.info-dot-info {
+  color: var(--warn, var(--text-muted));
+  opacity: 0.85;
+}
+
+.info-dot-err {
+  color: var(--danger);
+  opacity: 1;
+}

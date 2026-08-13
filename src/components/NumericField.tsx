@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { noteEditSource } from '../state/editSource';
 import { nextStepValue, parseNumericInput } from './numericStep';
 
@@ -27,6 +27,10 @@ interface NumericFieldProps {
    * `solved-badge`. The market panel passes `manual-badge`, so its amber
    * "you have overridden fetched data" meaning survives. */
   badgeClassName?: string;
+  /** Rendered immediately after the label text. Used for the fetch
+   * information dot, which belongs to the label rather than to the badge
+   * cluster on the right. */
+  labelExtra?: ReactNode;
   hint?: string;
   /**
    * Renders a clickable "SOLVE" chip next to the label. This is the
@@ -59,6 +63,7 @@ export function NumericField({
   onBadgeClick,
   badgeOn,
   badgeClassName = 'solved-badge',
+  labelExtra,
   hint,
   solveChip,
   solveActive,
@@ -151,7 +156,10 @@ export function NumericField({
   return (
     <div className="field" title={title}>
       <div className="field-label">
-        <span>{label}</span>
+        <span>
+          {label}
+          {labelExtra}
+        </span>
         <span style={{ display: 'flex', gap: 4 }}>
           {solveChip && (
             <button
