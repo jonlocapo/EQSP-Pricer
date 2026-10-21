@@ -153,8 +153,15 @@ const DEFAULT_BUDGET_MS = 12_000;
  * ladder's budget, so the budget expired inside rung 2 and the pipeline returned
  * the entered-vol rung even when price history was perfectly reachable. A chain
  * that has not answered in this long is not going to.
+ *
+ * The sources now RACE rather than queue (see chainRungs), so a dead source no
+ * longer spends this budget. Six seconds is room for the working source to
+ * answer through a CORS relay: CBOE's chain for an index ETF is several
+ * megabytes. The price-history fetch runs in parallel the whole time (see
+ * runLadder), so this wait does not delay the realized rungs, and the whole
+ * ladder stays inside DEFAULT_BUDGET_MS.
  */
-const CHAIN_BUDGET_MS = 3_000;
+const CHAIN_BUDGET_MS = 6_000;
 
 /** Resolves to `undefined` if `work` has not finished within `ms`. The losing
  * work is not cancelled, because these sources have no abort handle here; its
@@ -239,8 +246,8 @@ async function runLadder(args: VolPipelineArgs): Promise<VolPipelineResult> {
 async function chainRungs(args: VolPipelineArgs): Promise<VolPipelineResult | undefined> {
   const { symbol, spot, tenorYears, rate } = args;
 
-  // Rung 1: marketdata.app chain, keyless.
-  try {
+  // Rung 1: marketdata.app chain.
+  const rung1 = async (): Promise<VolPipelineResult> => {
     const chain = await fetchOptionChainMarketData(symbol, tenorYears, spot);
     // Parity FIRST: the dividend yield it derives is an INPUT the vol
     // inversion needs (see buildVolSurface's opts), not just an output
@@ -254,16 +261,13 @@ async function chainRungs(args: VolPipelineArgs): Promise<VolPipelineResult | un
       kind: 'chain-free-marketdata',
       label: chain.source,
     };
-  } catch {
-    // Fall through. A dead or empty chain must not sink the pipeline.
-  }
+  };
 
-  // Rung 2: the existing keyless chain path (Yahoo v7, then CBOE).
-  try {
-    // fetchImpliedFromOptions already runs impliedFromChain internally to
-    // get r.divYield (parity on prices), before this ever touches
-    // buildVolSurface Î“Ã‡Ã¶ see impliedFetch.ts. Reuse it rather than deriving
-    // it twice.
+  // Rung 2: CBOE and Yahoo v7, raced inside fetchImpliedFromOptions.
+  // fetchImpliedFromOptions already runs impliedFromChain internally to get
+  // r.divYield (parity on prices), before this ever touches buildVolSurface.
+  // Reuse it rather than deriving it twice.
+  const rung2 = async (): Promise<VolPipelineResult> => {
     const r = await fetchImpliedFromOptions(symbol, tenorYears, rate);
     const surface = buildVolSurface(r.chain, { rate, divYield: r.divYield });
     return {
@@ -274,11 +278,18 @@ async function chainRungs(args: VolPipelineArgs): Promise<VolPipelineResult | un
       label: r.source,
       divNote: r.approximate ? 'Dividend yield is approximate (American-style parity)' : undefined,
     };
-  } catch {
-    // Fall through to the realized-based rungs.
-  }
+  };
 
-  return undefined;
+  // RUN BOTH RUNGS AT ONCE. They read different hosts, so queueing them only
+  // added their failure times together. marketdata.app now answers HTTP 401
+  // without an API key, so as rung 1 it cost a round trip before the useful
+  // source even started. The first rung to produce a surface wins.
+  try {
+    return await Promise.any([rung1(), rung2()]);
+  } catch {
+    // Every chain source failed. Fall through to the realized-based rungs.
+    return undefined;
+  }
 }
 
 /**

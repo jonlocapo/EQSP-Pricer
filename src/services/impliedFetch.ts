@@ -54,7 +54,13 @@ const OPT_RE = /^([A-Z_]+?)(\d{6})([CP])(\d{8})$/;
 /** Fetches CBOE's delayed chain and converts it to the shared chain shape. */
 async function fetchOptionChainCboe(yahooSymbol: string): Promise<OptionChain> {
   const symbol = toCboeSymbol(yahooSymbol);
-  const url = `https://cdn.cboe.com/api/global/delayed_quotes/options/${encodeURIComponent(symbol)}.json`;
+  // CBOE MOVED THIS API. `cdn.cboe.com` now answers with a Cloudflare 307 to
+  // `cdn-api.cboe.com`. A CORS relay hands back the 307's HTML page instead
+  // of following it, the JSON check below rejects that page, and the rung
+  // fails without a word. Every underlying then fell through to the realized
+  // fallback, which ran SAP at 57.6% ATM against a market of 37.6%. Request
+  // the new host directly, so no relay ever sees a redirect.
+  const url = `https://cdn-api.cboe.com/api/global/delayed_quotes/options/${encodeURIComponent(symbol)}.json`;
   let text: string;
   let proxied: boolean;
   try {
@@ -114,35 +120,44 @@ export async function fetchImpliedFromOptions(
   tenorYears: number,
   rate: number,
 ): Promise<ImpliedResult> {
-  const reasons: string[] = [];
+  /** One source, end to end: fetch the chain, then imply from it. A source
+   * that answers with a chain the implier cannot use counts as a failure, so
+   * the race below does not settle on it. */
+  const attempt = async (load: () => Promise<OptionChain>): Promise<ImpliedResult> => {
+    const chain = await load();
+    const implied = impliedFromChain(chain, rate, tenorYears);
+    return {
+      ...implied,
+      source: chain.source,
+      // Parity is exact only for European-style options. Listed single-name
+      // options are American.
+      approximate: !isIndexSymbol(yahooSymbol),
+      chain,
+    };
+  };
 
-  for (const load of [
-    () => fetchOptionChainYahoo(yahooSymbol, tenorYears),
-    () => fetchOptionChainCboe(yahooSymbol),
-  ]) {
-    let chain: OptionChain;
-    try {
-      chain = await load();
-    } catch (e) {
-      reasons.push(e instanceof Error ? e.message : String(e));
-      continue;
-    }
-    try {
-      const implied = impliedFromChain(chain, rate, tenorYears);
-      return {
-        ...implied,
-        source: chain.source,
-        // Parity is exact only for European-style options. Listed single-name
-        // options are American.
-        approximate: !isIndexSymbol(yahooSymbol),
-        chain,
-      };
-    } catch (e) {
-      reasons.push(e instanceof Error ? e.message : String(e));
-    }
+  // RACE THE SOURCES, do not queue them. Yahoo v7 used to run first and CBOE
+  // only after it. Yahoo v7 now needs a session crumb this app cannot get, so
+  // it times out at 6 seconds on EVERY call. CBOE therefore started at about
+  // 7.5 seconds, long after the chain budget in volPipeline.ts had expired,
+  // and its correct answer was thrown away. Measured: CBOE alone gives SAP
+  // 37.2% and SPY 19.2% at 2 years, matching the listed market, while the
+  // fallback the pipeline used instead gave SAP 57.6%.
+  //
+  // Racing makes a dead source cost nothing. The first source to produce a
+  // usable implied vol wins; the others run to completion and are discarded.
+  try {
+    return await Promise.any([
+      attempt(() => fetchOptionChainCboe(yahooSymbol)),
+      attempt(() => fetchOptionChainYahoo(yahooSymbol, tenorYears)),
+    ]);
+  } catch (e) {
+    const reasons =
+      e instanceof AggregateError
+        ? e.errors.map((x) => (x instanceof Error ? x.message : String(x)))
+        : [e instanceof Error ? e.message : String(e)];
+    throw new Error(
+      `Could not imply vol/div yield from any option source. Enter them manually. ${reasons.join('; ')}`,
+    );
   }
-
-  throw new Error(
-    `Could not imply vol/div yield from any option source. Enter them manually. ${reasons.join('; ')}`,
-  );
 }
