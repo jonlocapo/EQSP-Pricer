@@ -619,22 +619,30 @@ export function MarketPanel() {
     ...extraLegs.map((l, i) => ({ label: l.ticker || l.name || `Leg ${i + 2}`, currency: l.currency })),
   ]);
 
-  /** True when ANY leg is foreign. Drives the banner and, for a single-name
-   * trade, the `market.quanto` input group. */
-  const quantoMismatch = foreignLegs.length > 0;
   /** Leg 1 specifically, which is the leg `market.quanto` describes. */
   const primaryIsForeign = !!underlyingCurrency && underlyingCurrency !== market.currency;
 
-  /** True once EVERY foreign leg carries the three inputs its drift needs.
-   * Until then the banner warns, because `validateBasket` will refuse. */
-  const quantoReady = foreignLegs.every((l) =>
-    l.index === 0 ? !!market.quanto : !!extraLegs[l.index - 1]?.quanto,
-  );
-  const quantoLegLabels = foreignLegs.map((l) => `${l.label} (${l.currency})`).join(', ');
-  const quantoLegsText =
-    foreignLegs.length === 1
-      ? `${quantoLegLabels} trades outside the note currency ${market.currency}.`
-      : `${foreignLegs.length} legs trade outside the note currency ${market.currency}: ${quantoLegLabels}.`;
+  /* NO QUANTO BANNER. A status line under the Fetch button used to name
+   * every foreign leg. Each foreign leg already has its own field group
+   * below, with a header that names the leg and its currency, an
+   * information dot, and a MISSING badge when an input is absent. The banner
+   * repeated that header in a row the sidebar cannot spare. A single-name
+   * trade with a foreign leg 1 gets the same header on its rate pair. */
+
+  /* NO "LAST FETCH" ROW. Every fetch outcome used to stack under the Fetch
+   * button as one run-on paragraph. Each line now sits on the information
+   * dot of the field that it describes. Only the lines about the RUN itself
+   * (the request count and the route summary) have no field. Those lines go
+   * on the Fetch button's own `title`, after the button's description, and
+   * a dot inside the button shows that they exist. A separate row for them
+   * pushed the sidebar towards a scrollbar. */
+  const runText = tooltipFor(fetchLines, 'run');
+  const fetchTitle = [
+    'Fetches delayed spot, reference rate, and options-implied vol + dividend yield (falling back to 1Y realized vol) for every leg in one go. Manual edits always override.',
+    runText && `Last fetch:\n${runText}`,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
 
   // Costs default to zero, a pure risk-neutral fair value. The badge makes
   // it obvious when a quoted level is no longer the fair value.
@@ -746,38 +754,12 @@ export function MarketPanel() {
             type="button"
             disabled={fetching}
             onClick={() => void handleFetchLive()}
-            title="Fetches delayed spot, reference rate, and options-implied vol + dividend yield (falling back to 1Y realized vol) for every leg in one go. Manual edits always override."
+            title={fetchTitle}
           >
             {fetching ? 'Fetching…' : 'Fetch live data'}
+            <InfoDot text={runText} kind={worstKind(fetchLines, 'run')} decorative />
           </button>
-          </div>
-        {/* NO LOG BLOCK. Every outcome used to stack here as one run-on
-          * paragraph: spot, rate, curve, volatility, each leg, the
-          * correlation and the request count. Each line now sits on the
-          * information dot of the field it describes, so the provenance of a
-          * number is next to that number. Only lines about the RUN itself —
-          * the request count and the route summary — have no field to belong
-          * to, and they stay here on one dot. */}
-        {tooltipFor(fetchLines, 'run') && (
-          <div className="status-line">
-            Last fetch <InfoDot text={tooltipFor(fetchLines, 'run')} kind={worstKind(fetchLines, 'run')} />
-          </div>
-        )}
-        {quantoMismatch && (
-          <div
-            className={`status-line ${quantoReady ? '' : 'warn'}`}
-            // The long form goes in the tooltip. A 260px column cannot carry
-            // three lines of prose next to the numbers it is describing.
-            title={
-              quantoReady
-                ? `${quantoLegsText} Each drifts at its own currency's rate, less its equity-FX covariance, so the price is a quanto price.`
-                : `${quantoLegsText} Every one of them needs its own rate, FX volatility and equity-FX correlation before the note can price. Fetch live measures them.`
-            }
-          >
-            {quantoReady ? `Quanto: ${quantoLegLabels}` : `Quanto inputs needed: ${quantoLegLabels}`}
-          </div>
-        )}
-
+        </div>
         {/* PER-LEG QUANTO INPUTS. A foreign leg drifts at its OWN currency's
           * rate, less its equity-FX covariance, so it needs three numbers the
           * note-level fields cannot supply. "Fetch live" measures them, but
@@ -941,22 +923,33 @@ export function MarketPanel() {
              * own per-leg quanto block instead (see `BasketAsset.quanto`), so
              * this branch belongs to the single-leg layout only. */}
             {market.quanto ? (
-              <div className="metric-grid cols-2">
-                <NumericField
-                  label={`Rate ${market.currency}`}
-                  labelExtra={<InfoDot text={tooltipFor(fetchLines, 'rate')} kind={worstKind(fetchLines, 'rate')} />}
-                  value={Number((market.rate * 100).toFixed(4))}
-                  step={0.1}
-                  suffix="%"
-                  onChange={(v) => setMarket({ rate: v / 100 })}
-                />
-                <NumericField
-                  label={`Rate ${underlyingCurrency ?? 'underlying'}`}
-                  value={Number((market.quanto.rateUnderlying * 100).toFixed(4))}
-                  step={0.1}
-                  suffix="%"
-                  onChange={(v) => setQuanto({ ...market.quanto!, rateUnderlying: v / 100 })}
-                />
+              // The header names the foreign leg and its currency, in the
+              // same form as the per-leg quanto groups of a basket. Without
+              // it, two rate fields are the only sign of a quanto price.
+              <div className="field-group leg-metric">
+                <div className="field-label">
+                  <span>
+                    Quanto {ticker || underlyingName || 'Leg 1'} ({underlyingCurrency ?? 'underlying'})
+                    <InfoDot text={tooltipFor(fetchLines, 'quanto')} kind={worstKind(fetchLines, 'quanto')} />
+                  </span>
+                </div>
+                <div className="metric-grid cols-2">
+                  <NumericField
+                    label={`Rate ${market.currency}`}
+                    labelExtra={<InfoDot text={tooltipFor(fetchLines, 'rate')} kind={worstKind(fetchLines, 'rate')} />}
+                    value={Number((market.rate * 100).toFixed(4))}
+                    step={0.1}
+                    suffix="%"
+                    onChange={(v) => setMarket({ rate: v / 100 })}
+                  />
+                  <NumericField
+                    label={`Rate ${underlyingCurrency ?? 'underlying'}`}
+                    value={Number((market.quanto.rateUnderlying * 100).toFixed(4))}
+                    step={0.1}
+                    suffix="%"
+                    onChange={(v) => setQuanto({ ...market.quanto!, rateUnderlying: v / 100 })}
+                  />
+                </div>
               </div>
             ) : (
               <NumericField

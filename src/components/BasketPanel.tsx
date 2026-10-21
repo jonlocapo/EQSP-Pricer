@@ -45,12 +45,25 @@ export function BasketPanel({ onPickPrimary, fetchLines = [] }: Props) {
   // are the chips on the ticker search, and the spots, volatilities and
   // dividends are the metric grids above. Repeating them cost the rows that
   // pushed a four-leg sidebar into a scrollbar.
+  //
+  // The correlation outcome rides on the button's own `title`, so a hover
+  // anywhere on the button shows it. The dot sits inside the button, after
+  // the label, and only signals that a fetch outcome exists. A dot beside the
+  // button became a separate row in the column layout of `.field-group`, and
+  // its 13px was the only hover target for the text.
+  const corrText = tooltipFor(fetchLines, 'correlation');
+  const buttonTitle = [
+    'Per-pair correlations, and every leg\'s detail in one place.',
+    corrText && `Last fetch:\n${corrText}`,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
   return (
     <>
-      <button type="button" className="btn btn-sm" onClick={() => setModalOpen(true)} title="Per-pair correlations, and every leg's detail in one place.">
+      <button type="button" className="btn btn-sm" onClick={() => setModalOpen(true)} title={buttonTitle}>
         Correlation
+        <InfoDot text={corrText} kind={worstKind(fetchLines, 'correlation')} decorative />
       </button>
-      <InfoDot text={tooltipFor(fetchLines, 'correlation')} kind={worstKind(fetchLines, 'correlation')} />
       {modalOpen && <BasketModal onClose={() => setModalOpen(false)} onPickPrimary={onPickPrimary} />}
     </>
   );

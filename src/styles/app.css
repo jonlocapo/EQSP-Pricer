@@ -2259,3 +2259,29 @@ select.input:focus {
   color: var(--danger);
   opacity: 1;
 }
+
+/* A dot INSIDE a button that carries the same text on its own `title` (see
+ * `InfoDot`'s `decorative` flag). The button's `gap` already spaces the dot
+ * from the label, so the dot drops its own margin. The dot takes the button's
+ * text colour, because the muted grey of `.info-dot-ok` is unreadable on the
+ * accent fill of a primary button. The cursor stays the button's pointer:
+ * the dot is part of one click target, not a separate help target. An error
+ * dot fills with the danger colour, so the failure stays visible on any
+ * button fill. */
+.info-dot-decorative {
+  margin-left: 0;
+  flex: 0 0 auto;
+  cursor: inherit;
+  pointer-events: none;
+}
+
+.info-dot-decorative.info-dot-ok,
+.info-dot-decorative.info-dot-info {
+  color: inherit;
+}
+
+.info-dot-decorative.info-dot-err {
+  color: #fff;
+  background: var(--danger);
+  border-color: var(--danger);
+}
